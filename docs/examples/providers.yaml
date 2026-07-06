@@ -1,0 +1,17 @@
+providers:
+  anthropic:
+    apiKey: ${ANTHROPIC_API_KEY}
+    enabled: true
+    defaultModel: claude-sonnet-4-20250514
+  openai:
+    apiKey: ${OPENAI_API_KEY}
+    enabled: true
+    defaultModel: gpt-4o
+
+routing:
+  defaultModel: anthropic/claude-sonnet-4-20250514
+  fallbackChain:
+    - anthropic/claude-sonnet-4-20250514
+    - openai/gpt-4o
+  maxRetries: 3
+  retryDelayMs: 1000

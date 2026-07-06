@@ -1,0 +1,75 @@
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Session, SlashCommandContext } from "@kako/shared";
+import { handleSlashCommand } from "./slash.js";
+
+function makeSession(id: string, cwd: string): Session {
+  const now = new Date().toISOString();
+  return {
+    id,
+    agentName: "main",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    cwd,
+  };
+}
+
+describe("handleSlashCommand", () => {
+  let cwd: string;
+  let session: Session;
+  let ctx: SlashCommandContext;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), "kako-slash-"));
+    session = makeSession("sess-abc12345", cwd);
+    ctx = {
+      cwd,
+      session,
+      listSessions: async () => [session],
+      createSession: async () => makeSession("sess-new12345", cwd),
+      endSession: async () => {},
+      resumeSession: async (id) => ({ ...session, id, status: "active" }),
+      updateTitle: async (id, title) => ({
+        ...session,
+        id,
+        metadata: { title },
+      }),
+    };
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("returns exit for /quit", async () => {
+    const result = await handleSlashCommand("/quit", ctx);
+    expect(result.type).toBe("exit");
+  });
+
+  it("switches session on /new", async () => {
+    const result = await handleSlashCommand("/new", ctx);
+    expect(result.type).toBe("switch");
+    if (result.type === "switch") {
+      expect(result.session.id).toBe("sess-new12345");
+    }
+  });
+
+  it("passes through non-slash input as message", async () => {
+    const result = await handleSlashCommand("hello", ctx);
+    expect(result).toEqual({ type: "message", text: "hello" });
+  });
+
+  it("expands yaml slash command", async () => {
+    await mkdir(join(cwd, ".kako", "config"), { recursive: true });
+    await writeFile(
+      join(cwd, ".kako", "config", "skills.yaml"),
+      "slashCommands:\n  commit: Generate a commit message\n",
+      "utf-8",
+    );
+    const result = await handleSlashCommand("/commit", ctx);
+    expect(result).toEqual({ type: "message", text: "Generate a commit message" });
+  });
+});

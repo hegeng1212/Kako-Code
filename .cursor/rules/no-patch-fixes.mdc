@@ -1,0 +1,40 @@
+---
+description: 禁止打补丁与枚举式修复；在正确层次（prompt/工具/状态机/架构）解决问题
+alwaysApply: true
+---
+
+# 工程原则（必读）
+
+详见 `docs/dev/engineering-principles.md`。提交代码前遵守以下两条红线。
+
+## 禁止打补丁
+
+在 Kako 中，**不要用运行时启发式逻辑绕过模型或工具契约**。
+
+- 正则/关键词 **语义 guard**（如判断打招呼、路由问题后 block 工具）
+- **Harness 代劳**（模型未调工具时强行注入 tool call 或 fallback）
+- 运行时 **system-reminder 纠偏**（与 agent prompt / tool description 重复的隐式规则）
+- 检测输出「像选项列表」后 **rollback + 重试** 替模型纠错
+- 针对单一模型/输入的 **special-case** 而不修根因
+
+## 禁止枚举式解决问题
+
+**绝对不允许用枚举（列表、正则、关键词、分支表）覆盖业务场景。** 枚举无法穷尽全部情况，必然过拟合；换一个措辞相近的问题就会再次失效。
+
+- 按**具体用户原话 / 领域 / 工具名**写 `if`、正则或 prompt 样例当逻辑分支
+- 仅对 `mcp/*`、某个工具或某类输出做 harness 特例
+- 在 prompt / tool description 里写「当用户说 X 时…」的案例手册
+- 测试只用垂直域数据验收，却当成通用行为已成立
+
+**应做：** 定义通用契约；工具结果原样回给模型，由模型决定下一步（含 `AskUserQuestion`）；prompt 写规则不写样例；测试用中性 `Option A/B` 数据。
+
+## 应做（共同）
+
+- 模型行为 → `agents/prompts/`、agent YAML
+- 工具边界 → tool `description` + schema
+- Esc / 选中 / Ctrl+C → CLI 状态机与 `loop` 生命周期（UX 契约，非语义 guard）
+- 解析/协议 Bug → 修对应模块；架构缺口 → ADR + 正式实现
+
+## 自检
+
+提交前：这段代码是在**定义契约**，还是在**猜测意图 / 枚举场景**？若是后者，改 prompt/工具/架构，不要加 patch 或再多一条 `if`。

@@ -1,0 +1,33 @@
+{
+  "name": "kako",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Kako — Agent Harness personal assistant",
+  "type": "module",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:server": "pnpm --filter @kako/shared build && pnpm --filter @kako/core build && pnpm --filter @kako/server dev",
+    "dev:web": "concurrently -k -n api,web -c blue,green \"pnpm dev:server\" \"pnpm --filter @kako/web dev:ui\"",
+    "dev:settings": "pnpm dev:web",
+    "kako": "kako",
+    "link:global": "pnpm --filter @kako/cli link --global",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@kako/cli": "workspace:*",
+    "@types/node": "^22.15.0",
+    "concurrently": "^9.2.0",
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  },
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["better-sqlite3"]
+  }
+}
