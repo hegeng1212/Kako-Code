@@ -7,6 +7,12 @@ dist/
 .env.*
 !.env.example
 
+# pnpm local store (never commit)
+.pnpm-store/
+
+# Build / release artifacts
+release/
+
 # Tauri
 apps/desktop/src-tauri/target/
 

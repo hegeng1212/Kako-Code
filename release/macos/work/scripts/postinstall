@@ -1,4 +1,0 @@
-#!/bin/bash
-# Ensure launcher is executable after install.
-chmod 755 /usr/local/bin/kako 2>/dev/null || true
-exit 0
