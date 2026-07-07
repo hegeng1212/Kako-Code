@@ -6,45 +6,43 @@ import {
   resolveWebDist,
 } from "@kako/core";
 
-async function isApiAvailable(port: number): Promise<boolean> {
+type ServerHealth = { api: boolean; webUi: boolean };
+
+async function fetchServerHealth(port: number): Promise<ServerHealth> {
   try {
     const res = await fetch(`http://localhost:${port}/api/health`, {
       signal: AbortSignal.timeout(1500),
     });
-    return res.ok;
+    if (!res.ok) return { api: false, webUi: false };
+    const body = (await res.json()) as { webUi?: boolean };
+    return { api: true, webUi: body.webUi === true };
   } catch {
-    return false;
+    return { api: false, webUi: false };
   }
 }
 
-async function openBrowser(url: string): Promise<void> {
-  if (process.env.KAKO_NO_OPEN_BROWSER === "1") return;
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const exec = promisify(execFile);
-  const cmd =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try {
-    await exec(cmd, args);
-  } catch {
-    // ignore
-  }
+function reportApiWithoutWebUi(port: number): void {
+  console.error(`Port ${port} is in use by Kako API without the settings Web UI.`);
+  console.error("Stop the other process first (e.g. pnpm dev:server), then run: kako web");
+  console.error("Dev UI + API: pnpm dev:web  →  http://localhost:5173");
 }
+
+import { openSettingsWindow } from "../utils/open-settings-window.js";
 
 export async function runWeb(): Promise<void> {
   const port = Number(process.env.KAKO_SERVER_PORT ?? 3721);
   const url = defaultSettingsUrl(port);
   const installRoot = resolveKakoInstallRoot();
 
-  if (await isApiAvailable(port)) {
+  const existing = await fetchServerHealth(port);
+  if (existing.api && existing.webUi) {
     console.log(`Kako settings already running at ${url}`);
-    await openBrowser(url);
+    await openSettingsWindow(url);
     return;
+  }
+  if (existing.api && !existing.webUi) {
+    reportApiWithoutWebUi(port);
+    process.exit(1);
   }
 
   const webDist = await resolveWebDist(installRoot);
@@ -71,13 +69,17 @@ export async function runWeb(): Promise<void> {
     stdio: "inherit",
   });
 
+  let ready: ServerHealth = { api: false, webUi: false };
   for (let i = 0; i < 30; i++) {
-    if (await isApiAvailable(port)) break;
+    ready = await fetchServerHealth(port);
+    if (ready.api && ready.webUi) break;
     await new Promise((r) => setTimeout(r, 200));
   }
 
-  if (await isApiAvailable(port)) {
-    await openBrowser(url);
+  if (ready.api && ready.webUi) {
+    await openSettingsWindow(url);
+  } else if (ready.api && !ready.webUi) {
+    console.error("Server started but Web UI is not available. Check KAKO_WEB_DIST.");
   } else {
     console.error("Server did not become ready in time.");
   }

@@ -24,6 +24,7 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<ProviderProfile | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -45,6 +46,10 @@ export function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    void api.getHealth().then((health) => setVersion(health.version)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!testResult) return;
@@ -84,6 +89,7 @@ export function App() {
       <header className="topbar">
         <div className="topbar__left">
           <span className="topbar__brand">Kako</span>
+          {version && <span className="topbar__version">v{version}</span>}
           <button className="topbar__icon" title="刷新" onClick={() => void refresh()}>↻</button>
         </div>
 

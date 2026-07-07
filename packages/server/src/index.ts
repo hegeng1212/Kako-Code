@@ -18,6 +18,7 @@ import {
   queryMcpCallLogs,
   getObservabilityStats,
   initializeKakoHome,
+  KAKO_CORE_VERSION,
   listInstalledSkills,
   installSkillFromHub,
   installSkillsFromGithub,
@@ -40,6 +41,7 @@ import type { ProviderProfile, ProviderTestConfig, McpServerConfig } from "@kako
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
+import { resolveWebDistDir, tryServeWebStatic } from "./web-static.js";
 
 const app = new Hono();
 
@@ -55,7 +57,27 @@ async function validateSkillMd(skillMd: string) {
 
 app.use("*", cors());
 
-app.get("/api/health", (c) => c.json({ status: "ok", version: "0.2.0" }));
+app.get("/api/health", (c) =>
+  c.json({
+    status: "ok",
+    version: KAKO_CORE_VERSION,
+    webUi: Boolean(resolveWebDistDir()),
+  }),
+);
+
+app.get("/", (c) => {
+  if (resolveWebDistDir()) return c.notFound();
+  return c.text(
+    [
+      "Kako API is running but the settings Web UI is not attached on this port.",
+      "",
+      "Run:  kako web",
+      "Dev:  pnpm dev:web  →  http://localhost:5173",
+    ].join("\n"),
+    503,
+    { "content-type": "text/plain; charset=utf-8" },
+  );
+});
 
 // --- Provider presets ---
 app.get("/api/presets", (c) => c.json(listPresets()));
@@ -446,7 +468,6 @@ const port = Number(process.env.KAKO_SERVER_PORT ?? 3721);
 
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
-import { resolveWebDistDir, tryServeWebStatic } from "./web-static.js";
 
 let apiServer: Server | null = null;
 

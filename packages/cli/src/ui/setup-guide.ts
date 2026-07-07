@@ -30,24 +30,7 @@ async function isApiAvailable(apiUrl: string): Promise<boolean> {
   }
 }
 
-async function tryOpenBrowser(url: string): Promise<void> {
-  if (process.env.KAKO_NO_OPEN_BROWSER === "1") return;
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const exec = promisify(execFile);
-  const cmd =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  try {
-    await exec(cmd, args);
-  } catch {
-    // ignore
-  }
-}
+import { openSettingsWindow } from "../utils/open-settings-window.js";
 
 export function renderSetupGuide(options: SetupGuideOptions): string {
   const webUrl = options.webUrl ?? DEFAULT_WEB_URL;
@@ -118,7 +101,7 @@ export async function guideProviderSetup(readiness: ProviderReadiness): Promise<
 
   if (serverRunning) {
     console.log(`${ansi.muted}Opening browser…${ansi.reset}`);
-    await tryOpenBrowser(webUrl);
+    await openSettingsWindow(webUrl);
   } else {
     console.log(`${ansi.muted}Run: kako web${ansi.reset}`);
   }
