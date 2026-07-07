@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Kako installer — Claude Code-style curl | bash
-# Usage:
+#
+# Latest (main):
 #   curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/install.sh | bash
+#
+# Pinned release (example v0.2.0):
+#   curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.0/scripts/install.sh | bash
+#
+# Or pin branch/tag via env:
+#   KAKO_BRANCH=v0.2.0 curl -fsSL .../main/scripts/install.sh | bash
 set -euo pipefail
 
 KAKO_REPO="${KAKO_REPO:-https://github.com/hegeng1212/Kako-Code.git}"

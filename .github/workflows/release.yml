@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos-pkg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Build macOS pkg
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "KAKO_VERSION=$VERSION" >> "$GITHUB_ENV"
+          bash scripts/build-macos-pkg.sh
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/macos/kako-*-macos.pkg
+          generate_release_notes: true
