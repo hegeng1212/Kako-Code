@@ -6,17 +6,10 @@ import { runWeb } from "./commands/web.js";
 
 const program = new Command();
 
-program
-  .name("kako")
-  .description("Kako — Agent Harness personal assistant")
-  .version(KAKO_CORE_VERSION)
-  .option("-C, --cwd <path>", "Working directory", process.cwd())
-  .action(async (opts: { cwd: string }) => {
-    await runChat(opts.cwd);
-  });
+program.name("kako").description("Kako — Agent Harness personal assistant").version(KAKO_CORE_VERSION);
 
 program
-  .command("chat")
+  .command("chat", { isDefault: true })
   .description("Start an interactive chat session")
   .option("-C, --cwd <path>", "Working directory", process.cwd())
   .action(async (opts: { cwd: string }) => {
