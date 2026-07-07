@@ -88,6 +88,66 @@ pnpm build
 pnpm link:global   # 或 node packages/cli/dist/index.js
 ```
 
+## 卸载
+
+一键卸载脚本会自动检测 **curl 安装** 和 **macOS .pkg 安装**，默认**保留**用户配置（`~/.kako/config`、会话记忆等）。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/uninstall.sh | bash
+```
+
+非交互确认（例如 CI / 脚本中）：
+
+```bash
+KAKO_YES=1 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/uninstall.sh | bash
+```
+
+连同用户数据一并删除（Provider 配置、记忆、Skills 等）：
+
+```bash
+KAKO_PURGE=1 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/uninstall.sh | bash
+```
+
+### curl | bash 安装会删除
+
+| 路径 | 说明 |
+|------|------|
+| `~/.local/bin/kako` | CLI 启动脚本 |
+| `~/.kako/app` | 已部署的程序 |
+| `~/.kako/src/Kako-Code` | 安装时 clone 的源码 |
+| `~/.kako/.pnpm-store` | 安装用 pnpm 缓存 |
+| `~/.kako/.pnpm-home` | 安装用 pnpm 工具 |
+
+### macOS .pkg 安装会删除（需 sudo）
+
+| 路径 | 说明 |
+|------|------|
+| `/opt/kako` | 程序目录 |
+| `/usr/local/bin/kako` | CLI 启动脚本 |
+
+.pkg 与 curl 两种装法可以并存；卸载脚本会一并清理。用户数据目录 `~/.kako` 仅在设置 `KAKO_PURGE=1` 时删除。
+
+### 手动卸载
+
+**curl 安装：**
+
+```bash
+rm -f ~/.local/bin/kako
+rm -rf ~/.kako/app ~/.kako/src ~/.kako/.pnpm-store ~/.kako/.pnpm-home
+# 可选：删除全部用户数据
+# rm -rf ~/.kako
+```
+
+**macOS .pkg 安装：**
+
+```bash
+sudo rm -rf /opt/kako
+sudo rm -f /usr/local/bin/kako
+sudo pkgutil --forget com.kako.cli.app
+# 可选：删除全部用户数据
+# rm -rf ~/.kako
+```
+
 ## 快速开始
 
 ### 已安装（`curl | bash` 或 `.pkg`）
