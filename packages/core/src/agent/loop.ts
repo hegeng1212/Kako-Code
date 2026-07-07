@@ -59,6 +59,7 @@ export async function streamCompletion(
   },
   shouldAbort?: () => boolean,
 ): Promise<ToolCall[]> {
+  const abortController = new AbortController();
   const toolCalls = new Map<string, ToolCall>();
   let reasoningOpen = false;
 
@@ -68,38 +69,53 @@ export async function streamCompletion(
     handlers.onReasoningEnd?.();
   };
 
-  for await (const chunk of router.stream(request)) {
-    if (shouldAbort?.()) {
+  const abortTurn = (): never => {
+    abortController.abort();
+    throw new TurnAbortedError();
+  };
+
+  try {
+    for await (const chunk of router.stream({ ...request, signal: abortController.signal })) {
+      if (shouldAbort?.()) {
+        abortTurn();
+      }
+      if (chunk.type === "reasoning_delta" && chunk.text) {
+        reasoningOpen = true;
+        handlers.onReasoning?.(chunk.text);
+      }
+      if (chunk.type === "text_delta" && chunk.text) {
+        endReasoningIfOpen();
+        handlers.onText(chunk.text);
+      }
+      if (chunk.type === "done" && chunk.usage) {
+        handlers.onUsage?.(chunk.usage);
+      }
+      if (chunk.type === "tool_call_delta" && chunk.toolCall?.id) {
+        endReasoningIfOpen();
+        const existing = toolCalls.get(chunk.toolCall.id) ?? {
+          id: chunk.toolCall.id,
+          name: chunk.toolCall.name ?? "",
+          input: {},
+        };
+        if (chunk.toolCall.name) existing.name = chunk.toolCall.name;
+        const incoming = chunk.toolCall.input;
+        if (incoming && typeof incoming === "object" && Object.keys(incoming).length > 0) {
+          existing.input = incoming;
+        }
+        toolCalls.set(chunk.toolCall.id, existing);
+      }
+      if (chunk.type === "error") {
+        throw new Error(chunk.error ?? "LLM stream error");
+      }
+    }
+  } catch (error) {
+    if (error instanceof TurnAbortedError) {
+      throw error;
+    }
+    if (error instanceof Error && error.name === "AbortError") {
       throw new TurnAbortedError();
     }
-    if (chunk.type === "reasoning_delta" && chunk.text) {
-      reasoningOpen = true;
-      handlers.onReasoning?.(chunk.text);
-    }
-    if (chunk.type === "text_delta" && chunk.text) {
-      endReasoningIfOpen();
-      handlers.onText(chunk.text);
-    }
-    if (chunk.type === "done" && chunk.usage) {
-      handlers.onUsage?.(chunk.usage);
-    }
-    if (chunk.type === "tool_call_delta" && chunk.toolCall?.id) {
-      endReasoningIfOpen();
-      const existing = toolCalls.get(chunk.toolCall.id) ?? {
-        id: chunk.toolCall.id,
-        name: chunk.toolCall.name ?? "",
-        input: {},
-      };
-      if (chunk.toolCall.name) existing.name = chunk.toolCall.name;
-      const incoming = chunk.toolCall.input;
-      if (incoming && typeof incoming === "object" && Object.keys(incoming).length > 0) {
-        existing.input = incoming;
-      }
-      toolCalls.set(chunk.toolCall.id, existing);
-    }
-    if (chunk.type === "error") {
-      throw new Error(chunk.error ?? "LLM stream error");
-    }
+    throw error;
   }
 
   endReasoningIfOpen();

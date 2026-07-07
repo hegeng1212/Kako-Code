@@ -146,7 +146,7 @@ export async function openaiCompatibleComplete(
       authorization: `Bearer ${profile.apiKey ?? ""}`,
     },
     body: JSON.stringify(buildBody(request, request.model, false)),
-    signal: request.signal,
+    ...(request.signal ? { signal: request.signal } : {}),
   });
 
   if (!response.ok) {
@@ -305,7 +305,7 @@ export async function* openaiCompatibleStream(
       authorization: `Bearer ${profile.apiKey ?? ""}`,
     },
     body: JSON.stringify(buildBody(request, request.model, true)),
-    signal: request.signal,
+    ...(request.signal ? { signal: request.signal } : {}),
   });
 
   if (!response.ok) {
@@ -326,18 +326,22 @@ export async function* openaiCompatibleStream(
   let buffer = "";
   const parser = new OpenAIStreamParser();
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
 
-    for (const line of lines) {
-      for (const chunk of parser.processLine(line)) {
-        yield chunk;
+      for (const line of lines) {
+        for (const chunk of parser.processLine(line)) {
+          yield chunk;
+        }
       }
     }
+  } finally {
+    reader.releaseLock();
   }
 
   if (buffer.trim()) {

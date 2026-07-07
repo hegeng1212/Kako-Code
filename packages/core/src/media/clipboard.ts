@@ -29,6 +29,36 @@ on error
 end try
 `;
 
+/** Read plain text from the system clipboard. Returns null when unavailable. */
+export async function readClipboardText(): Promise<string | null> {
+  if (process.platform === "darwin") {
+    try {
+      const { stdout } = await execFileAsync("pbpaste", [], {
+        timeout: 3000,
+        maxBuffer: 1024 * 1024,
+      });
+      const text = stdout.trim();
+      return text.length ? text : null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === "linux") {
+    try {
+      const { stdout } = await execFileAsync(
+        "xclip",
+        ["-selection", "clipboard", "-o"],
+        { timeout: 3000, maxBuffer: 1024 * 1024 },
+      );
+      const text = String(stdout).trim();
+      return text.length ? text : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /** Read an image from the system clipboard. Returns null when unavailable. */
 export async function readClipboardImage(): Promise<{
   buffer: Buffer;

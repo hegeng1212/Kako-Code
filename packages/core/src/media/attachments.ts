@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { LLMContentBlock, UserAttachment } from "@kako/shared";
 import { getSessionMemoryDir } from "../config/paths.js";
 import { attachmentKindForPath, mimeTypeForPath } from "./mime.js";
-import { readDocumentText, readImageBlocks } from "./read-media.js";
+import { previewDocumentText, readImageBlocks } from "./read-media.js";
 
 export function getSessionAttachmentsDir(sessionId: string): string {
   return join(getSessionMemoryDir(sessionId), "attachments");
@@ -23,6 +23,7 @@ export async function storeUserAttachment(
   return {
     name: name ?? basename(sourcePath),
     path: dest,
+    sourcePath,
     mimeType: mimeTypeForPath(dest),
     kind: attachmentKindForPath(dest),
   };
@@ -52,11 +53,20 @@ export async function attachmentToContentBlocks(
   if (attachment.kind === "image") {
     return readImageBlocks(attachment.path);
   }
-  const text = await readDocumentText(attachment.path);
+  const preview = await previewDocumentText(attachment.path);
+  const sourceLine = attachment.sourcePath
+    ? `Source path: ${attachment.sourcePath}\n`
+    : "";
   return [
     {
       type: "text",
-      text: `Attachment: ${attachment.name}\n\n${text}`,
+      text: `<file-reference>
+Name: ${attachment.name}
+Session path: ${attachment.path}
+${sourceLine}Structure preview (full content is not loaded):
+
+${preview}
+</file-reference>`,
     },
   ];
 }

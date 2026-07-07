@@ -16,21 +16,59 @@ kako/
 └── skills/             # 内置/示例 Skills
 ```
 
+## 安装
+
+### 方式一：一键安装（推荐，类似 Claude Code）
+
+需要先安装 [Node.js ≥ 20](https://nodejs.org/) 和 git。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/install.sh | bash
+```
+
+安装完成后（确保 `~/.local/bin` 在 PATH 中）：
+
+```bash
+kako web          # 打开配置界面（Provider / MCP / Skills）
+cd ~/your-project
+kako              # 在当前目录启动对话
+```
+
+### 方式二：macOS 安装包
+
+```bash
+pnpm pack:macos
+open release/macos/kako-0.2.0-macos.pkg
+```
+
+### 方式三：从源码开发
+
+```bash
+git clone https://github.com/hegeng1212/Kako-Code.git kako
+cd kako
+pnpm install
+pnpm build
+pnpm link:global   # 或 node packages/cli/dist/index.js
+```
+
 ## 快速开始
 
 ```bash
 pnpm install
 pnpm build
 
-# 1. 启动设置 Web UI（自动启动 API + 前端）
-pnpm dev:web       # API :3721 + UI :5173
+# 1. 打开设置 Web UI（Provider / MCP / Skills）
+kako web           # 安装版 / link:global 后
+# 或开发模式：
+pnpm dev:web       # API :3721 + 开发 UI :5173
 
 # 2. 在 Web UI 中添加火山豆包供应商
 #    - 填入 ARK_API_KEY 和接入点 ep-xxx
 #    - 点击「设为当前」→「测试」
 
 # 3. 启动对话
-node packages/cli/dist/index.js chat
+cd your-project
+kako
 ```
 
 ### 火山豆包配置

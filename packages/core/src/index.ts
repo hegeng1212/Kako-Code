@@ -62,9 +62,14 @@ export {
 export { ToolRegistry } from "./tools/registry.js";
 export {
   readClipboardImage,
+  readClipboardText,
   storeClipboardImage,
   storeUserAttachment,
   resolveUserTurnInput,
+  findLeadingAbsolutePath,
+  parsePathReferences,
+  isImagePath,
+  normalizeClipboardPath,
 } from "./media/index.js";
 export {
   ensurePlanFile,
@@ -93,6 +98,12 @@ export {
   openPathInFileManager,
 } from "./skills/index.js";
 
+export {
+  resolveKakoInstallRoot,
+  resolveWebDist,
+  resolveServerEntry,
+  defaultSettingsUrl,
+} from "./config/install-paths.js";
 export const KAKO_CORE_VERSION = "0.2.0";
 
 export interface Harness {

@@ -12,6 +12,7 @@
     "dev:settings": "pnpm dev:web",
     "kako": "kako",
     "link:global": "pnpm --filter @kako/cli link --global",
+    "pack:macos": "bash scripts/build-macos-pkg.sh",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck"

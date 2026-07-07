@@ -100,6 +100,12 @@ export async function handleSlashCommand(
     return { type: "message", text: input };
   }
 
+  const firstTokenEnd = trimmed.indexOf(" ") === -1 ? trimmed.length : trimmed.indexOf(" ");
+  const pathBody = trimmed.slice(1, firstTokenEnd);
+  if (pathBody.includes("/")) {
+    return { type: "message", text: input };
+  }
+
   const body = trimmed.slice(1);
   const spaceIdx = body.indexOf(" ");
   const cmd = (spaceIdx === -1 ? body : body.slice(0, spaceIdx)).toLowerCase();

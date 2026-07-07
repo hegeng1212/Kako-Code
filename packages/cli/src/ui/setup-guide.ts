@@ -9,7 +9,7 @@ import {
 } from "./box.js";
 import { KAKO_DINO } from "./mascot.js";
 
-const DEFAULT_WEB_URL = "http://localhost:5173";
+const DEFAULT_WEB_URL = "http://localhost:3721";
 const DEFAULT_API_URL = "http://localhost:3721";
 
 export interface SetupGuideOptions {
@@ -81,8 +81,8 @@ export function renderSetupGuide(options: SetupGuideOptions): string {
     );
   } else {
     rightLines.push(
-      `${ansi.text}Run pnpm dev:web in the kako repo.${ansi.reset}`,
-      `${ansi.text}Open ${webUrl} to configure providers.${ansi.reset}`,
+      `${ansi.text}Run kako web to open settings.${ansi.reset}`,
+      `${ansi.text}Add a provider, choose a model, then enable.${ansi.reset}`,
       `${ansi.text}Run kako again when done.${ansi.reset}`,
     );
   }
@@ -119,6 +119,8 @@ export async function guideProviderSetup(readiness: ProviderReadiness): Promise<
   if (serverRunning) {
     console.log(`${ansi.muted}Opening browser…${ansi.reset}`);
     await tryOpenBrowser(webUrl);
+  } else {
+    console.log(`${ansi.muted}Run: kako web${ansi.reset}`);
   }
 
   process.exit(1);

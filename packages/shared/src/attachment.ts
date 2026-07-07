@@ -3,6 +3,8 @@ export interface UserAttachment {
   name: string;
   /** Absolute path where the attachment is stored for this session. */
   path: string;
+  /** Original path on disk when copied from a user file reference. */
+  sourcePath?: string;
   mimeType: string;
   kind: "image" | "document";
 }

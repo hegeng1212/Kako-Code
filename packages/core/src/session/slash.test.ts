@@ -62,6 +62,17 @@ describe("handleSlashCommand", () => {
     expect(result).toEqual({ type: "message", text: "hello" });
   });
 
+  it("passes through absolute file paths as message, not slash commands", async () => {
+    const path = "/Users/hegeng/Pictures/photo.jpeg";
+    const result = await handleSlashCommand(`${path} 这是什么`, ctx);
+    expect(result).toEqual({ type: "message", text: `${path} 这是什么` });
+  });
+
+  it("still treats /help as a slash command", async () => {
+    const result = await handleSlashCommand("/help", ctx);
+    expect(result.type).toBe("handled");
+  });
+
   it("expands yaml slash command", async () => {
     await mkdir(join(cwd, ".kako", "config"), { recursive: true });
     await writeFile(

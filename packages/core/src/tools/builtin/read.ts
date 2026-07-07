@@ -114,7 +114,11 @@ export const readHandler: ToolHandler = async (input, context) => {
   const ext = extensionOf(parsed.filePath);
 
   if (isImagePath(parsed.filePath) || isPdfPath(parsed.filePath) || isOfficeDocumentPath(parsed.filePath)) {
-    const media = await readMediaFile(parsed.filePath, { pages: parsed.pages });
+    const media = await readMediaFile(parsed.filePath, {
+      pages: parsed.pages,
+      offset: parsed.offset,
+      limit: parsed.limit,
+    });
     if (typeof media !== "string") {
       return media;
     }

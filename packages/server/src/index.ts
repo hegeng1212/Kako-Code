@@ -446,12 +446,18 @@ const port = Number(process.env.KAKO_SERVER_PORT ?? 3721);
 
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
+import { resolveWebDistDir, tryServeWebStatic } from "./web-static.js";
 
 let apiServer: Server | null = null;
 
 export function startNodeServer(): Server {
   if (apiServer) return apiServer;
+  const webRoot = resolveWebDistDir();
   const server = createServer(async (req, res) => {
+    if (webRoot && (await tryServeWebStatic(req, res, webRoot))) {
+      return;
+    }
+
     const url = `http://localhost${req.url}`;
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) {
@@ -481,7 +487,11 @@ export function startNodeServer(): Server {
   });
 
   server.listen(port, () => {
-    console.log(`Kako server listening on http://localhost:${port}`);
+    const base = `http://localhost:${port}`;
+    if (webRoot) {
+      console.log(`Kako settings UI: ${base}`);
+    }
+    console.log(`Kako server listening on ${base}`);
     void initializeKakoHome().catch((error) => {
       console.error(
         "Kako home initialization failed:",
