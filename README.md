@@ -100,4 +100,4 @@ export ARK_API_KEY=your-volcengine-api-key
 
 ## 许可证
 
-待定
+[MIT](LICENSE)

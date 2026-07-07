@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Kako — Agent Harness personal assistant",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "turbo run build",

@@ -73,6 +73,22 @@ input {
   line-height: 1.4;
 }
 
+.topbar__license {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.topbar__license:hover {
+  color: #111827;
+  background: #e5e7eb;
+}
+
 .topbar__icon {
   background: none;
   border: none;

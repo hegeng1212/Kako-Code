@@ -55,7 +55,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getHealth: () =>
-    request<{ status: string; version: string; webUi?: boolean }>("/health"),
+    request<{
+      status: string;
+      version: string;
+      license?: string;
+      licenseUrl?: string;
+      webUi?: boolean;
+    }>("/health"),
   getPresets: () => request<ProviderPreset[]>("/presets"),
   getProviders: () => request<ProviderRegistry>("/providers"),
   addFromPreset: (body: {

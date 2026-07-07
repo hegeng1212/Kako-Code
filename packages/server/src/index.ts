@@ -19,6 +19,8 @@ import {
   getObservabilityStats,
   initializeKakoHome,
   KAKO_CORE_VERSION,
+  KAKO_LICENSE,
+  KAKO_LICENSE_URL,
   listInstalledSkills,
   installSkillFromHub,
   installSkillsFromGithub,
@@ -61,6 +63,8 @@ app.get("/api/health", (c) =>
   c.json({
     status: "ok",
     version: KAKO_CORE_VERSION,
+    license: KAKO_LICENSE,
+    licenseUrl: KAKO_LICENSE_URL,
     webUi: Boolean(resolveWebDistDir()),
   }),
 );

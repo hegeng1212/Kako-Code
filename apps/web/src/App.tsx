@@ -25,6 +25,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<ProviderProfile | null>(null);
   const [version, setVersion] = useState<string | null>(null);
+  const [license, setLicense] = useState<string | null>(null);
+  const [licenseUrl, setLicenseUrl] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -48,7 +50,14 @@ export function App() {
   }, [refresh]);
 
   useEffect(() => {
-    void api.getHealth().then((health) => setVersion(health.version)).catch(() => {});
+    void api
+      .getHealth()
+      .then((health) => {
+        setVersion(health.version);
+        if (health.license) setLicense(health.license);
+        if (health.licenseUrl) setLicenseUrl(health.licenseUrl);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -90,6 +99,20 @@ export function App() {
         <div className="topbar__left">
           <span className="topbar__brand">Kako</span>
           {version && <span className="topbar__version">v{version}</span>}
+          {license &&
+            (licenseUrl ? (
+              <a
+                className="topbar__license"
+                href={licenseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="开源许可证"
+              >
+                {license}
+              </a>
+            ) : (
+              <span className="topbar__license">{license}</span>
+            ))}
           <button className="topbar__icon" title="刷新" onClick={() => void refresh()}>↻</button>
         </div>
 

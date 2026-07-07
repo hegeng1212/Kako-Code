@@ -105,6 +105,9 @@ export {
   defaultSettingsUrl,
 } from "./config/install-paths.js";
 export const KAKO_CORE_VERSION = "0.2.0";
+export const KAKO_LICENSE = "MIT";
+export const KAKO_LICENSE_URL =
+  "https://github.com/hegeng1212/Kako-Code/blob/main/LICENSE";
 
 export interface Harness {
   registry: ProviderRegistry;
