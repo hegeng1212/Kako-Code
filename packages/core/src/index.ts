@@ -12,7 +12,7 @@ export { TurnAbortedError } from "./agent/loop.js";
 export { loadAgent, loadProjectContext, loadGlobalUserContext, loadWorkspaceKakoMd } from "./agent/loader.js";
 export { createLLMRouter, resolveModel } from "./llm/router.js";
 export { fetchWithTimeout } from "./net/fetch-with-timeout.js";
-export { FileMemoryStore } from "./memory/store.js";
+export { FileMemoryStore, createMessage, sessionInputHistory, transcriptPreviewText } from "./memory/store.js";
 export {
   SessionManager,
   sessionManager,
@@ -121,7 +121,7 @@ export {
 export { loadSkill } from "./skills/loader.js";
 export {
   SYSTEM_SKILL_REGISTRY,
-  expandAllowedSkillNames,
+  skillNamesForToolAllowlist,
   isSlashInvokableSkill,
   isSystemSkill,
   listSlashInvokableSkills,
@@ -142,6 +142,8 @@ export {
 } from "./workflows/store.js";
 export {
   aggregateWorkflowJournal,
+  isPhaseFatal,
+  isPhaseSuccessful,
   readJournalEntries,
   resolveCurrentPhaseFromJournal,
   summarizeAgentOutput,

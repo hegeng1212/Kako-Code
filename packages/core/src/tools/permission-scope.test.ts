@@ -77,7 +77,7 @@ describe("ToolRegistry trusted scope", () => {
     if (kakoHome) await rm(kakoHome, { recursive: true, force: true });
   });
 
-  it("skips confirm for Write inside session cwd", async () => {
+  it("requires confirm for Write inside session cwd", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "kako-scope-cwd-"));
     const confirm = vi.fn(async () => false);
     const registry = new ToolRegistry({
@@ -92,6 +92,28 @@ describe("ToolRegistry trusted scope", () => {
       id: "tu-write",
       name: "Write",
       input: { file_path: join(tempDir, "notes.txt"), content: "hello" },
+    });
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("denied");
+  });
+
+  it("skips confirm for low-risk Bash inside session cwd", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "kako-scope-cwd-"));
+    const confirm = vi.fn(async () => false);
+    const registry = new ToolRegistry({
+      cwd: tempDir,
+      sessionId: "sess",
+      agentId: "agent",
+      confirm,
+    });
+    const { bashHandler, bashToolDefinition } = await import("./builtin/bash.js");
+    registry.register(bashToolDefinition, bashHandler);
+
+    const result = await registry.execute({
+      id: "tu-bash",
+      name: "Bash",
+      input: { command: "ls -la" },
     });
 
     expect(confirm).not.toHaveBeenCalled();
@@ -120,7 +142,7 @@ describe("ToolRegistry trusted scope", () => {
     expect(result.status).toBe("denied");
   });
 
-  it("skips confirm for Write under KAKO_HOME", async () => {
+  it("requires confirm for Write under KAKO_HOME", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "kako-scope-session-"));
     kakoHome = await mkdtemp(join(tmpdir(), "kako-home-"));
     process.env.KAKO_HOME = kakoHome;
@@ -144,7 +166,85 @@ describe("ToolRegistry trusted scope", () => {
       input: { file_path: target, content: "skill note" },
     });
 
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("denied");
+  });
+
+  it("errors on Write with empty input without opening confirm", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "kako-scope-write-empty-"));
+    const confirm = vi.fn(async () => true);
+    const registry = new ToolRegistry({
+      cwd: tempDir,
+      sessionId: "sess",
+      agentId: "agent",
+      confirm,
+    });
+    registry.register(writeToolDefinition, writeHandler);
+
+    const result = await registry.execute({
+      id: "tu-write-empty",
+      name: "Write",
+      input: {},
+    });
+
     expect(confirm).not.toHaveBeenCalled();
-    expect(result.status).toBe("success");
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("incomplete");
+  });
+
+  it("skips confirm for subsequent writes after session allow", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "kako-scope-session-writes-"));
+    const confirm = vi.fn(async () => ({ allowed: true, sessionAllow: "writes" as const }));
+    const registry = new ToolRegistry({
+      cwd: tempDir,
+      sessionId: "sess",
+      agentId: "agent",
+      confirm,
+    });
+    registry.register(writeToolDefinition, writeHandler);
+
+    const first = await registry.execute({
+      id: "tu-write-1",
+      name: "Write",
+      input: { file_path: join(tempDir, "a.txt"), content: "one" },
+    });
+    const second = await registry.execute({
+      id: "tu-write-2",
+      name: "Write",
+      input: { file_path: join(tempDir, "b.txt"), content: "two" },
+    });
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(first.status).toBe("success");
+    expect(second.status).toBe("success");
+  });
+
+  it("skips confirm for identical bash after session allow", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "kako-scope-session-bash-"));
+    const confirm = vi.fn(async () => ({ allowed: true, sessionAllow: "bash-command" as const }));
+    const registry = new ToolRegistry({
+      cwd: tempDir,
+      sessionId: "sess",
+      agentId: "agent",
+      confirm,
+    });
+    const { bashHandler, bashToolDefinition } = await import("./builtin/bash.js");
+    registry.register(bashToolDefinition, bashHandler);
+
+    const command = "python add.py";
+    const first = await registry.execute({
+      id: "tu-bash-1",
+      name: "Bash",
+      input: { command },
+    });
+    const second = await registry.execute({
+      id: "tu-bash-2",
+      name: "Bash",
+      input: { command },
+    });
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(first.status).toBe("success");
+    expect(second.status).toBe("success");
   });
 });

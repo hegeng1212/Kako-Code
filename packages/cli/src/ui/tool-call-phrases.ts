@@ -258,17 +258,29 @@ export function toolCallSuccessPhrase(name: string, detail: string): string {
 }
 
 /** Contextual English phrase for a failed tool call. */
-export function toolCallFailurePhrase(name: string, detail: string): string {
+export function toolCallFailurePhrase(
+  name: string,
+  detail: string,
+  errorDetail?: string,
+): string {
   const waiting = toolCallWaitingPhrase(name, detail);
-  if (/^Reading /.test(waiting)) return waiting.replace(/^Reading /, "Failed to read ");
-  if (/^Writing /.test(waiting)) return waiting.replace(/^Writing /, "Failed to write ");
-  if (/^Editing /.test(waiting)) return waiting.replace(/^Editing /, "Failed to edit ");
-  if (/^Running /.test(waiting)) return waiting.replace(/^Running /, "Failed to run ");
-  if (/^Activating /.test(waiting)) return waiting.replace(/^Activating /, "Failed to activate ");
-  if (/^Delegating/.test(waiting)) return waiting.replace(/^Delegating/, "Delegation failed");
-  if (/^Calling /.test(waiting)) return waiting.replace(/^Calling /, "Failed to call ");
-  if (/^Waiting /.test(waiting)) return waiting.replace(/^Waiting /, "Failed while ");
-  return `Failed — ${waiting.charAt(0).toLowerCase()}${waiting.slice(1)}`;
+  let phrase: string;
+  if (/^Reading /.test(waiting)) phrase = waiting.replace(/^Reading /, "Failed to read ");
+  else if (/^Writing /.test(waiting)) phrase = waiting.replace(/^Writing /, "Failed to write ");
+  else if (/^Editing /.test(waiting)) phrase = waiting.replace(/^Editing /, "Failed to edit ");
+  else if (/^Running /.test(waiting)) phrase = waiting.replace(/^Running /, "Failed to run ");
+  else if (/^Activating /.test(waiting)) phrase = waiting.replace(/^Activating /, "Failed to activate ");
+  else if (/^Delegating/.test(waiting)) phrase = waiting.replace(/^Delegating/, "Delegation failed");
+  else if (/^Calling /.test(waiting)) phrase = waiting.replace(/^Calling /, "Failed to call ");
+  else if (/^Waiting /.test(waiting)) phrase = waiting.replace(/^Waiting /, "Failed while ");
+  else phrase = `Failed — ${waiting.charAt(0).toLowerCase()}${waiting.slice(1)}`;
+
+  const err = errorDetail?.trim();
+  if (err && !trimDetail(detail)) {
+    const short = err.length > 72 ? `${err.slice(0, 71)}…` : err;
+    return `${phrase} — ${short}`;
+  }
+  return phrase;
 }
 
 export function formatPlanPathForPreview(detail: string): string {

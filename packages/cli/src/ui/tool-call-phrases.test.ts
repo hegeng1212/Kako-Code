@@ -52,4 +52,10 @@ describe("tool-call-phrases", () => {
       "Failed to activate skill brainstorming",
     );
   });
+
+  it("appends error detail when tool target is unknown", () => {
+    expect(
+      toolCallFailurePhrase("Write", "{}", "Write requires file_path"),
+    ).toBe("Failed to write file — Write requires file_path");
+  });
 });

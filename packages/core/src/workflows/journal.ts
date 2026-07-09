@@ -3,6 +3,8 @@ import { getSessionWorkflowJournalPath } from "../config/paths.js";
 
 export type JournalEntry =
   | { type: "phase"; title: string; at: string }
+  | { type: "phase_plan"; title: string; total: number; at: string }
+  | { type: "halt"; phase: string; reason?: string; at: string }
   | { type: "agent_start"; label: string; phase?: string; agentId?: string; at: string }
   | {
       type: "result";
@@ -34,6 +36,8 @@ export interface AgentView {
 export interface WorkflowPhaseDef {
   title: string;
   detail?: string;
+  /** Planned agent count — shown as 0/N from workflow start; denominator stays fixed. */
+  agents?: number;
 }
 
 export interface PhaseView {
@@ -43,8 +47,19 @@ export interface PhaseView {
   done: number;
   total: number;
   failed: number;
+  /** Set when meta or phase_plan fixes the denominator. */
+  plannedTotal?: number;
+  /** Workflow halted on this phase — show ✘ only when fatal. */
+  fatal?: boolean;
   agents: AgentView[];
   logs: string[];
+}
+
+export function createHaltJournalEntry(
+  phase: string,
+  reason?: string,
+): Omit<Extract<JournalEntry, { type: "halt" }>, "at"> {
+  return { type: "halt", phase, reason };
 }
 
 export async function appendJournalEntry(
@@ -128,17 +143,50 @@ export function resolveCurrentPhaseFromJournal(entries: JournalEntry[]): string 
   return current;
 }
 
-function emptyPhaseView(title: string, detail?: string): PhaseView {
+function emptyPhaseView(title: string, detail?: string, plannedAgents?: number): PhaseView {
+  const planned = plannedAgents != null && plannedAgents > 0 ? plannedAgents : undefined;
   return {
     title,
     detail,
     entered: false,
     done: 0,
-    total: 0,
+    total: planned ?? 0,
     failed: 0,
+    plannedTotal: planned,
     agents: [],
     logs: [],
   };
+}
+
+function applyPlannedTotal(view: PhaseView, total: number): void {
+  if (total <= 0) return;
+  view.plannedTotal = total;
+  view.total = total;
+}
+
+/** ✘ only when this phase blocked the workflow (explicit halt or all agents failed with no continuation). */
+export function isPhaseFatal(phase: PhaseView, index: number, phases: PhaseView[]): boolean {
+  if (phase.fatal) return true;
+  const laterEntered = phases.slice(index + 1).some((p) => p.entered);
+  if (laterEntered) return false;
+  const terminal = phase.agents.filter((a) => a.status !== "running");
+  if (!phase.entered || terminal.length === 0) return false;
+  const succeeded = terminal.filter((a) => a.status === "success").length;
+  return succeeded === 0 && phase.failed > 0;
+}
+
+/** ✔ when the workflow moved past this phase or all planned agents finished with at least one success. */
+export function isPhaseSuccessful(phase: PhaseView, index: number, phases: PhaseView[]): boolean {
+  if (isPhaseFatal(phase, index, phases)) return false;
+  const laterEntered = phases.slice(index + 1).some((p) => p.entered);
+  if (laterEntered) return true;
+  const succeeded = phase.agents.filter((a) => a.status === "success").length;
+  if (succeeded === 0) return false;
+  if (phase.plannedTotal != null && phase.plannedTotal > 0) {
+    return phase.done >= phase.plannedTotal;
+  }
+  const terminal = phase.agents.filter((a) => a.status !== "running");
+  return terminal.length > 0 && terminal.every((a) => a.status !== "running");
 }
 
 function resolvePhaseTitle(
@@ -161,7 +209,22 @@ function ensurePhase(
     order.push(title);
     byPhase.set(title, emptyPhaseView(title, detail));
   }
-  return byPhase.get(title)!;
+  const view = byPhase.get(title)!;
+  if (detail && !view.detail) view.detail = detail;
+  return view;
+}
+
+function seedPhaseDefs(
+  byPhase: Map<string, PhaseView>,
+  order: string[],
+  phaseDefs: WorkflowPhaseDef[],
+): void {
+  for (const def of phaseDefs) {
+    const view = ensurePhase(byPhase, order, def.title, def.detail);
+    if (def.agents != null && def.agents > 0) {
+      applyPlannedTotal(view, def.agents);
+    }
+  }
 }
 
 function applyAgentResult(view: PhaseView, agent: AgentView, status: "success" | "error" | "skipped"): void {
@@ -182,9 +245,7 @@ export function aggregateWorkflowJournal(
   const pendingById = new Map<string, AgentView>();
   const pendingQueues = new Map<string, AgentView[]>();
 
-  for (const def of phaseDefs) {
-    ensurePhase(byPhase, order, def.title, def.detail);
-  }
+  seedPhaseDefs(byPhase, order, phaseDefs);
 
   let currentPhase: string | undefined;
 
@@ -193,6 +254,16 @@ export function aggregateWorkflowJournal(
       const view = ensurePhase(byPhase, order, entry.title);
       view.entered = true;
       currentPhase = entry.title;
+    }
+    if (entry.type === "phase_plan") {
+      const view = ensurePhase(byPhase, order, entry.title);
+      applyPlannedTotal(view, entry.total);
+    }
+    if (entry.type === "halt") {
+      const view = ensurePhase(byPhase, order, entry.phase);
+      view.entered = true;
+      view.fatal = true;
+      currentPhase = entry.phase;
     }
     if (entry.type === "log") {
       const target = currentPhase && byPhase.has(currentPhase) ? currentPhase : order[0];
@@ -211,7 +282,9 @@ export function aggregateWorkflowJournal(
         }
       }
       view.entered = true;
-      view.total++;
+      if (view.plannedTotal == null) {
+        view.total++;
+      }
       const agent: AgentView = {
         label: entry.label,
         agentId: entry.agentId,
@@ -249,7 +322,9 @@ export function aggregateWorkflowJournal(
           phase,
           status: "running",
         };
-        view.total++;
+        if (view.plannedTotal == null) {
+          view.total++;
+        }
         view.agents.push(agent);
       }
       agent.agentId ??= entry.agentId;

@@ -24,6 +24,7 @@ import { renderPlanBoxLines } from "./plan-box.js";
 import { wrapContentLines } from "./text-wrap.js";
 import { renderPulsingPrefix } from "./stream-pulse.js";
 import { extractDisplayFilePaths, formatFileBranchLabel } from "./file-path-display.js";
+import { formatDurationSeconds } from "./format-duration.js";
 import { extractImageLabelsInOrder } from "./image-markers.js";
 
 export interface RenderTurnOptions {
@@ -156,7 +157,10 @@ export function renderThoughtSummaryForEntry(
 ): string {
   const secs = thoughtEntrySeconds(entry, now, live);
   const prefix = renderPulsingPrefix("◐", pulseFrame, live);
-  return indent(`${prefix}${ansi.muted}Thought for ${secs}s${ansi.reset}`, LINE_INDENT);
+  return indent(
+    `${prefix}${ansi.muted}Thought for ${formatDurationSeconds(secs)}${ansi.reset}`,
+    LINE_INDENT,
+  );
 }
 
 function turnElapsedSeconds(turn: ChatTurn, now = Date.now()): number {
@@ -198,7 +202,7 @@ export function renderSmooshingLine(turn: ChatTurn, now = Date.now()): string {
   const live = turn.phase !== "done";
   const star = renderPulsingPrefix("*", turn.pulseFrame, live);
   return indent(
-    `${star}${ansi.accent}${verb}… (${elapsed}s · ↓ ${tokens} tokens · ${phase})${ansi.reset}`,
+    `${star}${ansi.accent}${verb}… (${formatDurationSeconds(elapsed)} · ↓ ${tokens} tokens · ${phase})${ansi.reset}`,
     LINE_INDENT,
   );
 }
@@ -244,7 +248,7 @@ export function renderDoneStatus(turn: ChatTurn, now = Date.now()): string {
   if (!turn.finishedAt) return "";
   const verb = turn.doneVerb ?? "Worked";
   return indent(
-    `${ansi.muted}* ${verb} for ${turnElapsedSeconds(turn, now)}s${ansi.reset}`,
+    `${ansi.muted}* ${verb} for ${formatDurationSeconds(turnElapsedSeconds(turn, now))}${ansi.reset}`,
     LINE_INDENT,
   );
 }
@@ -439,7 +443,7 @@ function renderWorkflowToolEntry(
   if (thoughtSeconds != null) {
     out.push({
       text: indent(
-        `${ansi.muted}Thought for ${thoughtSeconds}s${ansi.reset}`,
+        `${ansi.muted}Thought for ${formatDurationSeconds(thoughtSeconds)}${ansi.reset}`,
         LINE_INDENT,
       ),
     });

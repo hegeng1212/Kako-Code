@@ -103,6 +103,10 @@ export async function runChat(cwdArg: string): Promise<void> {
   layout.setSlashInvokableSkills(await listSlashInvokableSkills(cwd));
   layout.start();
 
+  const refreshInputHistory = async (): Promise<void> => {
+    await layout.syncInputHistoryFromSession(session.id);
+  };
+
   const syncProviderFromDisk = async (): Promise<void> => {
     registry = await loadProviderRegistry();
     layout.refreshHeader();
@@ -126,6 +130,7 @@ export async function runChat(cwdArg: string): Promise<void> {
       throw err;
     } finally {
       layout.finishTurn();
+      await refreshInputHistory();
       await flushPendingTaskNotification();
     }
   };
@@ -244,10 +249,7 @@ export async function runChat(cwdArg: string): Promise<void> {
           };
         }
       }
-      const allowed = await layout.readConfirm(
-        `Allow ${toolCall.name}(${summarizeInput(toolCall.name, toolCall.input)})? [y/N] `,
-      );
-      return allowed;
+      return layout.readToolApproval({ toolCall, cwd });
     },
     askUserQuestion: createAskUserQuestionPrompt(layout),
     onReasoningDelta: (text) => layout.appendThinking(text),
@@ -295,6 +297,7 @@ export async function runChat(cwdArg: string): Promise<void> {
 
   session = await harness.runtime.createSession();
   layout.setSessionId(session.id);
+  await layout.syncInputHistoryFromSession(session.id);
   bindWorkflowSession(session.id);
 
   syncSessionPermissionMode = async (mode: PermissionMode): Promise<void> => {
@@ -372,6 +375,7 @@ export async function runChat(cwdArg: string): Promise<void> {
           unregisterAgentCompleteHandler(session.id);
           session = result.session;
           layout.setSessionId(session.id);
+          await layout.syncInputHistoryFromSession(session.id);
           bindWorkflowSession(session.id);
           layout.appendContent(renderSessionSwitch(session.id));
           continue;
@@ -391,6 +395,7 @@ export async function runChat(cwdArg: string): Promise<void> {
             layout.consumePendingAttachments(result.displayText),
           );
           userTurn.llmText = llmText;
+          userTurn.cliInput = true;
           layout.beginTurn(result.displayText);
           let runOptions;
           if (result.handler === "skill") {
@@ -409,6 +414,7 @@ export async function runChat(cwdArg: string): Promise<void> {
             throw err;
           } finally {
             layout.finishTurn();
+            await refreshInputHistory();
             await flushPendingTaskNotification();
           }
           continue;
@@ -419,6 +425,7 @@ export async function runChat(cwdArg: string): Promise<void> {
             trimmed,
             layout.consumePendingAttachments(trimmed),
           );
+          userTurn.cliInput = true;
           layout.beginTurn(userTurn.text.trim() || trimmed);
           try {
             await harness.runtime.runTurn(session, userTurn);
@@ -427,6 +434,7 @@ export async function runChat(cwdArg: string): Promise<void> {
             throw err;
           } finally {
             layout.finishTurn();
+            await refreshInputHistory();
             await flushPendingTaskNotification();
           }
           continue;

@@ -1,6 +1,7 @@
 export {
   discoverSkills,
   discoverSkillsForAgent,
+  loadBundledSkills,
   filterSkillsForAgent,
   findSkillByMdPath,
   findSkillFile,
@@ -9,11 +10,12 @@ export {
   loadSkill,
   parseSkillMd,
   skillNameCandidates,
+  skillIndexDescription,
   toSkillIndex,
 } from "./loader.js";
 export {
   SYSTEM_SKILL_REGISTRY,
-  expandAllowedSkillNames,
+  skillNamesForToolAllowlist,
   getSystemSkillEntry,
   isSlashInvokableSkill,
   isSystemSkill,

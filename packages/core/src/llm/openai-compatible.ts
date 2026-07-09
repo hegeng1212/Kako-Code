@@ -181,9 +181,16 @@ type StreamDeltaEvent = {
   };
 };
 
+type StreamedToolArgs = {
+  id: string;
+  name: string;
+  args: string;
+  lastInput?: Record<string, unknown>;
+};
+
 /** Stateful SSE parser for OpenAI / doubao / volcengine streaming tool_calls. */
 export class OpenAIStreamParser {
-  private toolArgs = new Map<number, { id: string; name: string; args: string }>();
+  private toolArgs = new Map<number, StreamedToolArgs>();
 
   processLine(line: string): LLMStreamChunk[] {
     const chunks: LLMStreamChunk[] = [];
@@ -251,12 +258,7 @@ export class OpenAIStreamParser {
   flush(): LLMStreamChunk[] {
     const chunks: LLMStreamChunk[] = [];
     for (const tool of this.toolArgs.values()) {
-      let input: Record<string, unknown> = {};
-      try {
-        input = JSON.parse(tool.args || "{}") as Record<string, unknown>;
-      } catch {
-        input = {};
-      }
+      const input = parseStreamedToolArgs(tool);
       chunks.push({
         type: "tool_call_delta",
         toolCall: { id: tool.id, name: tool.name, input },
@@ -266,13 +268,11 @@ export class OpenAIStreamParser {
     return chunks;
   }
 
-  private tryEmitIncrementalToolInput(
-    current: { id: string; name: string; args: string },
-    chunks: LLMStreamChunk[],
-  ): void {
+  private tryEmitIncrementalToolInput(current: StreamedToolArgs, chunks: LLMStreamChunk[]): void {
     try {
       const input = JSON.parse(current.args) as Record<string, unknown>;
       if (input && typeof input === "object" && Object.keys(input).length > 0) {
+        current.lastInput = input;
         chunks.push({
           type: "tool_call_delta",
           toolCall: { id: current.id, name: current.name, input },
@@ -282,6 +282,19 @@ export class OpenAIStreamParser {
       // arguments still streaming
     }
   }
+}
+
+/** Parse accumulated tool arguments, falling back to the last good incremental snapshot. */
+export function parseStreamedToolArgs(tool: StreamedToolArgs): Record<string, unknown> {
+  try {
+    const input = JSON.parse(tool.args || "{}") as Record<string, unknown>;
+    if (input && typeof input === "object" && Object.keys(input).length > 0) {
+      return input;
+    }
+  } catch {
+    // final payload may be truncated or malformed
+  }
+  return tool.lastInput ?? {};
 }
 
 /** Parse SSE `data:` lines (OpenAI / doubao / volcengine compatible). Exported for tests. */

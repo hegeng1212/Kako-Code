@@ -47,6 +47,10 @@ describe("parseInputActions", () => {
     expect(parseInputActions("\x1b[B").actions).toEqual([{ type: "historyDown" }]);
   });
 
+  it("parses escape as its own action", () => {
+    expect(parseInputActions("\x1b").actions).toEqual([{ type: "escape" }]);
+  });
+
   it("parses Tab as tab action", () => {
     expect(parseInputActions("\t").actions).toEqual([{ type: "tab" }]);
   });

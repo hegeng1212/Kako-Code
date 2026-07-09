@@ -98,7 +98,7 @@ describe("tool-call-display", () => {
     );
     expect(text).toContain("Approve?");
     expect(text).toContain("Write /Users/hegeng/PRD.md");
-    expect(text).toContain("(y/n)");
+    expect(text).not.toContain("(y/n)");
   });
 
   it("renders plan write as Updated plan", () => {

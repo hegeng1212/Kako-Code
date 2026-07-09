@@ -5,7 +5,7 @@ import { copyWorkflowTemplateToSession, loadWorkflowTemplate, parseMetaFromScrip
 import { executeWorkflowScript } from "./dsl/sandbox.js";
 import { loadWorkflowRuns, saveWorkflowRun, updateWorkflowRun } from "./store.js";
 import type { WorkflowRunRecord } from "./store.js";
-import { appendJournalEntry, type JournalEntry } from "./journal.js";
+import { appendJournalEntry, createHaltJournalEntry, readJournalEntries, resolveCurrentPhaseFromJournal, type JournalEntry } from "./journal.js";
 import { getWorkflowCompleteHandler } from "./completion-registry.js";
 import { AgentResultReplayer, loadAgentResultCache } from "./agent-cache.js";
 import {
@@ -207,6 +207,9 @@ async function runWorkflowBackground(input: {
     const completedAt = new Date().toISOString();
     const scriptError = resultErrorMessage(result);
     if (scriptError) {
+      const entries = await readJournalEntries(input.sessionId, input.runId);
+      const haltPhase = resolveCurrentPhaseFromJournal(entries) ?? "Unknown";
+      await appendJournalEntry(input.sessionId, input.runId, createHaltJournalEntry(haltPhase, scriptError));
       await patchWorkflowRun(input.sessionId, input.runId, {
         status: "error",
         completedAt,

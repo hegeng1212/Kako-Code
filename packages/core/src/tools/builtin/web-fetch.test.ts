@@ -6,6 +6,8 @@ import {
   normalizeWebFetchUrl,
   parseWebFetchInput,
   runWebFetch,
+  runWebFetchMarkdown,
+  WEB_FETCH_WORKFLOW_MAX_MARKDOWN_CHARS,
 } from "../../web/web-fetch.js";
 import { webFetchHandler, webFetchToolDefinition } from "./web-fetch.js";
 import { fetchWithTimeout } from "../../net/fetch-with-timeout.js";
@@ -110,6 +112,32 @@ describe("fetchWebPage", () => {
       expect(second.fromCache).toBe(true);
     }
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runWebFetchMarkdown", () => {
+  afterEach(() => {
+    resetWebFetchCache();
+    vi.unstubAllGlobals();
+    vi.mocked(fetchWithTimeout).mockImplementation((url: string, init?: RequestInit) =>
+      globalThis.fetch(url, init),
+    );
+  });
+
+  it("returns markdown without calling LLM", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("<html><body><p>Raw page text for the workflow agent.</p></body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+      ),
+    );
+
+    const md = await runWebFetchMarkdown("https://example.com/page");
+    expect(md).toContain("Raw page text");
+    expect(md.length).toBeLessThan(WEB_FETCH_WORKFLOW_MAX_MARKDOWN_CHARS + 100);
   });
 });
 

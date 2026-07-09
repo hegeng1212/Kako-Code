@@ -1,6 +1,6 @@
 import type { SkillHubAnalyzeRepoResult } from "@kako/shared";
 import { parseSkillMd } from "./loader.js";
-import { installSkillFromContent } from "./archive.js";
+import { installSkillFromDirectory, skillDirPrefixFromMdPath } from "./archive.js";
 import type { InstalledSkillRecord } from "@kako/shared";
 
 const GITHUB_API = "https://api.github.com";
@@ -10,6 +10,16 @@ export interface ParsedGithubRepo {
   owner: string;
   repo: string;
   branch?: string;
+  /** Path inside the repo from /tree/{branch}/… URLs, e.g. skills/brainstorming */
+  subpath?: string;
+}
+
+interface GitTreeEntry {
+  path: string;
+  mode: string;
+  type: "blob" | "tree" | "commit";
+  sha: string;
+  size?: number;
 }
 
 function githubHeaders(): Record<string, string> {
@@ -28,11 +38,13 @@ export function parseGithubRepoUrl(url: string): ParsedGithubRepo {
   if (!match) {
     throw new Error("Invalid GitHub URL. Example: https://github.com/owner/repo");
   }
-  const branchMatch = trimmed.match(/github\.com\/[^/]+\/[^/]+\/tree\/([^/]+)/i);
+  const treeMatch = trimmed.match(/github\.com\/[^/]+\/[^/]+\/tree\/([^/]+)(?:\/(.*))?/i);
+  const subpathRaw = treeMatch?.[2];
   return {
     owner: match[1]!,
     repo: match[2]!,
-    branch: branchMatch?.[1],
+    branch: treeMatch?.[1],
+    subpath: subpathRaw ? decodeURIComponent(subpathRaw).replace(/\/+$/, "") : undefined,
   };
 }
 
@@ -50,88 +62,120 @@ async function resolveDefaultBranch(owner: string, repo: string): Promise<string
   return info.default_branch;
 }
 
-interface GithubContentEntry {
-  name: string;
-  path: string;
-  type: "file" | "dir" | "symlink" | "submodule";
-  download_url?: string | null;
+async function listRepoBlobsRecursive(
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<GitTreeEntry[]> {
+  const commit = await githubFetch<{ commit: { tree: { sha: string } } }>(
+    `/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+  );
+  const tree = await githubFetch<{ tree: GitTreeEntry[]; truncated?: boolean }>(
+    `/repos/${owner}/${repo}/git/trees/${commit.commit.tree.sha}?recursive=1`,
+  );
+  if (tree.truncated) {
+    throw new Error(
+      "Repository tree too large; try a URL that points at a specific skill directory",
+    );
+  }
+  return tree.tree.filter((entry) => entry.type === "blob");
 }
 
-async function listRepoPath(
+async function fetchRawText(owner: string, repo: string, path: string, ref: string): Promise<string> {
+  const bytes = await fetchRawBytes(owner, repo, path, ref);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+async function fetchRawBytes(
   owner: string,
   repo: string,
   path: string,
   ref: string,
-): Promise<GithubContentEntry[]> {
-  const data = await githubFetch<GithubContentEntry[] | GithubContentEntry>(
-    `/repos/${owner}/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`,
-  );
-  return Array.isArray(data) ? data : [data];
-}
-
-async function fetchRawText(owner: string, repo: string, path: string, ref: string): Promise<string> {
+): Promise<Uint8Array> {
   const url = `${RAW_BASE}/${owner}/${repo}/${ref}/${path}`;
   const res = await fetch(url, { headers: githubHeaders() });
   if (!res.ok) {
     throw new Error(`Failed to fetch ${path} (${res.status})`);
   }
-  return res.text();
+  return new Uint8Array(await res.arrayBuffer());
 }
 
-async function discoverSkillPaths(
-  owner: string,
-  repo: string,
-  ref: string,
-): Promise<string[]> {
-  const roots = ["skills", "."];
-  const skillPaths: string[] = [];
+function isSkillMdPath(path: string): boolean {
+  return path === "SKILL.md" || path.endsWith("/SKILL.md");
+}
 
-  for (const root of roots) {
-    let entries: GithubContentEntry[];
-    try {
-      entries = await listRepoPath(owner, repo, root === "." ? "" : root, ref);
-    } catch {
-      continue;
-    }
+function normalizeRepoPath(path: string): string {
+  return path.replace(/^\.\/?/, "").replace(/\/$/, "");
+}
 
-    if (root === ".") {
-      const hasRootSkill = entries.some((e) => e.name === "SKILL.md" && e.type === "file");
-      if (hasRootSkill) skillPaths.push("SKILL.md");
-      continue;
-    }
+function discoverSkillMdPaths(blobs: GitTreeEntry[], scopeSubpath?: string): string[] {
+  let skillPaths = blobs.map((entry) => entry.path).filter(isSkillMdPath);
 
-    for (const entry of entries) {
-      if (entry.type !== "dir") continue;
-      const skillMdPath = `${entry.path}/SKILL.md`;
-      try {
-        await fetchRawText(owner, repo, skillMdPath, ref);
-        skillPaths.push(skillMdPath);
-      } catch {
-        // not a skill directory
-      }
+  if (scopeSubpath) {
+    const normalized = normalizeRepoPath(scopeSubpath);
+    const direct = normalized ? `${normalized}/SKILL.md` : "SKILL.md";
+    if (skillPaths.includes(direct)) return [direct];
+
+    const scopePrefix = normalized ? `${normalized}/` : "";
+    skillPaths = skillPaths.filter((path) => path.startsWith(scopePrefix));
+    if (skillPaths.length === 0) {
+      throw new Error(`No SKILL.md found under ${normalized || "repository root"}`);
     }
-    if (skillPaths.length > 0) break;
+    return skillPaths;
   }
 
+  const underSkills = skillPaths.filter((path) => path.startsWith("skills/"));
+  if (underSkills.length > 0) return underSkills;
+
+  if (skillPaths.includes("SKILL.md")) return ["SKILL.md"];
+
   return skillPaths;
+}
+
+async function fetchDirectoryContents(
+  owner: string,
+  repo: string,
+  dirPath: string,
+  ref: string,
+  blobs?: GitTreeEntry[],
+): Promise<Record<string, Uint8Array>> {
+  const normalized = normalizeRepoPath(dirPath);
+  const prefix = normalized ? `${normalized}/` : "";
+  const allBlobs = blobs ?? (await listRepoBlobsRecursive(owner, repo, ref));
+
+  const targets = allBlobs.filter((entry) => {
+    if (normalized) return entry.path.startsWith(prefix);
+    return true;
+  });
+
+  const files: Record<string, Uint8Array> = {};
+  await Promise.all(
+    targets.map(async (blob) => {
+      const rel = normalized ? blob.path.slice(prefix.length) : blob.path;
+      if (!rel) return;
+      files[rel] = await fetchRawBytes(owner, repo, blob.path, ref);
+    }),
+  );
+  return files;
 }
 
 export async function analyzeGithubRepoDirect(url: string): Promise<SkillHubAnalyzeRepoResult> {
   const parsed = parseGithubRepoUrl(url);
   const branch = parsed.branch ?? (await resolveDefaultBranch(parsed.owner, parsed.repo));
-  const skillMdPaths = await discoverSkillPaths(parsed.owner, parsed.repo, branch);
+  const blobs = await listRepoBlobsRecursive(parsed.owner, parsed.repo, branch);
+  const skillMdPaths = discoverSkillMdPaths(blobs, parsed.subpath);
 
   if (skillMdPaths.length === 0) {
-    throw new Error("No SKILL.md files found in this repository (checked skills/ and repo root)");
+    throw new Error("No SKILL.md files found in this repository");
   }
 
   const skills = await Promise.all(
     skillMdPaths.map(async (path) => {
       const raw = await fetchRawText(parsed.owner, parsed.repo, path, branch);
       const skill = parseSkillMd(raw, path);
-      const dirPath = path.endsWith("/SKILL.md") ? path.slice(0, -"/SKILL.md".length) : path;
+      const dirPath = skillDirPrefixFromMdPath(path);
       return {
-        path: dirPath,
+        path: dirPath || ".",
         slug: skill.name,
         name: skill.name,
         description: skill.description || dirPath.split("/").pop() || skill.name,
@@ -157,11 +201,12 @@ export async function installSkillsFromGithubDirect(
   const paths =
     selectedPaths.length > 0 ? selectedPaths : info.skills.map((skill) => skill.path);
 
+  const blobs = await listRepoBlobsRecursive(parsed.owner, parsed.repo, branch);
   const installed: InstalledSkillRecord[] = [];
   for (const dirPath of paths) {
-    const skillMdPath = dirPath.endsWith("SKILL.md") ? dirPath : `${dirPath}/SKILL.md`;
-    const raw = await fetchRawText(parsed.owner, parsed.repo, skillMdPath, branch);
-    const record = await installSkillFromContent(raw, "github");
+    const normalized = dirPath === "." ? "" : normalizeRepoPath(dirPath);
+    const files = await fetchDirectoryContents(parsed.owner, parsed.repo, normalized, branch, blobs);
+    const record = await installSkillFromDirectory(files, "github");
     installed.push({
       ...record,
       slug: `${info.repoFullName}/${record.name}`,

@@ -7,6 +7,7 @@ import type {
   ToolCall,
 } from "@kako/shared";
 import { kakoFetch } from "../../net/isolated-fetch.js";
+import { OpenAIStreamParser } from "../openai-compatible.js";
 import type { LLMProviderAdapter } from "../provider.js";
 import { getTextContent } from "../provider.js";
 import { toOpenAIUserContent } from "../content-blocks.js";
@@ -159,7 +160,7 @@ async function* parseOpenAIStream(
 
   const decoder = new TextDecoder();
   let buffer = "";
-  const toolArgs = new Map<number, { id: string; name: string; args: string }>();
+  const parser = new OpenAIStreamParser();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -169,69 +170,14 @@ async function* parseOpenAIStream(
     buffer = lines.pop() ?? "";
 
     for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6).trim();
-      if (!payload || payload === "[DONE]") {
-        if (payload === "[DONE]") {
-          yield { type: "done" };
-        }
-        continue;
-      }
-
-      let event: OpenAIStreamEvent;
-      try {
-        event = JSON.parse(payload) as OpenAIStreamEvent;
-      } catch {
-        continue;
-      }
-
-      const delta = event.choices?.[0]?.delta;
-      if (delta?.content) {
-        yield { type: "text_delta", text: delta.content };
-      }
-
-      if (delta?.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const index = tc.index ?? 0;
-          let current = toolArgs.get(index);
-          if (!current && tc.id) {
-            current = { id: tc.id, name: tc.function?.name ?? "", args: "" };
-            toolArgs.set(index, current);
-            yield {
-              type: "tool_call_delta",
-              toolCall: { id: current.id, name: current.name, input: {} },
-            };
-          }
-          if (current && tc.function?.arguments) {
-            current.args += tc.function.arguments;
-          }
-        }
-      }
-
-      if (event.usage) {
-        yield {
-          type: "done",
-          usage: {
-            inputTokens: event.usage.prompt_tokens,
-            outputTokens: event.usage.completion_tokens,
-            totalTokens: event.usage.total_tokens,
-          },
-        };
+      for (const chunk of parser.processLine(line)) {
+        yield chunk;
       }
     }
   }
 
-  for (const tool of toolArgs.values()) {
-    let input: Record<string, unknown> = {};
-    try {
-      input = JSON.parse(tool.args || "{}") as Record<string, unknown>;
-    } catch {
-      input = {};
-    }
-    yield {
-      type: "tool_call_delta",
-      toolCall: { id: tool.id, name: tool.name, input },
-    };
+  for (const chunk of parser.flush()) {
+    yield chunk;
   }
 }
 

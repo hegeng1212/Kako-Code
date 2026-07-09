@@ -6,8 +6,9 @@ import { createLLMRouter, resolveModel } from "../llm/router.js";
 import { loadProviderRegistry } from "../config/provider-store.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { resolveAllowedToolNames } from "../tools/builtin/index.js";
-import { webFetchToolDefinition, webFetchHandler } from "../tools/builtin/web-fetch.js";
-import { webSearchToolDefinition, webSearchHandler } from "../tools/builtin/web-search.js";
+import { webFetchToolDefinition } from "../tools/builtin/web-fetch.js";
+import { webSearchToolDefinition } from "../tools/builtin/web-search.js";
+import { createWorkflowWebFetchHandler, createWorkflowWebSearchHandler } from "./workflow-tools.js";
 import { createStructuredOutputTool, parseStructuredOutput } from "../tools/builtin/structured-output.js";
 import { ToolLogger } from "../observability/tool-logger.js";
 import { createMessage } from "../memory/store.js";
@@ -71,8 +72,8 @@ export async function runWorkflowAgent(
       agentId: `workflow/${label}`,
       permissionMode: "bypassPermissions",
     });
-    toolRegistry.register(webSearchToolDefinition, webSearchHandler);
-    toolRegistry.register(webFetchToolDefinition, webFetchHandler);
+    toolRegistry.register(webSearchToolDefinition, createWorkflowWebSearchHandler(ctx.sessionId));
+    toolRegistry.register(webFetchToolDefinition, createWorkflowWebFetchHandler());
 
     let structuredToolName: string | undefined;
     if (opts.schema) {
@@ -110,7 +111,7 @@ export async function runWorkflowAgent(
       messages,
       allowedTools,
       model,
-      maxTurns: opts.schema ? 8 : 5,
+      maxTurns: opts.schema ? 5 : 4,
       blockAgentTool: true,
       shouldAbort: () => shouldAbort(),
       callbacks: {

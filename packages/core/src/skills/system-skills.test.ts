@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   SYSTEM_SKILL_REGISTRY,
-  expandAllowedSkillNames,
   isSystemSkill,
   mergeSkillsForAgent,
+  skillNamesForToolAllowlist,
 } from "./system-skills.js";
 
 describe("system skills", () => {
@@ -20,17 +20,38 @@ describe("system skills", () => {
     expect(isSystemSkill("brainstorming")).toBe(false);
   });
 
-  it("expands allowed skill names for the agent", () => {
-    expect(expandAllowedSkillNames(["brainstorming"])).toEqual([
-      "brainstorming",
-      "deep-research",
-      "init",
-    ]);
-    expect(expandAllowedSkillNames(["brainstorming"])).not.toContain("workflows");
+  it("builds tool allowlist from discovered skills", () => {
+    expect(
+      skillNamesForToolAllowlist([
+        {
+          name: "brainstorming",
+          description: "",
+          path: "/brainstorming",
+          skillMdPath: "/brainstorming/SKILL.md",
+          instructions: "",
+        },
+        {
+          name: "guizang-ppt",
+          description: "",
+          path: "/guizang-ppt",
+          skillMdPath: "/guizang-ppt/SKILL.md",
+          instructions: "",
+        },
+      ]),
+    ).toEqual(["brainstorming", "guizang-ppt"]);
   });
 
-  it("merges system skills into the agent skill index", () => {
+  it("merges bundled, user, and system skills into the agent skill index", () => {
     const merged = mergeSkillsForAgent(
+      [
+        {
+          name: "guizang-ppt",
+          description: "Imported PPT skill",
+          path: "/guizang-ppt",
+          skillMdPath: "/guizang-ppt/SKILL.md",
+          instructions: "",
+        },
+      ],
       [
         {
           name: "brainstorming",
@@ -40,7 +61,6 @@ describe("system skills", () => {
           instructions: "",
         },
       ],
-      ["brainstorming"],
       [
         {
           name: "init",
@@ -49,8 +69,23 @@ describe("system skills", () => {
           skillMdPath: "/init/SKILL.md",
           instructions: "",
         },
+        {
+          name: "deep-research",
+          description: "Deep research harness",
+          path: "/deep-research",
+          skillMdPath: "/deep-research/SKILL.md",
+          instructions: "",
+        },
       ],
     );
-    expect(merged.map((skill) => skill.name)).toEqual(["brainstorming", "init"]);
+    expect(merged.map((skill) => skill.name)).toEqual([
+      "brainstorming",
+      "deep-research",
+      "guizang-ppt",
+      "init",
+    ]);
+    expect(merged.find((skill) => skill.name === "deep-research")?.description).toBe(
+      "Deep research harness",
+    );
   });
 });

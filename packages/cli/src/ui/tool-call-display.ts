@@ -1,4 +1,5 @@
 import { ansi } from "./ansi.js";
+import { formatDurationSeconds } from "./format-duration.js";
 import { renderPlanPreviewTreeLine } from "./plan-box.js";
 import { wrapContentLines } from "./text-wrap.js";
 import {
@@ -53,7 +54,7 @@ export function renderToolCallStatusLine(entry: ToolCallTimelineEntry): string {
 
   if (entry.status === "waiting") {
     if (entry.awaitingApproval) {
-      return `${ansi.yellow}Approve?${ansi.reset} ${ansi.muted}${label}${ansi.reset} ${ansi.muted}(y/n)${ansi.reset}`;
+      return `${ansi.yellow}Approve?${ansi.reset} ${ansi.muted}${label}${ansi.reset}`;
     }
     const dots = WAITING_DOTS[entry.dotFrame % WAITING_DOTS.length]!;
     const phrase = toolCallWaitingPhrase(entry.name, entry.detail);
@@ -71,7 +72,7 @@ export function renderToolCallStatusLine(entry: ToolCallTimelineEntry): string {
     entry.errorDetail && !entry.errorExpanded
       ? ` ${ansi.muted}(click to expand)${ansi.reset}`
       : "";
-  return `${renderPhraseLine(toolCallFailurePhrase(entry.name, entry.detail), "red")}${hint}`;
+  return `${renderPhraseLine(toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail), "red")}${hint}`;
 }
 
 export function isPlanFileTool(entry: Pick<ToolCallTimelineEntry, "name" | "detail">): boolean {
@@ -96,7 +97,7 @@ export function renderWorkflowToolLines(entry: ToolCallTimelineEntry): string[] 
     : entry.detail.trim() || "workflow";
   const header = `${ansi.green}⏺${ansi.reset} ${ansi.text}Workflow(dynamic workflow: ${wfName})${ansi.reset}`;
   if (entry.status === "error") {
-    const detail = entry.errorDetail?.trim() || toolCallFailurePhrase(entry.name, entry.detail);
+    const detail = entry.errorDetail?.trim() || toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail);
     return [header, `${ansi.red}   ✘ ${detail}${ansi.reset}`];
   }
   if (entry.status === "waiting" || entry.status === "success") {
@@ -113,7 +114,7 @@ export function renderActivitySummaryLine(
 ): string {
   const parts: string[] = [];
   if (thoughtSeconds && thoughtSeconds > 0) {
-    parts.push(`Thought for ${thoughtSeconds}s`);
+    parts.push(`Thought for ${formatDurationSeconds(thoughtSeconds)}`);
   }
   parts.push(...stats);
   const summary = parts.length ? parts.join(", ") : "Finished tool calls";

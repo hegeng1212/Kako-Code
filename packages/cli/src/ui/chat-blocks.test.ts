@@ -42,10 +42,16 @@ describe("chat-blocks", () => {
     expect(lines[2]).toBe("");
   });
 
-  it("renders smooshing line with time and tokens", () => {
-    const turn = baseTurn({ outputTokens: 42, phase: "thinking" });
+  it("renders smooshing line with hms duration", () => {
+    const turn = baseTurn({
+      outputTokens: 169,
+      phase: "answering",
+      generatingVerb: "Cogitating",
+      thinkingStartedAt: Date.now() - 437_000,
+    });
     const line = stripAnsi(renderSmooshingLine(turn));
-    expect(line).toContain("* Working…");
+    expect(line).toContain("* Cogitating…");
+    expect(line).toContain("7m 17s");
     expect(line).toContain("tokens");
   });
 

@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { unzipSync } from "fflate";
 import type { InstalledSkillRecord, SkillSource } from "@kako/shared";
 import { getSkillsDir } from "../config/paths.js";
@@ -7,17 +7,59 @@ import { parseSkillMd } from "./loader.js";
 import { skillInstallDirForName } from "./install-path.js";
 import { upsertInstalledSkill } from "./manifest.js";
 
-export async function installSkillFromContent(
-  skillMdRaw: string,
+function decodeEntry(data: Uint8Array): string {
+  return new TextDecoder("utf-8").decode(data);
+}
+
+/** Directory prefix for a SKILL.md path inside an archive or repo tree. */
+export function skillDirPrefixFromMdPath(skillMdPath: string): string {
+  if (skillMdPath === "SKILL.md") return "";
+  return skillMdPath.slice(0, -"/SKILL.md".length);
+}
+
+/** Collect all files under the skill directory from a flat path → bytes map. */
+export function collectSkillDirEntries(
+  allEntries: Record<string, Uint8Array>,
+  skillDirPrefix: string,
+): Record<string, Uint8Array> {
+  const normalized = skillDirPrefix.replace(/^\.\/?/, "").replace(/\/$/, "");
+  const prefix = normalized ? `${normalized}/` : "";
+  const result: Record<string, Uint8Array> = {};
+  for (const [path, data] of Object.entries(allEntries)) {
+    if (path.startsWith("__MACOSX/") || path.includes("/__MACOSX/")) continue;
+    if (normalized) {
+      if (!path.startsWith(prefix)) continue;
+      const rel = path.slice(prefix.length);
+      if (!rel) continue;
+      result[rel] = data;
+      continue;
+    }
+    result[path] = data;
+  }
+  return result;
+}
+
+export async function installSkillFromDirectory(
+  files: Record<string, Uint8Array>,
   source: SkillSource = "local",
 ): Promise<InstalledSkillRecord> {
+  const skillMdRaw = files["SKILL.md"];
+  if (!skillMdRaw) {
+    throw new Error("SKILL.md not found in skill directory");
+  }
   const previewPath = join(getSkillsDir(), "_preview", "SKILL.md");
-  const parsed = parseSkillMd(skillMdRaw, previewPath);
+  const parsed = parseSkillMd(decodeEntry(skillMdRaw), previewPath);
   const installDir = skillInstallDirForName(parsed.name);
+  await rm(installDir, { recursive: true, force: true }).catch(() => {});
   await mkdir(installDir, { recursive: true });
-  const skillMdPath = join(installDir, "SKILL.md");
-  await writeFile(skillMdPath, skillMdRaw, "utf-8");
 
+  for (const [relPath, data] of Object.entries(files)) {
+    const dest = join(installDir, relPath);
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, data);
+  }
+
+  const skillMdPath = join(installDir, "SKILL.md");
   const record: InstalledSkillRecord = {
     name: parsed.name,
     description: parsed.description,
@@ -31,8 +73,14 @@ export async function installSkillFromContent(
   return record;
 }
 
-function decodeEntry(data: Uint8Array): string {
-  return new TextDecoder("utf-8").decode(data);
+export async function installSkillFromContent(
+  skillMdRaw: string,
+  source: SkillSource = "local",
+): Promise<InstalledSkillRecord> {
+  return installSkillFromDirectory(
+    { "SKILL.md": new TextEncoder().encode(skillMdRaw) },
+    source,
+  );
 }
 
 function findSkillMdPaths(entries: Record<string, Uint8Array>): string[] {
@@ -59,8 +107,9 @@ export async function installSkillsFromArchive(data: Buffer): Promise<InstalledS
 
   const installed: InstalledSkillRecord[] = [];
   for (const entryPath of skillPaths) {
-    const raw = decodeEntry(entries[entryPath]!);
-    installed.push(await installSkillFromContent(raw, "archive"));
+    const dirPrefix = skillDirPrefixFromMdPath(entryPath);
+    const files = collectSkillDirEntries(entries, dirPrefix);
+    installed.push(await installSkillFromDirectory(files, "archive"));
   }
   return installed;
 }

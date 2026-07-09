@@ -166,7 +166,7 @@ async function* parseAnthropicStream(
 
   const decoder = new TextDecoder();
   let buffer = "";
-  const toolInputs = new Map<string, { id: string; name: string; json: string }>();
+  const toolInputs = new Map<string, { id: string; name: string; json: string; lastInput?: Record<string, unknown> }>();
 
   while (true) {
     const { done, value } = await reader.read();
@@ -196,6 +196,14 @@ async function* parseAnthropicStream(
           const current = toolInputs.get(event.index.toString());
           if (current) {
             current.json += delta.partial_json;
+            try {
+              const input = JSON.parse(current.json) as Record<string, unknown>;
+              if (input && typeof input === "object" && Object.keys(input).length > 0) {
+                current.lastInput = input;
+              }
+            } catch {
+              // still streaming
+            }
           }
         }
       }
@@ -231,8 +239,11 @@ async function* parseAnthropicStream(
           let input: Record<string, unknown> = {};
           try {
             input = JSON.parse(tool.json || "{}") as Record<string, unknown>;
+            if (!input || typeof input !== "object" || Object.keys(input).length === 0) {
+              input = tool.lastInput ?? {};
+            }
           } catch {
-            input = {};
+            input = tool.lastInput ?? {};
           }
           yield {
             type: "tool_call_delta",

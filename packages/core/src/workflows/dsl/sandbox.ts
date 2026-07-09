@@ -194,6 +194,11 @@ export async function executeWorkflowScript(input: {
     await appendJournalEntry(ctx.sessionId, ctx.runId, { type: "phase", title: qualified });
   };
 
+  const planPhase = async (title: string, total: number) => {
+    const qualified = qualifyPhaseTitle(ctx, title);
+    await appendJournalEntry(ctx.sessionId, ctx.runId, { type: "phase_plan", title: qualified, total });
+  };
+
   const log = (message: string) => {
     ctx.onLog?.(message);
     void appendJournalEntry(ctx.sessionId, ctx.runId, { type: "log", message });
@@ -252,6 +257,7 @@ const Math = new Proxy(__RealMath, {
     "args",
     "agent",
     "phase",
+    "planPhase",
     "log",
     "parallel",
     "pipeline",
@@ -265,6 +271,7 @@ const Math = new Proxy(__RealMath, {
       input.args,
       agent,
       phase,
+      planPhase,
       log,
       parallel,
       pipeline,

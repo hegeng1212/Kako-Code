@@ -302,7 +302,7 @@ How to invoke:
 - Some skills are scoped to a directory: their name is prefixed with the directory (e.g. \`apps/web:deploy\`) and their description says which directory they apply to. When a skill name has both a scoped and an unscoped variant, pick by the files you are working on: if the files are under a variant's directory, invoke that variant (most specific directory wins); otherwise invoke the unscoped one.
 
 Important:
-- Available skills are listed in system-reminder messages in the conversation
+- Available skills are listed in a <system-reminder> block in the system prompt (catalog titled "The following skills are available for use with the Skill tool")
 - Only invoke a skill that appears in that list, or one the user explicitly typed as \`/<name>\` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool
 - When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
 - NEVER mention a skill without actually calling this tool

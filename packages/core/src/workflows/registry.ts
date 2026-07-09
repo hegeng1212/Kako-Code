@@ -12,7 +12,7 @@ export interface WorkflowMeta {
   name: string;
   description: string;
   whenToUse?: string;
-  phases?: Array<{ title: string; detail?: string }>;
+  phases?: Array<{ title: string; detail?: string; agents?: number }>;
 }
 
 export interface WorkflowTemplate {

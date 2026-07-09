@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenAIStreamLines } from "./openai-compatible.js";
+import { parseOpenAIStreamLines, parseStreamedToolArgs } from "./openai-compatible.js";
 
 /** Minimal doubao/volcengine SSE chunks — id+name first, arguments streamed by index. */
 const DOUBAO_ASK_USER_LINES = [
@@ -42,8 +42,26 @@ describe("streamCompletion tool input merge", () => {
       questions: [{ header: "H", question: "Q?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
     };
     if (Object.keys(incoming).length > 0) {
-      existing.input = incoming;
+      existing.input = { ...existing.input, ...incoming };
     }
     expect(existing.input.questions).toHaveLength(1);
+  });
+});
+
+describe("parseStreamedToolArgs", () => {
+  it("falls back to last incremental snapshot when final JSON is truncated", () => {
+    const input = parseStreamedToolArgs({
+      id: "call_w",
+      name: "Write",
+      args: '{"file_path":"/tmp/report.html","content":"<html',
+      lastInput: {
+        file_path: "/tmp/report.html",
+        content: "<html>",
+      },
+    });
+    expect(input).toEqual({
+      file_path: "/tmp/report.html",
+      content: "<html>",
+    });
   });
 });

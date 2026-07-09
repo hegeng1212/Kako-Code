@@ -29,7 +29,7 @@ export const SYSTEM_SKILL_REGISTRY: SystemSkillEntry[] = [
     tag: "dynamic workflow",
     handler: "dynamic-workflow",
     description:
-      "Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report.",
+      "Deep research harness — fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report. - When the user wants a deep, multi-source, fact-checked research report on any topic. BEFORE invoking, check if the question is specific enough to research directly — if underspecified (e.g., \"what car to buy\" without budget/use-case/region), ask 2-3 clarifying questions to narrow scope. Then pass the refined question as args, weaving the answers in.",
   },
   {
     name: "init",
@@ -52,15 +52,8 @@ export function getSystemSkillHandler(name: string): SystemSkillHandler | undefi
   return getSystemSkillEntry(name)?.handler;
 }
 
-export function expandAllowedSkillNames(agentSkills: string[] | undefined): string[] | undefined {
-  if (!agentSkills?.length) return agentSkills;
-  const names = new Set(agentSkills);
-  for (const entry of SYSTEM_SKILL_REGISTRY) {
-    if (!entry.slashOnly) {
-      names.add(entry.name);
-    }
-  }
-  return [...names];
+export function skillNamesForToolAllowlist(skills: SkillDefinition[]): string[] {
+  return skills.map((skill) => skill.name);
 }
 
 export async function loadSystemSkills(): Promise<SkillDefinition[]> {
@@ -76,7 +69,7 @@ export async function loadSystemSkills(): Promise<SkillDefinition[]> {
       const parsed = parseSkillMd(content, skillFile);
       skills.push({
         ...parsed,
-        description: entry.description || parsed.description,
+        description: parsed.description || entry.description,
       });
     } catch {
       // Bundled file missing in this install — skip.
@@ -87,18 +80,28 @@ export async function loadSystemSkills(): Promise<SkillDefinition[]> {
 
 export function mergeSkillsForAgent(
   discovered: SkillDefinition[],
-  agentSkills: string[] | undefined,
+  bundledSkills: SkillDefinition[],
   systemSkills: SkillDefinition[],
 ): SkillDefinition[] {
-  const allowed = agentSkills?.length ? new Set(agentSkills) : null;
   const byName = new Map<string, SkillDefinition>();
 
-  for (const skill of discovered) {
-    if (allowed && !allowed.has(skill.name)) continue;
+  for (const skill of bundledSkills) {
     byName.set(skill.name, skill);
   }
+  for (const skill of discovered) {
+    const existing = byName.get(skill.name);
+    byName.set(skill.name, existing ? { ...existing, ...skill } : skill);
+  }
   for (const skill of systemSkills) {
-    if (!byName.has(skill.name)) {
+    const existing = byName.get(skill.name);
+    if (existing) {
+      byName.set(skill.name, {
+        ...existing,
+        description: existing.description || skill.description,
+        skillMdPath: existing.skillMdPath || skill.skillMdPath,
+        path: existing.path || skill.path,
+      });
+    } else {
       byName.set(skill.name, skill);
     }
   }

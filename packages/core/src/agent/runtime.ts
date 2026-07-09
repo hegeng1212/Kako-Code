@@ -8,6 +8,7 @@ import type {
   PermissionMode,
   Session,
   SessionId,
+  SkillDefinition,
   ToolCall,
   ToolConfirmResult,
   UserTurnInput,
@@ -43,7 +44,7 @@ import {
   loadSkill,
   toSkillIndex,
 } from "../skills/loader.js";
-import { expandAllowedSkillNames } from "../skills/system-skills.js";
+import { skillNamesForToolAllowlist } from "../skills/system-skills.js";
 import {
   buildSkillActivatedMessages,
   formatActiveSkillReminder,
@@ -91,6 +92,13 @@ export interface TurnResult {
 }
 
 const DEFAULT_TITLE = "New chat";
+
+function buildUserTurnMetadata(turn: UserTurnInput): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = {};
+  if (turn.llmText) metadata.llmText = turn.llmText;
+  if (turn.cliInput) metadata.cliInput = true;
+  return Object.keys(metadata).length ? metadata : undefined;
+}
 
 export class AgentRuntime {
   private registry: ProviderRegistry;
@@ -179,7 +187,7 @@ export class AgentRuntime {
     await memory.append(
       createMessage("user", turn.text, {
         attachments: turn.attachments,
-        metadata: turn.llmText ? { llmText: turn.llmText } : undefined,
+        metadata: buildUserTurnMetadata(turn),
       }),
     );
 
@@ -207,10 +215,7 @@ export class AgentRuntime {
       transcript.length > 0
         ? await sessionManager.loadSessionSummary(session.id)
         : undefined;
-    const discoveredSkills = await discoverSkillsForAgent(
-      session.cwd,
-      definition.skills,
-    );
+    const discoveredSkills = await discoverSkillsForAgent(session.cwd);
     const skillIndex = await toSkillIndex(discoveredSkills);
 
     const subagentDefinitions = await loadSubagentDefinitions(
@@ -218,7 +223,12 @@ export class AgentRuntime {
       session.cwd,
     );
 
-    const toolRegistry = await this.createToolRegistry(session, definition, options);
+    const toolRegistry = await this.createToolRegistry(
+      session,
+      definition,
+      options,
+      discoveredSkills,
+    );
     // Top-level agent: expose every registered tool (built-ins, MCP, Agent, etc.) on each LLM call.
     const allowedTools = resolveAllToolNames(toolRegistry);
 
@@ -318,6 +328,7 @@ export class AgentRuntime {
     session: Session,
     definition: AgentDefinition,
     options?: RunTurnOptions,
+    agentSkills: SkillDefinition[] = [],
   ): Promise<ToolRegistry> {
     const agentId = `agent-${definition.name}`;
     const registry = new ToolRegistry({
@@ -327,7 +338,7 @@ export class AgentRuntime {
       permissionMode: this.sessionPermissionMode ?? definition.permissionMode,
       confirm: this.callbacks.confirm,
       askUserQuestion: this.askUserQuestion,
-      allowedSkills: expandAllowedSkillNames(definition.skills),
+      allowedSkills: skillNamesForToolAllowlist(agentSkills),
       planFilePath: this.sessionPlanFilePath,
       initialActivatedSkills: options?.preactivatedSkill
         ? [options.preactivatedSkill.name]
@@ -474,10 +485,7 @@ export class AgentRuntime {
     const workspaceKako = await loadWorkspaceKakoMd(session.cwd);
     const globalContext = await loadGlobalUserContext();
     const environment = await resolveEnvironmentInfo(session.cwd, model);
-    const subSkills = await discoverSkillsForAgent(
-      session.cwd,
-      subDefinition.skills,
-    );
+    const subSkills = await discoverSkillsForAgent(session.cwd);
     const messages = await buildMessages({
       definition: subDefinition,
       transcript: [createMessage("user", agentInput.prompt)],
@@ -494,7 +502,7 @@ export class AgentRuntime {
       permissionMode: subDefinition.permissionMode,
       confirm: this.callbacks.confirm,
       askUserQuestion: this.askUserQuestion,
-      allowedSkills: expandAllowedSkillNames(subDefinition.skills),
+      allowedSkills: skillNamesForToolAllowlist(subSkills),
     });
     registerBuiltinTools(subRegistry);
     await mcpManager.registerTo((def, handler) => subRegistry.register(def, handler));

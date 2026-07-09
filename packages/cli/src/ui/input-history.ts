@@ -30,6 +30,12 @@ export class InputHistory {
     }
   }
 
+  /** Replace history from session transcript (no entry cap). */
+  loadEntries(entries: string[]): void {
+    this.entries = [...entries];
+    this.resetBrowse();
+  }
+
   browseUp(current: string): string | null {
     if (this.entries.length === 0) return null;
     if (this.browseIndex === -1) {

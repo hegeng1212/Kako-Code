@@ -1,5 +1,6 @@
 import type { LLMMessage, LLMTokenUsage, ToolCall } from "@kako/shared";
 import type { LLMRouter } from "@kako/shared";
+import { mergeToolCallInput } from "./merge-tool-input.js";
 import { getTextContent } from "../llm/content-blocks.js";
 import { toolOutputToLlmContent } from "../media/read-media.js";
 import { createMessage, type FileMemoryStore } from "../memory/store.js";
@@ -100,7 +101,7 @@ export async function streamCompletion(
         if (chunk.toolCall.name) existing.name = chunk.toolCall.name;
         const incoming = chunk.toolCall.input;
         if (incoming && typeof incoming === "object" && Object.keys(incoming).length > 0) {
-          existing.input = incoming;
+          existing.input = mergeToolCallInput(existing.input, incoming);
         }
         toolCalls.set(chunk.toolCall.id, existing);
       }

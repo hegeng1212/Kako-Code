@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateWorkflowJournal,
+  isPhaseFatal,
+  isPhaseSuccessful,
   readJournalEntries,
   resolveCurrentPhaseFromJournal,
   summarizeAgentOutput,
 } from "./journal.js";
 
 const META_PHASES = [
-  { title: "Scope", detail: "Decompose question" },
-  { title: "Search", detail: "Parallel web search" },
-  { title: "Fetch", detail: "Fetch sources" },
-  { title: "Verify", detail: "Adversarial verify" },
-  { title: "Synthesize", detail: "Write report" },
+  { title: "Scope", detail: "Decompose question", agents: 1 },
+  { title: "Search", detail: "Parallel web search", agents: 5 },
+  { title: "Fetch", detail: "Fetch sources", agents: 20 },
+  { title: "Verify", detail: "Adversarial verify", agents: 75 },
+  { title: "Synthesize", detail: "Write report", agents: 1 },
 ];
 
 describe("aggregateWorkflowJournal", () => {
@@ -25,6 +27,10 @@ describe("aggregateWorkflowJournal", () => {
       "Synthesize",
     ]);
     expect(phases.every((p) => !p.entered && p.agents.length === 0)).toBe(true);
+    expect(phases[0]?.total).toBe(1);
+    expect(phases[0]?.done).toBe(0);
+    expect(phases[1]?.total).toBe(5);
+    expect(phases[2]?.total).toBe(20);
     expect(phases[0]?.detail).toBe("Decompose question");
     expect(phases[0]?.logs).toEqual([]);
   });
@@ -176,6 +182,75 @@ describe("aggregateWorkflowJournal", () => {
     expect(fetch?.agents).toHaveLength(2);
     expect(fetch?.agents.every((a) => a.status === "success")).toBe(true);
     expect(fetch?.done).toBe(2);
+    expect(fetch?.total).toBe(20);
+  });
+
+  it("updates planned total via phase_plan journal entry", () => {
+    const phases = aggregateWorkflowJournal(
+      [{ type: "phase_plan", title: "Verify", total: 12, at: "t0" }],
+      META_PHASES,
+    );
+    const verify = phases.find((p) => p.title === "Verify");
+    expect(verify?.total).toBe(12);
+    expect(verify?.plannedTotal).toBe(12);
+  });
+
+  it("marks phase fatal on halt and derives success when a later phase entered", () => {
+    const phases = aggregateWorkflowJournal(
+      [
+        { type: "phase", title: "Scope", at: "t0" },
+        { type: "agent_start", label: "scope", phase: "Scope", at: "t1" },
+        { type: "result", label: "scope", phase: "Scope", status: "success", at: "t2" },
+        { type: "phase", title: "Search", at: "t3" },
+        {
+          type: "agent_start",
+          label: "search:a",
+          phase: "Search",
+          agentId: "a1",
+          at: "t4",
+        },
+        {
+          type: "result",
+          label: "search:a",
+          phase: "Search",
+          agentId: "a1",
+          status: "error",
+          at: "t5",
+        },
+        {
+          type: "agent_start",
+          label: "search:b",
+          phase: "Search",
+          agentId: "a2",
+          at: "t6",
+        },
+        {
+          type: "result",
+          label: "search:b",
+          phase: "Search",
+          agentId: "a2",
+          status: "success",
+          at: "t7",
+        },
+        { type: "phase", title: "Fetch", at: "t8" },
+      ],
+      META_PHASES,
+    );
+    const search = phases.find((p) => p.title === "Search")!;
+    expect(isPhaseFatal(search, 1, phases)).toBe(false);
+    expect(isPhaseSuccessful(search, 1, phases)).toBe(true);
+
+    const halted = aggregateWorkflowJournal(
+      [
+        { type: "phase", title: "Fetch", at: "t0" },
+        { type: "halt", phase: "Fetch", reason: "No claims", at: "t1" },
+      ],
+      META_PHASES,
+    );
+    const fetch = halted.find((p) => p.title === "Fetch")!;
+    expect(fetch.fatal).toBe(true);
+    expect(isPhaseFatal(fetch, 2, halted)).toBe(true);
+    expect(isPhaseSuccessful(fetch, 2, halted)).toBe(false);
   });
 });
 

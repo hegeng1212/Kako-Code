@@ -14,6 +14,8 @@ import {
   stopWorkflowByRunId,
   storeClipboardImage,
   storeUserAttachment,
+  FileMemoryStore,
+  sessionInputHistory,
   type SystemSkillEntry,
   type WorkflowMeta,
   type WorkflowRunRecord,
@@ -98,6 +100,18 @@ import {
   type WorkflowConfirmViewState,
 } from "./workflow-confirm.js";
 import {
+  buildToolApprovalContent,
+  padToolApprovalLines,
+  renderToolApprovalContentLines,
+  renderToolApprovalPanelLines,
+  TOOL_APPROVAL_HINT,
+  toolApprovalDecisionFromRow,
+  toolApprovalPanelRowCount,
+  toolConfirmResultFromDecision,
+  type ToolApprovalContent,
+} from "./tool-approval.js";
+import {
+  createInitialWorkflowsPanelState,
   renderWorkflowsFullScreen,
   sortWorkflowRuns,
   type WorkflowsPanelState,
@@ -110,7 +124,7 @@ import {
   type WelcomeScreenOptions,
 } from "./welcome.js";
 import { ansi, displayWidth, visibleLength } from "./ansi.js";
-import type { PermissionMode } from "@kako/shared";
+import type { PermissionMode, ToolCall, ToolConfirmResult } from "@kako/shared";
 
 const H = "─";
 
@@ -134,6 +148,8 @@ const DISABLE_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1006l\x1b[?1000l";
 const CTRL_C_EXIT_MS = 2000;
 const EXIT_HINT_MS = 1000;
 const EXIT_HINT = "Press Ctrl+C again to exit";
+const HISTORY_CLEAR_HINT_MS = 2000;
+const HISTORY_CLEAR_HINT = "Esc again to clear";
 
 /** Blank line padding at top/bottom of the scrollable chat area. */
 const CHAT_EDGE_LINE: RenderLine = { text: "" };
@@ -206,7 +222,8 @@ type InputAction =
   | { type: "scroll"; delta: number }
   | { type: "click"; row: number; col: number }
   | { type: "focusIn" }
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  | { type: "escape" };
 
 function prevCodePointIndex(text: string, index: number): number {
   if (index <= 0) return 0;
@@ -351,6 +368,12 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
         continue;
       }
 
+      if (rest.length === 1 || (rest.length > 1 && rest[1] !== "[")) {
+        actions.push({ type: "escape" });
+        i += 1;
+        continue;
+      }
+
       i++;
       continue;
     }
@@ -421,6 +444,7 @@ export class ChatLayout {
   }
   private shortcutsOverride: string | null = null;
   private exitHintTimer: ReturnType<typeof setTimeout> | null = null;
+  private historyClearHintTimer: ReturnType<typeof setTimeout> | null = null;
   private resizeListener: (() => void) | null = null;
   private resumeListener: (() => void) | null = null;
   private redrawDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -488,14 +512,7 @@ export class ChatLayout {
   private workflowPollSessionId = "";
 
   private readingWorkflowsPanel = false;
-  private workflowsPanelState: WorkflowsPanelState = {
-    view: "list",
-    runs: [],
-    selectedIndex: 0,
-    selectedPhaseIndex: 0,
-    selectedAgentIndex: 0,
-    phases: [],
-  };
+  private workflowsPanelState: WorkflowsPanelState = createInitialWorkflowsPanelState();
   private workflowsPanelSessionId = "";
   private workflowsPanelResolve: (() => void) | null = null;
 
@@ -510,6 +527,12 @@ export class ChatLayout {
     selectedIndex: 0,
   };
   private workflowConfirmResolve: ((decision: WorkflowConfirmDecision) => void) | null = null;
+
+  private toolApprovalMode = false;
+  private toolApprovalContent: ToolApprovalContent | null = null;
+  private toolApprovalSelected = 0;
+  private toolApprovalResolve: ((result: ToolConfirmResult) => void) | null = null;
+  private pendingToolApprovalCall: ToolCall | null = null;
 
   private inputHistory = new InputHistory();
   private permissionMode: PermissionMode = "default";
@@ -611,6 +634,12 @@ export class ChatLayout {
     this.pendingImages = [];
   }
 
+  async syncInputHistoryFromSession(sessionId: string): Promise<void> {
+    const memory = new FileMemoryStore(sessionId);
+    const transcript = await memory.loadTranscript();
+    this.inputHistory.loadEntries(sessionInputHistory(transcript));
+  }
+
   setSlashInvokableSkills(skills: SystemSkillEntry[]): void {
     this.slashInvokableSkills = skills;
   }
@@ -691,12 +720,7 @@ export class ChatLayout {
     const runs = sortWorkflowRuns(await loadWorkflowRuns(sessionId));
     this.workflowsPanelSessionId = sessionId;
     this.workflowsPanelState = {
-      view: "list",
-      runs,
-      selectedIndex: 0,
-      selectedPhaseIndex: 0,
-      selectedAgentIndex: 0,
-      phases: [],
+      ...createInitialWorkflowsPanelState(runs),
     };
     this.readingWorkflowsPanel = true;
     this.invalidateContentCache();
@@ -822,6 +846,10 @@ export class ChatLayout {
 
   private onInput(chunk: string): void {
     if (!this.active) return;
+    if (this.toolApprovalMode) {
+      void this.handleToolApprovalInput(chunk);
+      return;
+    }
     if (this.workflowConfirmMode) {
       void this.handleWorkflowConfirmInput(chunk);
       return;
@@ -1349,6 +1377,12 @@ export class ChatLayout {
       reject?.(new ExitRequestedError());
       return;
     }
+    if (action.type === "escape") {
+      if (this.inputHistory.isBrowsing()) {
+        this.handleHistoryBrowseEscape(plain, placeholder);
+      }
+      return;
+    }
     if (action.type === "enter") {
       const value = slashOpen
         ? resolveSlashSubmitValue(
@@ -1388,12 +1422,14 @@ export class ChatLayout {
       return;
     }
     if (action.type === "historyUp") {
+      this.clearHistoryClearHint();
       const next = this.inputHistory.browseUp(this.inputBuffer);
       if (next !== null) {
         this.inputBuffer = next;
         this.inputCursor = next.length;
       }
     } else if (action.type === "historyDown") {
+      this.clearHistoryClearHint();
       const next = this.inputHistory.browseDown();
       if (next !== null) {
         this.inputBuffer = next;
@@ -1403,6 +1439,10 @@ export class ChatLayout {
       this.cyclePermissionMode();
       return;
     } else if (action.type === "backspace") {
+      this.clearHistoryClearHint();
+      if (this.inputHistory.isBrowsing()) {
+        this.inputHistory.resetBrowse();
+      }
       if (this.inputCursor > 0) {
         const prev = prevCodePointIndex(this.inputBuffer, this.inputCursor);
         this.inputBuffer =
@@ -1427,6 +1467,7 @@ export class ChatLayout {
     } else if (action.type === "char") {
       this.lastCtrlCAt = 0;
       this.clearExitHint();
+      this.clearHistoryClearHint();
       if (this.inputHistory.isBrowsing()) {
         this.inputHistory.resetBrowse();
       }
@@ -1455,6 +1496,7 @@ export class ChatLayout {
     if (!this.readingLine || this.readingChoice || this.wizardMode || this.readingWorkflowsPanel) {
       return [];
     }
+    if (this.inputHistory.isBrowsing()) return [];
     if (!shouldShowSlashMenu(this.inputBuffer, this.inputCursor)) return [];
     const query = slashSuggestQuery(this.inputBuffer, this.inputCursor);
     if (query === null) return [];
@@ -1574,6 +1616,12 @@ export class ChatLayout {
   }
 
   private insertAtCursor(text: string): void {
+    if (this.readingLine) {
+      this.clearHistoryClearHint();
+      if (this.inputHistory.isBrowsing()) {
+        this.inputHistory.resetBrowse();
+      }
+    }
     this.inputBuffer =
       this.inputBuffer.slice(0, this.inputCursor) + text + this.inputBuffer.slice(this.inputCursor);
     this.inputCursor += text.length;
@@ -1583,6 +1631,7 @@ export class ChatLayout {
   }
 
   private finishReadLine(): void {
+    this.clearHistoryClearHint();
     this.inputResolve = null;
     this.inputReject = null;
     this.readingLine = false;
@@ -1604,6 +1653,9 @@ export class ChatLayout {
   }
 
   private allRenderLines(): RenderLine[] {
+    if (this.toolApprovalMode) {
+      return this.buildToolApprovalContentLines();
+    }
     if (this.planReviewMode) {
       return this.buildPlanReviewContentLines();
     }
@@ -1630,7 +1682,7 @@ export class ChatLayout {
 
   /** Pinned rows at the bottom of the content area (above input). */
   private pinnedBottomLines(): string[] {
-    if (this.planReviewMode || this.workflowConfirmMode) return [];
+    if (this.planReviewMode || this.workflowConfirmMode || this.toolApprovalMode) return [];
     const lines: string[] = [];
     if (this.workflowWaitingCount > 0) {
       lines.push(renderWorkflowWaitingLine(this.workflowWaitingCount));
@@ -1663,6 +1715,11 @@ export class ChatLayout {
     this.scrollOffset = next;
     this.followBottom = this.isAtBottom();
     this.invalidateContentCache();
+  }
+
+  /** Re-pin transcript to latest output after closing an approval overlay. */
+  private restoreChatScrollAfterOverlay(): void {
+    this.scrollToBottom();
   }
 
   private invalidateContentCache(): void {
@@ -1794,6 +1851,7 @@ export class ChatLayout {
     entry.status = status === "success" ? "success" : "error";
     if (errorDetail) entry.errorDetail = errorDetail;
     if (output) entry.output = output;
+    this.maybeScrollToBottom();
     this.invalidateContentCache();
     this.redrawContent();
   }
@@ -2132,6 +2190,7 @@ export class ChatLayout {
     if (this.readingConfirm) return;
     if (this.planReviewMode) return;
     if (this.workflowConfirmMode) return;
+    if (this.toolApprovalMode) return;
     this.activeTurn.pulseFrame = (this.activeTurn.pulseFrame + 1) % 4;
     const elapsed = (Date.now() - this.activeTurn.thinkingStartedAt) / 1000;
     if (elapsed >= 3 && !this.tipText) {
@@ -2154,6 +2213,7 @@ export class ChatLayout {
     if (this.readingConfirm) return;
     if (this.planReviewMode) return;
     if (this.workflowConfirmMode) return;
+    if (this.toolApprovalMode) return;
     if (this.activeTurn && this.activeTurn.phase !== "done") {
       this.shortcutsOverride = renderGeneratingStatus(this.activeTurn);
     } else if (!this.exitHintTimer) {
@@ -2174,6 +2234,9 @@ export class ChatLayout {
     }
     this.lastEffectiveHeaderMode = mode;
     this.invalidateContentCache();
+    if (this.toolApprovalMode) {
+      this.syncToolApprovalFooterHeight();
+    }
     if (this.followBottom) {
       this.scrollToBottom();
     } else {
@@ -2204,7 +2267,9 @@ export class ChatLayout {
 
     out += this.renderContentBuffer(cols);
     process.stdout.write(out);
-    if (this.workflowConfirmMode) {
+    if (this.toolApprovalMode) {
+      this.drawToolApprovalFooter();
+    } else if (this.workflowConfirmMode) {
       this.drawWorkflowConfirmFooter();
     } else if (this.planReviewMode) {
       this.drawPlanReviewFooter();
@@ -2300,6 +2365,9 @@ export class ChatLayout {
       this.redraw();
       return;
     }
+    if (this.toolApprovalMode) {
+      this.syncToolApprovalFooterHeight();
+    }
     if (this.lastContentRendered.length !== this.contentHeight) {
       this.invalidateContentCache();
     }
@@ -2312,7 +2380,9 @@ export class ChatLayout {
     }
     const { cols } = getTerminalSize();
     process.stdout.write(this.renderContentBuffer(cols, true));
-    if (this.workflowConfirmMode) {
+    if (this.toolApprovalMode) {
+      this.drawToolApprovalFooter();
+    } else if (this.workflowConfirmMode) {
       this.drawWorkflowConfirmFooter();
     } else if (this.planReviewMode) {
       this.drawPlanReviewFooter();
@@ -2329,6 +2399,37 @@ export class ChatLayout {
       this.exitHintTimer = null;
     }
     this.shortcutsOverride = null;
+  }
+
+  private clearHistoryClearHint(): void {
+    if (this.historyClearHintTimer) {
+      clearTimeout(this.historyClearHintTimer);
+      this.historyClearHintTimer = null;
+    }
+  }
+
+  private showHistoryClearHint(): void {
+    this.clearHistoryClearHint();
+    const plain = this.readLinePlain;
+    const placeholder = this.readLinePlaceholder;
+    this.historyClearHintTimer = setTimeout(() => {
+      this.historyClearHintTimer = null;
+      if (this.active && this.readingLine) {
+        this.refreshInputFooter(plain, placeholder);
+      }
+    }, HISTORY_CLEAR_HINT_MS);
+  }
+
+  private handleHistoryBrowseEscape(plain: boolean, placeholder?: string): void {
+    if (this.historyClearHintTimer) {
+      this.clearHistoryClearHint();
+      this.inputHistory.resetBrowse();
+      this.inputBuffer = "";
+      this.inputCursor = 0;
+    } else {
+      this.showHistoryClearHint();
+    }
+    this.refreshInputFooter(plain, placeholder);
   }
 
   private showExitHint(): void {
@@ -2359,7 +2460,10 @@ export class ChatLayout {
   }
 
   private footerShortcutsLine(inputValue: string): string {
-    if (this.permissionMode === "plan" && !this.readingConfirm && !this.planReviewMode && !this.workflowConfirmMode) {
+    if (this.readingLine && this.inputHistory.isBrowsing()) {
+      return "";
+    }
+    if (this.permissionMode === "plan" && !this.readingConfirm && !this.planReviewMode && !this.workflowConfirmMode && !this.toolApprovalMode) {
       return renderPlanModeFooterHint();
     }
     if (this.readingLine) {
@@ -2381,7 +2485,8 @@ export class ChatLayout {
   private footerTopSeparator(cols: number): string {
     if (this.readingLine && this.inputHistory.isBrowsing()) {
       const label = `History ${this.inputHistory.indicatorPosition()}/${this.inputHistory.length}`;
-      return renderHistorySeparator(label, cols);
+      const rightHint = this.historyClearHintTimer ? HISTORY_CLEAR_HINT : undefined;
+      return renderHistorySeparator(label, cols, rightHint);
     }
     return inputFooterSeparator(cols);
   }
@@ -2399,7 +2504,7 @@ export class ChatLayout {
       padToWidth(this.footerTopSeparator(cols), cols),
       padToWidth(this.renderInputLine(inputValue, placeholder), cols),
       padToWidth(inputFooterSeparator(cols), cols),
-      padToWidth(suggestions.length ? SLASH_SUGGEST_HINT : shortcuts, cols),
+      padToWidth(suggestions.length && !this.inputHistory.isBrowsing() ? SLASH_SUGGEST_HINT : shortcuts, cols),
     ];
 
     const footerRows = suggestions.length
@@ -2720,7 +2825,8 @@ export class ChatLayout {
 
     this.restoreDefaultFooter();
     this.invalidateContentCache();
-    this.redrawContent();
+    this.restoreChatScrollAfterOverlay();
+    this.redraw();
     if (this.activeTurn && this.activeTurn.phase !== "done") {
       this.updateGeneratingFooter();
     }
@@ -2750,14 +2856,7 @@ export class ChatLayout {
     this.workflowsPanelResolve = null;
     this.readingWorkflowsPanel = false;
     this.workflowsPanelSessionId = "";
-    this.workflowsPanelState = {
-      view: "list",
-      runs: [],
-      selectedIndex: 0,
-      selectedPhaseIndex: 0,
-      selectedAgentIndex: 0,
-      phases: [],
-    };
+    this.workflowsPanelState = createInitialWorkflowsPanelState();
     this.activeFooterHeight = this.defaultFooterHeight;
     this.invalidateContentCache();
     this.redraw();
@@ -2788,6 +2887,24 @@ export class ChatLayout {
     for (const action of inputActions) {
       if (action.type === "char") {
         const key = action.char.toLowerCase();
+        if (key === "j" && this.workflowsPanelState.view === "agent") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            agentDetailScroll: this.workflowsPanelState.agentDetailScroll + 1,
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+          return;
+        }
+        if (key === "k" && this.workflowsPanelState.view === "agent") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            agentDetailScroll: Math.max(0, this.workflowsPanelState.agentDetailScroll - 1),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+          return;
+        }
         if (key === "s") {
           const run = this.sortedWorkflowRuns()[this.workflowsPanelState.selectedIndex];
           if (!run) return;
@@ -2836,7 +2953,7 @@ export class ChatLayout {
         if (!phase?.agents.length) continue;
         this.workflowsPanelState = {
           ...this.workflowsPanelState,
-          view: "agent",
+          detailFocus: "agent",
           selectedAgentIndex: 0,
           notice: undefined,
         };
@@ -2852,17 +2969,31 @@ export class ChatLayout {
           this.workflowsPanelState = {
             ...this.workflowsPanelState,
             view: "detail",
+            detailFocus: "agent",
+            agentDetailScroll: 0,
             notice: undefined,
           };
           this.redrawWorkflowsPanel();
           return;
         }
         if (this.workflowsPanelState.view === "detail") {
+          if (this.workflowsPanelState.detailFocus === "agent") {
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              detailFocus: "phase",
+              selectedAgentIndex: 0,
+              notice: undefined,
+            };
+            this.redrawWorkflowsPanel();
+            return;
+          }
           this.workflowsPanelState = {
             ...this.workflowsPanelState,
             view: "list",
             selectedPhaseIndex: 0,
             selectedAgentIndex: 0,
+            detailFocus: "phase",
+            agentDetailScroll: 0,
             phases: [],
             notice: undefined,
           };
@@ -2871,6 +3002,47 @@ export class ChatLayout {
         }
         this.closeWorkflowsPanel();
         return;
+      }
+
+      if (this.workflowsPanelState.view === "detail" && action.type === "left") {
+        if (this.workflowsPanelState.detailFocus === "agent") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            detailFocus: "phase",
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        continue;
+      }
+
+      if (
+        (action.type === "right" || action.type === "enter") &&
+        this.workflowsPanelState.view === "detail"
+      ) {
+        const phase = this.workflowsPanelState.phases[this.workflowsPanelState.selectedPhaseIndex];
+        if (this.workflowsPanelState.detailFocus === "phase") {
+          if (phase?.agents.length) {
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              detailFocus: "agent",
+              selectedAgentIndex: 0,
+              notice: undefined,
+            };
+            this.redrawWorkflowsPanel();
+          }
+          continue;
+        }
+        if (phase?.agents.length) {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            view: "agent",
+            agentDetailScroll: 0,
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        continue;
       }
 
       if (this.workflowsPanelState.view === "list") {
@@ -2897,8 +3069,10 @@ export class ChatLayout {
           this.workflowsPanelState = {
             ...this.workflowsPanelState,
             view: "detail",
+            detailFocus: "phase",
             selectedPhaseIndex: 0,
             selectedAgentIndex: 0,
+            agentDetailScroll: 0,
             notice: undefined,
           };
           await this.loadWorkflowsPanelPhases(run);
@@ -2909,38 +3083,47 @@ export class ChatLayout {
 
       if (this.workflowsPanelState.view === "detail") {
         const phases = this.workflowsPanelState.phases;
-        if (action.type === "up") {
-          this.workflowsPanelState = {
-            ...this.workflowsPanelState,
-            selectedPhaseIndex: Math.max(0, this.workflowsPanelState.selectedPhaseIndex - 1),
-            selectedAgentIndex: 0,
-            notice: undefined,
-          };
-          this.redrawWorkflowsPanel();
-        }
-        if (action.type === "down") {
-          this.workflowsPanelState = {
-            ...this.workflowsPanelState,
-            selectedPhaseIndex: Math.min(
-              Math.max(phases.length - 1, 0),
-              this.workflowsPanelState.selectedPhaseIndex + 1,
-            ),
-            selectedAgentIndex: 0,
-            notice: undefined,
-          };
-          this.redrawWorkflowsPanel();
-        }
-        if (action.type === "enter") {
-          const phase = phases[this.workflowsPanelState.selectedPhaseIndex];
-          if (phase?.agents.length) {
+        const phase = phases[this.workflowsPanelState.selectedPhaseIndex];
+        const agents = phase?.agents ?? [];
+        if (this.workflowsPanelState.detailFocus === "phase") {
+          if (action.type === "up") {
             this.workflowsPanelState = {
               ...this.workflowsPanelState,
-              view: "agent",
+              selectedPhaseIndex: Math.max(0, this.workflowsPanelState.selectedPhaseIndex - 1),
               selectedAgentIndex: 0,
               notice: undefined,
             };
             this.redrawWorkflowsPanel();
           }
+          if (action.type === "down") {
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              selectedPhaseIndex: Math.min(
+                Math.max(phases.length - 1, 0),
+                this.workflowsPanelState.selectedPhaseIndex + 1,
+              ),
+              selectedAgentIndex: 0,
+              notice: undefined,
+            };
+            this.redrawWorkflowsPanel();
+          }
+        } else if (action.type === "up") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedAgentIndex: Math.max(0, this.workflowsPanelState.selectedAgentIndex - 1),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        } else if (action.type === "down") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedAgentIndex: Math.min(
+              Math.max(agents.length - 1, 0),
+              this.workflowsPanelState.selectedAgentIndex + 1,
+            ),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
         }
         continue;
       }
@@ -2952,6 +3135,7 @@ export class ChatLayout {
           this.workflowsPanelState = {
             ...this.workflowsPanelState,
             selectedAgentIndex: Math.max(0, this.workflowsPanelState.selectedAgentIndex - 1),
+            agentDetailScroll: 0,
             notice: undefined,
           };
           this.redrawWorkflowsPanel();
@@ -2963,6 +3147,7 @@ export class ChatLayout {
               Math.max(agents.length - 1, 0),
               this.workflowsPanelState.selectedAgentIndex + 1,
             ),
+            agentDetailScroll: 0,
             notice: undefined,
           };
           this.redrawWorkflowsPanel();
@@ -3133,10 +3318,169 @@ export class ChatLayout {
 
     this.restoreDefaultFooter();
     this.invalidateContentCache();
-    this.redrawContent();
+    this.restoreChatScrollAfterOverlay();
+    this.redraw();
     if (this.activeTurn && this.activeTurn.phase !== "done") {
       this.updateGeneratingFooter();
     }
     resolve?.(decision);
+  }
+
+  async readToolApproval(opts: { toolCall: ToolCall; cwd: string }): Promise<ToolConfirmResult> {
+    const entry = this.findLastWaitingToolEntry();
+    if (entry) entry.awaitingApproval = true;
+
+    this.toolApprovalMode = true;
+    this.toolApprovalContent = null;
+    this.toolApprovalSelected = 0;
+    this.scrollOffset = 0;
+    this.followBottom = false;
+    this.shortcutsOverride = null;
+    this.updateToolApprovalFooterHeight();
+    this.invalidateContentCache();
+    this.redraw();
+
+    const { cols } = getTerminalSize();
+    const content = await buildToolApprovalContent(opts.toolCall, opts.cwd, cols);
+
+    this.toolApprovalContent = content;
+    this.updateToolApprovalFooterHeight(content);
+    this.invalidateContentCache();
+    this.redraw();
+
+    return new Promise((resolve) => {
+      this.pendingToolApprovalCall = opts.toolCall;
+      this.toolApprovalResolve = resolve;
+    });
+  }
+
+  private buildToolApprovalContentLines(): RenderLine[] {
+    const { cols } = getTerminalSize();
+    const content = this.toolApprovalContent;
+    if (!content) {
+      return [{ text: `${ansi.muted}Loading preview…${ansi.reset}` }];
+    }
+    const texts = renderToolApprovalContentLines(content, cols);
+    return texts.map((text) => ({ text }));
+  }
+
+  private updateToolApprovalFooterHeight(content?: ToolApprovalContent | null): void {
+    const { cols } = getTerminalSize();
+    this.activeFooterHeight = this.clampFooterHeight(
+      toolApprovalPanelRowCount(cols, content ?? undefined),
+    );
+  }
+
+  private syncToolApprovalFooterHeight(): void {
+    if (!this.toolApprovalMode) return;
+    const prev = this.activeFooterHeight;
+    this.updateToolApprovalFooterHeight(this.toolApprovalContent);
+    if (prev !== this.activeFooterHeight) {
+      this.invalidateContentCache();
+    }
+  }
+
+  private drawToolApprovalFooter(): void {
+    this.syncToolApprovalFooterHeight();
+    const { cols, rows } = getTerminalSize();
+    const top = this.footerTop;
+    const content = this.toolApprovalContent;
+    if (!content) return;
+
+    const panelLines = renderToolApprovalPanelLines({
+      content,
+      selectedIndex: this.toolApprovalSelected,
+      cols,
+    });
+    const sep = footerSeparator(cols);
+    const footerRows = [
+      padToWidth(sep, cols),
+      ...padToolApprovalLines(panelLines, cols),
+      padToWidth(sep, cols),
+      padToWidth(TOOL_APPROVAL_HINT, cols),
+    ];
+
+    let out = "";
+    for (let i = 0; i < footerRows.length; i++) {
+      out += moveTo(top + i);
+      out += clearLine();
+      out += footerRows[i]!;
+    }
+    for (let i = top + footerRows.length; i <= rows; i++) {
+      out += moveTo(i);
+      out += clearLine();
+    }
+    process.stdout.write(out);
+    process.stdout.write(HIDE_CURSOR);
+  }
+
+  private handleToolApprovalInput(chunk: string): void {
+    const content = this.toolApprovalContent;
+    if (!content) return;
+
+    const { actions: scrollActions } = parseInputActions(chunk);
+    for (const action of scrollActions) {
+      if (action.type === "scroll") {
+        this.scrollBy(action.delta);
+        this.redrawContent();
+        return;
+      }
+    }
+
+    const { actions } = parseChoiceInputActions(chunk);
+    for (const action of actions) {
+      if (action.type === "interrupt" || action.type === "escape") {
+        this.finishToolApproval({ action: "deny" });
+        return;
+      }
+      if (action.type === "shiftTab") {
+        this.toolApprovalSelected = 1;
+        this.drawToolApprovalFooter();
+        return;
+      }
+      if (action.type === "up") {
+        this.toolApprovalSelected = Math.max(0, this.toolApprovalSelected - 1);
+        this.drawToolApprovalFooter();
+      }
+      if (action.type === "down") {
+        this.toolApprovalSelected = Math.min(content.rows.length - 1, this.toolApprovalSelected + 1);
+        this.drawToolApprovalFooter();
+      }
+      if (action.type === "enter") {
+        const row = content.rows[this.toolApprovalSelected];
+        if (!row) return;
+        this.finishToolApproval(toolApprovalDecisionFromRow(row));
+        return;
+      }
+    }
+  }
+
+  private finishToolApproval(decision: ReturnType<typeof toolApprovalDecisionFromRow>): void {
+    const resolve = this.toolApprovalResolve;
+    const toolCall = this.pendingToolApprovalCall;
+
+    this.toolApprovalResolve = null;
+    this.toolApprovalMode = false;
+    this.toolApprovalContent = null;
+    this.toolApprovalSelected = 0;
+    this.pendingToolApprovalCall = null;
+
+    const entry = this.findLastWaitingToolEntry();
+    if (entry) entry.awaitingApproval = false;
+
+    this.restoreDefaultFooter();
+    this.invalidateContentCache();
+    this.restoreChatScrollAfterOverlay();
+    this.redraw();
+    if (this.activeTurn && this.activeTurn.phase !== "done") {
+      this.updateGeneratingFooter();
+    }
+
+    if (!resolve || !toolCall) {
+      resolve?.({ allowed: false, denialReason: "User denied tool execution" });
+      return;
+    }
+
+    resolve(toolConfirmResultFromDecision(toolCall, decision));
   }
 }

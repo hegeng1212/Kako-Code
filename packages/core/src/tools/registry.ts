@@ -19,7 +19,8 @@ import { collectUserTextFromMessages } from "../locale/user-timezone.js";
 import { resolvePath } from "./builtin/path.js";
 import { buildWebSearchDescription } from "./builtin/web-search.js";
 import { findSkillByMdPath } from "../skills/loader.js";
-import { isToolCallInTrustedScope } from "./permission-scope.js";
+import { toolCallNeedsUserConfirm } from "./confirm-policy.js";
+import { validateToolCallInput } from "./tool-input-validation.js";
 
 export interface ToolRegistryOptions {
   cwd: string;
@@ -48,6 +49,10 @@ export class ToolRegistry {
   private readFiles = new Set<string>();
   /** Skills activated during this registry's conversation turn. */
   private activatedSkills = new Set<string>();
+  /** Session-wide auto-allow for write tools after user approval. */
+  private sessionWritesAllowed = false;
+  /** Session-wide auto-allow for identical bash commands after user approval. */
+  private sessionAllowedBashCommands = new Set<string>();
 
   constructor(options: ToolRegistryOptions) {
     this.options = options;
@@ -74,6 +79,33 @@ export class ToolRegistry {
 
   private isSkillActive(name: string): boolean {
     return this.activatedSkills.has(name.trim());
+  }
+
+  private isSessionAllowed(toolCall: ToolCall): boolean {
+    if (
+      this.sessionWritesAllowed &&
+      (toolCall.name === "Write" || toolCall.name === "Edit" || toolCall.name === "NotebookEdit")
+    ) {
+      return true;
+    }
+    if (toolCall.name === "Bash") {
+      const command = String(toolCall.input.command ?? "").trim();
+      if (command && this.sessionAllowedBashCommands.has(command)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private applySessionAllow(toolCall: ToolCall, sessionAllow?: "writes" | "bash-command"): void {
+    if (sessionAllow === "writes") {
+      this.sessionWritesAllowed = true;
+      return;
+    }
+    if (sessionAllow === "bash-command" && toolCall.name === "Bash") {
+      const command = String(toolCall.input.command ?? "").trim();
+      if (command) this.sessionAllowedBashCommands.add(command);
+    }
   }
 
   register(definition: ToolDefinition, handler: ToolHandler): void {
@@ -140,15 +172,16 @@ export class ToolRegistry {
     }
 
     const { definition, handler } = registered;
+
+    const inputError = validateToolCallInput(toolCall);
+    if (inputError) {
+      return this.result(toolCall, start, "error", undefined, inputError);
+    }
+
     const mode = this.options.permissionMode ?? "default";
     const needsConfirm =
-      definition.requiresConfirmation &&
-      mode !== "bypassPermissions" &&
-      !(mode === "acceptEdits" &&
-        (toolCall.name === "Write" ||
-          toolCall.name === "Edit" ||
-          toolCall.name === "NotebookEdit")) &&
-      !isToolCallInTrustedScope(toolCall, this.options.cwd);
+      !this.isSessionAllowed(toolCall) &&
+      toolCallNeedsUserConfirm(toolCall, definition, mode);
 
     let approvedPermissionMode: PermissionMode | undefined;
 
@@ -163,6 +196,7 @@ export class ToolRegistry {
           confirmResult.denialReason ?? "User denied tool execution",
         );
       }
+      this.applySessionAllow(toolCall, confirmResult.sessionAllow);
       approvedPermissionMode = confirmResult.permissionMode;
       if (confirmResult.inputPatch) {
         Object.assign(toolCall.input, confirmResult.inputPatch);

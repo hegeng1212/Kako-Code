@@ -3,11 +3,11 @@ import { availableParallelism } from "node:os";
 export const WORKFLOW_AGENT_LIFETIME_CAP = 1000;
 export const WORKFLOW_MAX_PIPELINE_ITEMS = 4096;
 /** Per-agent wall-clock limit — prevents one hung WebSearch/WebFetch from stalling the run. */
-export const WORKFLOW_AGENT_TIMEOUT_MS = 180_000;
+export const WORKFLOW_AGENT_TIMEOUT_MS = 120_000;
 
 export function workflowAgentConcurrencyCap(): number {
   const cores = availableParallelism();
-  return Math.min(16, Math.max(1, cores - 2));
+  return Math.min(24, Math.max(4, cores));
 }
 
 export class AgentConcurrencyGate {

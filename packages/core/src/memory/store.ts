@@ -104,3 +104,23 @@ export function transcriptPreviewText(message: TranscriptMessage): string {
   }
   return message.content;
 }
+
+/** Transcript rows the user typed in the CLI chat box (↑/↓ history). */
+export function isCliInputHistoryMessage(msg: TranscriptMessage): boolean {
+  if (msg.role !== "user") return false;
+  return msg.metadata?.cliInput === true;
+}
+
+/** User prompts from L0 transcript for CLI input history (↑/↓). */
+export function sessionInputHistory(transcript: TranscriptMessage[]): string[] {
+  const lines: string[] = [];
+  for (const msg of transcript) {
+    if (!isCliInputHistoryMessage(msg)) continue;
+    const text = transcriptPreviewText(msg).trim();
+    if (!text) continue;
+    const last = lines[lines.length - 1];
+    if (last === text) continue;
+    lines.push(text);
+  }
+  return lines;
+}

@@ -6,6 +6,8 @@ import { htmlToMarkdown } from "./html-to-markdown.js";
 
 export const WEB_FETCH_MAX_BYTES = 5_000_000;
 export const WEB_FETCH_MAX_MARKDOWN_CHARS = 120_000;
+/** Tighter clip for workflow agents that read the page themselves. */
+export const WEB_FETCH_WORKFLOW_MAX_MARKDOWN_CHARS = 40_000;
 export const WEB_FETCH_MAX_REDIRECTS = 5;
 /** Per-hop HTTP timeout — slow hosts fail fast instead of blocking fetch agents. */
 export const WEB_FETCH_TIMEOUT_MS = 20_000;
@@ -186,7 +188,7 @@ export async function answerWebFetchPrompt(
   router?: LLMRouter,
 ): Promise<string> {
   const llm = router ?? createLLMRouter();
-  const clipped = markdown.slice(0, WEB_FETCH_MAX_MARKDOWN_CHARS);
+  const clipped = clipWebFetchMarkdown(markdown, WEB_FETCH_MAX_MARKDOWN_CHARS);
   const completion = await llm.complete({
     model: "",
     messages: [
@@ -209,6 +211,26 @@ export async function answerWebFetchPrompt(
     throw new Error("WebFetch summarization failed — check provider configuration");
   }
   return answer;
+}
+
+export function clipWebFetchMarkdown(
+  markdown: string,
+  maxChars = WEB_FETCH_MAX_MARKDOWN_CHARS,
+): string {
+  if (markdown.length <= maxChars) return markdown;
+  return `${markdown.slice(0, maxChars)}\n\n[… page truncated at ${maxChars} characters …]`;
+}
+
+/** Return page markdown directly — used by workflow agents (no summarization LLM). */
+export async function runWebFetchMarkdown(
+  url: string,
+  maxChars = WEB_FETCH_WORKFLOW_MAX_MARKDOWN_CHARS,
+): Promise<string> {
+  const page = await fetchWebPage(url);
+  if (page.type === "cross_host_redirect") {
+    return formatCrossHostRedirect(page);
+  }
+  return clipWebFetchMarkdown(page.markdown, maxChars);
 }
 
 export async function runWebFetch(

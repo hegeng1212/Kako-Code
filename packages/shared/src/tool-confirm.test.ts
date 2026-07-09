@@ -35,17 +35,18 @@ describe("normalizeToolConfirmResult", () => {
     });
   });
 
-  it("passes inputPatch through", () => {
+  it("passes sessionAllow through", () => {
     expect(
       normalizeToolConfirmResult({
         allowed: true,
-        inputPatch: { scriptPath: "/tmp/preview.js" },
+        sessionAllow: "writes",
       }),
     ).toEqual({
       allowed: true,
       permissionMode: undefined,
       denialReason: undefined,
-      inputPatch: { scriptPath: "/tmp/preview.js" },
+      inputPatch: undefined,
+      sessionAllow: "writes",
     });
   });
 });

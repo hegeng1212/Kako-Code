@@ -34,4 +34,12 @@ describe("InputHistory", () => {
     history.commit("same");
     expect(history.length).toBe(1);
   });
+
+  it("loads full session entries without cap", () => {
+    const history = new InputHistory();
+    const entries = Array.from({ length: MAX_INPUT_HISTORY + 5 }, (_, i) => `msg-${i}`);
+    history.loadEntries(entries);
+    expect(history.length).toBe(entries.length);
+    expect(history.browseUp("")).toBe(`msg-${entries.length - 1}`);
+  });
 });

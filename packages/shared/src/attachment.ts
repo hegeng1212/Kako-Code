@@ -16,6 +16,8 @@ export interface UserTurnInput {
   /** When set, sent to the LLM instead of `text` (slash skill harness injection). */
   llmText?: string;
   attachments?: UserAttachment[];
+  /** True when the user typed this prompt in the CLI chat box (↑/↓ history). */
+  cliInput?: boolean;
 }
 
 export function isUserTurnInput(value: string | UserTurnInput): value is UserTurnInput {
@@ -28,6 +30,7 @@ export function normalizeUserTurnInput(value: string | UserTurnInput): UserTurnI
       text: value.text ?? "",
       llmText: value.llmText?.trim() || undefined,
       attachments: value.attachments?.length ? value.attachments : undefined,
+      cliInput: value.cliInput === true ? true : undefined,
     };
   }
   return { text: value };

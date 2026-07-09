@@ -85,6 +85,18 @@ async function listSkillFilesInRoot(root: string): Promise<string[]> {
   return files;
 }
 
+export async function loadBundledSkills(): Promise<SkillDefinition[]> {
+  const bundled = await findBundledSkillsDir();
+  if (!bundled) return [];
+
+  const skills: SkillDefinition[] = [];
+  for (const filePath of await listSkillFilesInRoot(bundled)) {
+    const content = await readFile(filePath, "utf-8");
+    skills.push(parseSkillMd(content, filePath));
+  }
+  return skills;
+}
+
 async function discoverFilesystemSkills(cwd: string): Promise<SkillDefinition[]> {
   const byName = new Map<string, SkillDefinition>();
   for (const root of await skillRoots(cwd)) {
@@ -99,14 +111,33 @@ async function discoverFilesystemSkills(cwd: string): Promise<SkillDefinition[]>
   return [...byName.values()];
 }
 
-function recordToSkillDefinition(record: InstalledSkillRecord): SkillDefinition {
-  return {
-    name: record.name,
-    description: record.description,
-    path: record.installDir,
-    skillMdPath: record.skillMdPath,
-    instructions: "",
-  };
+async function recordToSkillDefinition(record: InstalledSkillRecord): Promise<SkillDefinition> {
+  try {
+    const content = await readFile(record.skillMdPath, "utf-8");
+    const parsed = parseSkillMd(content, record.skillMdPath);
+    return {
+      ...parsed,
+      description: parsed.description || record.description,
+      path: record.installDir,
+    };
+  } catch {
+    return {
+      name: record.name,
+      description: record.description,
+      path: record.installDir,
+      skillMdPath: record.skillMdPath,
+      instructions: "",
+    };
+  }
+}
+
+/**
+ * Catalog line for the system skill index — frontmatter description only.
+ * Full SKILL.md body is loaded later when the model invokes the Skill tool.
+ */
+export function skillIndexDescription(skill: SkillDefinition): string {
+  const desc = skill.description.trim().replace(/\s+/g, " ");
+  return desc || "Use when this skill matches the user's request.";
 }
 
 export async function discoverSkills(cwd: string): Promise<SkillDefinition[]> {
@@ -118,7 +149,7 @@ export async function discoverSkills(cwd: string): Promise<SkillDefinition[]> {
 
   for (const record of manifest.skills) {
     if (disabled.has(record.name)) continue;
-    byName.set(record.name, recordToSkillDefinition(record));
+    byName.set(record.name, await recordToSkillDefinition(record));
   }
 
   for (const skill of await discoverFilesystemSkills(cwd)) {
@@ -129,7 +160,7 @@ export async function discoverSkills(cwd: string): Promise<SkillDefinition[]> {
       const existing = byName.get(skill.name)!;
       byName.set(skill.name, {
         ...existing,
-        description: existing.description || skill.description,
+        description: skill.description || existing.description,
         skillMdPath: existing.skillMdPath || skill.skillMdPath,
         path: existing.path || skill.path,
         instructions: skill.instructions || existing.instructions,
@@ -149,13 +180,11 @@ export function filterSkillsForAgent(
   return discovered.filter((skill) => allowed.has(skill.name));
 }
 
-export async function discoverSkillsForAgent(
-  cwd: string,
-  agentSkills: string[] | undefined,
-): Promise<SkillDefinition[]> {
+export async function discoverSkillsForAgent(cwd: string): Promise<SkillDefinition[]> {
   const discovered = await discoverSkills(cwd);
+  const bundled = await loadBundledSkills();
   const systemSkills = await loadSystemSkills();
-  return mergeSkillsForAgent(discovered, agentSkills, systemSkills);
+  return mergeSkillsForAgent(discovered, bundled, systemSkills);
 }
 
 export async function findSkillFile(skillName: string, cwd: string): Promise<string | null> {
@@ -200,13 +229,13 @@ export async function loadSkill(skillName: string, cwd: string): Promise<SkillDe
 export function formatSkillsIndex(skills: SkillMetadata[]): string {
   if (!skills.length) return "";
   const lines = skills.map((skill) => {
-    const desc = skill.description.trim().replace(/\s+/g, " ");
-    const when = desc || "Use when this skill matches the user's request.";
+    const when = skill.description.trim().replace(/\s+/g, " ") || "Use when this skill matches the user's request.";
     return `- ${skill.name}: ${when}`;
   });
-  return `\n\nThe following skills are available for use with the Skill tool:
+  const catalog = `The following skills are available for use with the Skill tool:
 
 ${lines.join("\n")}`;
+  return `\n\n<system-reminder>\n${catalog}\n</system-reminder>`;
 }
 
 /** @deprecated Use formatSkillsIndex */
@@ -226,7 +255,7 @@ export async function findSkillByMdPath(
 export async function toSkillIndex(skills: SkillDefinition[]): Promise<SkillMetadata[]> {
   return skills.map((skill) => ({
     name: skill.name,
-    description: skill.description,
+    description: skillIndexDescription(skill),
     path: skill.path,
     skillMdPath: skill.skillMdPath,
   }));

@@ -1,4 +1,5 @@
 import { ansi } from "./ansi.js";
+import { formatDurationMs } from "./format-duration.js";
 
 export interface WorkflowFooterState {
   name: string;
@@ -11,14 +12,6 @@ export interface WorkflowFooterState {
   currentPhase?: string;
 }
 
-function formatElapsed(ms: number): string {
-  const totalSec = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
@@ -26,7 +19,7 @@ function truncate(text: string, max: number): string {
 
 export function renderWorkflowFooterLine(state: WorkflowFooterState, cols: number): string {
   const phase = state.currentPhase ? ` · ${state.currentPhase}` : "";
-  const stats = `${state.agentsDone}/${state.agentsTotal} agents · ${formatElapsed(state.elapsedMs)}${phase}`;
+  const stats = `${state.agentsDone}/${state.agentsTotal} agents · ${formatDurationMs(state.elapsedMs)}${phase}`;
   const content = `${state.name} · ${stats}`;
   const maxContent = Math.max(24, cols - 4);
   const line = truncate(content, maxContent);

@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import { bashToolDefinition } from "./builtin/bash.js";
+import { writeToolDefinition } from "./builtin/write.js";
+import { toolCallNeedsUserConfirm } from "./confirm-policy.js";
+
+describe("toolCallNeedsUserConfirm", () => {
+  it("requires confirm for Write in default mode", () => {
+    expect(
+      toolCallNeedsUserConfirm(
+        { id: "1", name: "Write", input: { file_path: "/tmp/a.py", content: "x" } },
+        writeToolDefinition,
+        "default",
+      ),
+    ).toBe(true);
+  });
+
+  it("skips confirm for low-risk Bash", () => {
+    expect(
+      toolCallNeedsUserConfirm(
+        { id: "1", name: "Bash", input: { command: "ls -la" } },
+        bashToolDefinition,
+        "default",
+      ),
+    ).toBe(false);
+  });
+
+  it("requires confirm for high-risk Bash", () => {
+    expect(
+      toolCallNeedsUserConfirm(
+        { id: "1", name: "Bash", input: { command: "python add.py" } },
+        bashToolDefinition,
+        "default",
+      ),
+    ).toBe(true);
+  });
+
+  it("skips write confirm in acceptEdits mode", () => {
+    expect(
+      toolCallNeedsUserConfirm(
+        { id: "1", name: "Write", input: { file_path: "/tmp/a.py", content: "x" } },
+        writeToolDefinition,
+        "acceptEdits",
+      ),
+    ).toBe(false);
+  });
+});

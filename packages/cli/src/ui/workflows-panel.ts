@@ -1,9 +1,13 @@
 import { ansi, displayWidth, stripAnsi } from "./ansi.js";
+import { formatDurationMs, formatDurationSeconds } from "./format-duration.js";
 import type { WorkflowRunRecord } from "@kako/core";
 import type { AgentView, PhaseView } from "@kako/core";
+import { isPhaseFatal, isPhaseSuccessful } from "@kako/core";
 import { wrapContentLines } from "./text-wrap.js";
 
 export type WorkflowsPanelView = "list" | "detail" | "agent";
+/** Which pane has keyboard focus in the detail (phase list) view. */
+export type WorkflowsDetailFocus = "phase" | "agent";
 
 export interface WorkflowsPanelState {
   view: WorkflowsPanelView;
@@ -12,6 +16,10 @@ export interface WorkflowsPanelState {
   selectedPhaseIndex: number;
   selectedAgentIndex: number;
   phases: PhaseView[];
+  /** Focus within the detail split view — phase list (left) or agent list (right). */
+  detailFocus: WorkflowsDetailFocus;
+  /** Scroll offset (lines) for the agent detail pane on the right in agent view. */
+  agentDetailScroll: number;
   notice?: string;
 }
 
@@ -38,6 +46,13 @@ function splitColumnWidths(cols: number): { leftWidth: number; rightWidth: numbe
   return { leftWidth, rightWidth };
 }
 
+function agentSplitColumnWidths(cols: number): { leftWidth: number; rightWidth: number } {
+  const inner = Math.max(24, cols - SPLIT_ROW_OVERHEAD);
+  const leftWidth = Math.min(24, Math.max(14, Math.floor(inner * 0.28)));
+  const rightWidth = Math.max(12, inner - leftWidth);
+  return { leftWidth, rightWidth };
+}
+
 function splitDataRow(
   left: string,
   right: string,
@@ -55,8 +70,8 @@ function splitTopRow(
   leftWidth: number,
   rightWidth: number,
 ): string {
-  const leftDash = Math.max(0, leftWidth - displayWidth(leftHeader) - 2);
-  const rightDash = Math.max(0, rightWidth - displayWidth(rightHeader) - 2);
+  const leftDash = Math.max(0, leftWidth - displayWidth(leftHeader) - 1);
+  const rightDash = Math.max(0, rightWidth - displayWidth(rightHeader) - 1);
   return `${border(BOX_TL)}${border(BOX_H)} ${leftHeader} ${border(BOX_H.repeat(leftDash))}${border(BOX_T)}${border(BOX_H)} ${rightHeader} ${border(BOX_H.repeat(rightDash))}${border(BOX_TR)}`;
 }
 
@@ -68,14 +83,6 @@ export function sortWorkflowRuns(runs: WorkflowRunRecord[]): WorkflowRunRecord[]
   return [...runs].sort(
     (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
   );
-}
-
-function formatElapsed(ms: number): string {
-  const sec = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  if (m > 0) return `${m}m ${s}s`;
-  return sec > 0 ? `${sec}s` : "0s";
 }
 
 function runElapsed(run: WorkflowRunRecord): number {
@@ -110,17 +117,46 @@ function alignRight(left: string, right: string, cols: number): string {
   return padRow(left + " ".repeat(gap) + right, cols);
 }
 
-function formatPhaseLine(p: PhaseView, index: number, selected: boolean): string {
-  const mark = selected ? `${ansi.text}>${ansi.reset} ` : "  ";
+function alignRightInCell(left: string, right: string, width: number): string {
+  const gap = Math.max(1, width - displayWidth(left) - displayWidth(right));
+  return padVisible(left + " ".repeat(gap) + right, width);
+}
+
+function agentStatusIcon(agent: AgentView): string {
+  return agent.status === "success"
+    ? `${ansi.green}✔${ansi.reset}`
+    : agent.status === "error"
+      ? `${ansi.red}✘${ansi.reset}`
+      : `${ansi.yellow}…${ansi.reset}`;
+}
+
+function agentStatusLabel(status: AgentView["status"]): string {
+  if (status === "success") return "Completed";
+  if (status === "error") return "Failed";
+  if (status === "skipped") return "Skipped";
+  return "Running";
+}
+
+function formatPhaseLine(
+  p: PhaseView,
+  index: number,
+  phases: PhaseView[],
+  selected: boolean,
+  showCursor: boolean,
+): string {
+  const mark = showCursor && selected ? `${ansi.text}>${ansi.reset} ` : "  ";
   const number = `${index + 1} `;
-  const status =
-    p.failed > 0
-      ? `${ansi.red}✘${ansi.reset} `
-      : p.done > 0 && p.total > 0 && p.done >= p.total
-        ? `${ansi.green}✔${ansi.reset} `
-        : "";
+  const status = isPhaseFatal(p, index, phases)
+    ? `${ansi.red}✘${ansi.reset} `
+    : isPhaseSuccessful(p, index, phases)
+      ? `${ansi.green}✔${ansi.reset} `
+      : "";
   const counts =
-    p.total > 0 ? `${ansi.muted} ${p.done}/${p.total}${ansi.reset}` : "";
+    p.plannedTotal != null && p.plannedTotal > 0
+      ? `${ansi.muted} ${p.done}/${p.plannedTotal}${ansi.reset}`
+      : p.total > 0
+        ? `${ansi.muted} ${p.done}/${p.total}${ansi.reset}`
+        : "";
   return `${mark}${status}${number}${p.title}${counts}`;
 }
 
@@ -132,78 +168,107 @@ function phaseStatusLabel(p: PhaseView): string {
   }
   const running = p.agents.some((a) => a.status === "running");
   if (running) {
-    return `${ansi.muted}${p.done}/${Math.max(p.total, p.agents.length)} agents running…${ansi.reset}`;
+    const denom = p.plannedTotal ?? Math.max(p.total, p.agents.length);
+    return `${ansi.muted}${p.done}/${denom} agents running…${ansi.reset}`;
   }
   return "";
 }
 
-function agentPlainLine(agent: AgentView, selected: boolean): string {
-  const mark = selected ? "> " : "  ";
-  const icon =
-    agent.status === "success" ? "✔" : agent.status === "error" ? "✘" : "…";
-  const tok = agent.tokens != null ? ` · ${agent.tokens} tok` : "";
-  const dur = agent.durationMs != null ? `  ${Math.round(agent.durationMs / 1000)}s` : "";
-  const summary = agent.outputSummary ? ` — ${agent.outputSummary}` : "";
-  return `${mark}${icon} ${agent.label}${tok}${dur}${summary}`;
+function formatAgentPaneLine(agent: AgentView, selected: boolean, width: number): string {
+  const mark = selected ? `${ansi.text}>${ansi.reset} ` : "  ";
+  const icon = agentStatusIcon(agent);
+  const label = `${mark}${icon} ${agent.label}`;
+  const model = agent.model ? `${ansi.muted}  ${agent.model}${ansi.reset}` : "";
+  const tok = agent.tokens != null ? `${ansi.muted} · ${agent.tokens} tok${ansi.reset}` : "";
+  const dur =
+    agent.durationMs != null
+      ? `${ansi.muted}${formatDurationMs(agent.durationMs)}${ansi.reset}`
+      : "";
+  const body = `${label}${model}${tok}`;
+  if (dur) return alignRightInCell(body, dur, width);
+  return padVisible(body, width);
 }
 
-function expandAgentWrapped(agent: AgentView, selected: boolean, width: number): string[] {
-  const wrapped = wrapContentLines(agentPlainLine(agent, selected), width);
-  if (!wrapped.length) return [formatAgentLine(agent, selected)];
-  return wrapped.map((line, index) => {
-    if (index === 0) return formatAgentLine(agent, selected);
-    return `${ansi.muted}  ${line.trimStart()}${ansi.reset}`;
-  });
+function formatAgentListLine(agent: AgentView, selected: boolean, width: number): string {
+  const mark = selected ? `${ansi.text}>${ansi.reset} ` : "  ";
+  const icon = agentStatusIcon(agent);
+  return padVisible(`${mark}${icon} ${agent.label}`, width);
 }
 
 function expandPhaseRightLines(
   phase: PhaseView,
   rightWidth: number,
   selectedAgentIndex: number,
+  showAgentCursor: boolean,
 ): string[] {
   const lines: string[] = [];
-  if (phase.detail) {
-    for (const part of wrapContentLines(phase.detail, rightWidth)) {
-      lines.push(`${ansi.muted}${part}${ansi.reset}`);
+  if (!showAgentCursor) {
+    if (phase.detail) {
+      for (const part of wrapContentLines(phase.detail, rightWidth)) {
+        lines.push(`${ansi.muted}${part}${ansi.reset}`);
+      }
     }
-  }
-  for (const logLine of phase.logs) {
-    for (const part of wrapContentLines(`· ${logLine}`, rightWidth)) {
-      lines.push(`${ansi.muted}${part}${ansi.reset}`);
+    for (const logLine of phase.logs) {
+      for (const part of wrapContentLines(`· ${logLine}`, rightWidth)) {
+        lines.push(`${ansi.muted}${part}${ansi.reset}`);
+      }
     }
   }
   if (phase.agents.length > 0) {
     phase.agents.forEach((agent, index) => {
-      lines.push(...expandAgentWrapped(agent, index === selectedAgentIndex, rightWidth));
+      lines.push(
+        formatAgentPaneLine(agent, showAgentCursor && index === selectedAgentIndex, rightWidth),
+      );
     });
-  } else if (!phase.detail && phase.logs.length === 0) {
+  } else if (!showAgentCursor && !phase.detail && phase.logs.length === 0) {
     const status = phaseStatusLabel(phase);
     if (status) lines.push(status);
   }
   return lines.length ? lines : [""];
 }
 
-function formatAgentLine(agent: AgentView, selected: boolean): string {
-  const mark = selected ? `${ansi.text}>${ansi.reset} ` : "  ";
-  const icon =
-    agent.status === "success"
-      ? `${ansi.green}✔${ansi.reset}`
-      : agent.status === "error"
-        ? `${ansi.red}✘${ansi.reset}`
-        : `${ansi.yellow}…${ansi.reset}`;
-  const tok = agent.tokens != null ? `${ansi.muted} · ${agent.tokens} tok${ansi.reset}` : "";
-  const dur =
-    agent.durationMs != null
-      ? `${ansi.muted}  ${Math.round(agent.durationMs / 1000)}s${ansi.reset}`
-      : "";
-  const summary = agent.outputSummary
-    ? `${ansi.muted} — ${agent.outputSummary}${ansi.reset}`
-    : "";
-  return `${mark}${icon} ${agent.label}${tok}${dur}${summary}`;
+export function buildAgentDetailLines(agent: AgentView, width: number): string[] {
+  const lines: string[] = [];
+  const statusLine = `${agentStatusIcon(agent)} ${ansi.text}${agentStatusLabel(agent.status)}${ansi.reset}${
+    agent.model ? `${ansi.muted} · ${agent.model}${ansi.reset}` : ""
+  }`;
+  lines.push(padVisible(statusLine, width));
+
+  const metrics: string[] = [];
+  if (agent.tokens != null) metrics.push(`${agent.tokens} tok`);
+  if (agent.durationMs != null) metrics.push(formatDurationMs(agent.durationMs));
+  if (metrics.length) {
+    lines.push(`${ansi.muted}${metrics.join(" · ")}${ansi.reset}`);
+  }
+  lines.push("");
+
+  if (agent.outputSummary) {
+    lines.push(`${ansi.text}Summary${ansi.reset}`);
+    for (const part of wrapContentLines(agent.outputSummary, width)) {
+      lines.push(part);
+    }
+    lines.push("");
+  }
+
+  lines.push(`${ansi.text}Outcome${ansi.reset}`);
+  if (agent.output !== undefined && agent.output !== null) {
+    const text =
+      typeof agent.output === "string"
+        ? agent.output
+        : JSON.stringify(agent.output, null, 2);
+    for (const part of wrapContentLines(text, width)) {
+      lines.push(part);
+    }
+  } else if (agent.status === "running") {
+    lines.push(`${ansi.muted}Agent still running…${ansi.reset}`);
+  } else {
+    lines.push(`${ansi.muted}No output recorded.${ansi.reset}`);
+  }
+  return lines;
 }
 
 function runListDetail(run: WorkflowRunRecord): string {
-  const elapsed = formatElapsed(runElapsed(run));
+  const elapsed = formatDurationMs(runElapsed(run));
   if (run.status === "running" || run.status === "pending") {
     const phase = run.currentPhase ? ` · ${run.currentPhase}` : "";
     return `${run.agentsDone}/${run.agentsTotal || "?"} agents · ${elapsed}${phase}`;
@@ -215,7 +280,7 @@ function runListDetail(run: WorkflowRunRecord): string {
 }
 
 function runStatsLine(run: WorkflowRunRecord): string {
-  const elapsed = formatElapsed(runElapsed(run));
+  const elapsed = formatDurationMs(runElapsed(run));
   const statusLabel = run.error ? "error" : run.status;
   return `${run.agentsDone}/${run.agentsTotal || "?"} agents · ${elapsed} · ${statusLabel}`;
 }
@@ -260,11 +325,9 @@ function renderListBody(state: WorkflowsPanelState, cols: number): string[] {
 }
 
 function renderDetailBody(state: WorkflowsPanelState, cols: number, bodyRows: number): string[] {
-  const run = state.runs[state.selectedIndex];
-  if (!run) return [padRow("No workflow selected", cols)];
-
   const phase = state.phases[state.selectedPhaseIndex];
   const { leftWidth, rightWidth } = splitColumnWidths(cols);
+  const phaseFocus = state.detailFocus === "phase";
 
   const leftHeader = "Phases";
   const rightHeader = phase
@@ -272,10 +335,15 @@ function renderDetailBody(state: WorkflowsPanelState, cols: number, bodyRows: nu
     : "No phase selected";
 
   const leftLines = state.phases.map((p, i) =>
-    formatPhaseLine(p, i, i === state.selectedPhaseIndex),
+    formatPhaseLine(p, i, state.phases, i === state.selectedPhaseIndex, phaseFocus),
   );
   const rightLines = phase
-    ? expandPhaseRightLines(phase, rightWidth, state.selectedAgentIndex)
+    ? expandPhaseRightLines(
+        phase,
+        rightWidth,
+        state.selectedAgentIndex,
+        !phaseFocus,
+      )
     : [""];
 
   const contentRows = Math.max(leftLines.length, rightLines.length, 1);
@@ -297,46 +365,93 @@ function renderDetailBody(state: WorkflowsPanelState, cols: number, bodyRows: nu
   return rows;
 }
 
-function renderAgentBody(state: WorkflowsPanelState, cols: number): string[] {
-  const run = state.runs[state.selectedIndex];
+function renderAgentBody(state: WorkflowsPanelState, cols: number, bodyRows: number): string[] {
   const phase = state.phases[state.selectedPhaseIndex];
   const agent = phase?.agents[state.selectedAgentIndex];
-  if (!run || !phase || !agent) return [padRow("No agent selected", cols)];
+  if (!phase || !agent) return [padRow("No agent selected", cols)];
 
-  const lines: string[] = [
-    `${ansi.text}${agent.label}${ansi.reset}  ${ansi.muted}${phase.title} · ${run.runId}${ansi.reset}`,
-    `${ansi.muted}status: ${agent.status}${agent.model ? ` · ${agent.model}` : ""}${agent.tokens != null ? ` · ${agent.tokens} tok` : ""}${agent.durationMs != null ? ` · ${Math.round(agent.durationMs / 1000)}s` : ""}${ansi.reset}`,
-    "",
-  ];
-  if (agent.outputSummary) {
-    lines.push(`${ansi.text}Summary${ansi.reset}`);
-    for (const part of wrapContentLines(agent.outputSummary, cols)) {
-      lines.push(part);
-    }
-  } else if (agent.status === "running") {
-    lines.push(`${ansi.muted}Agent still running…${ansi.reset}`);
-  } else {
-    lines.push(`${ansi.muted}No output recorded.${ansi.reset}`);
+  const { leftWidth, rightWidth } = agentSplitColumnWidths(cols);
+  const leftHeader = fitLine(`${phase.title} · ${phase.agents.length} agents`, leftWidth);
+  const rightHeader = fitLine(agent.label, rightWidth);
+
+  const leftLines = phase.agents.map((a, i) =>
+    formatAgentListLine(a, i === state.selectedAgentIndex, leftWidth),
+  );
+
+  const detailLines = buildAgentDetailLines(agent, rightWidth);
+  const innerRows = Math.max(1, bodyRows - 2);
+  const maxScroll = Math.max(0, detailLines.length - innerRows);
+  const scroll = Math.min(state.agentDetailScroll, maxScroll);
+  const rightLines = detailLines.slice(scroll, scroll + innerRows);
+  while (rightLines.length < innerRows) rightLines.push("");
+
+  const contentRows = Math.max(leftLines.length, innerRows, 1);
+  const visibleRows = Math.max(1, Math.min(bodyRows - 2, contentRows));
+
+  const rows: string[] = [];
+  rows.push(padRow(splitTopRow(leftHeader, rightHeader, leftWidth, rightWidth), cols));
+
+  for (let i = 0; i < visibleRows; i++) {
+    rows.push(
+      padRow(
+        splitDataRow(leftLines[i] ?? "", rightLines[i] ?? "", leftWidth, rightWidth),
+        cols,
+      ),
+    );
   }
-  if (state.notice) {
-    lines.push("");
-    lines.push(`${ansi.green}${state.notice}${ansi.reset}`);
-  }
-  return lines.map((line) => padRow(line, cols));
+
+  rows.push(padRow(splitBottomRow(leftWidth, rightWidth), cols));
+  return rows;
 }
 
-export function workflowsPanelFooterHints(state: WorkflowsPanelState): string {
-  return footerHints(state);
+export function agentDetailScrollHint(
+  state: WorkflowsPanelState,
+  bodyRows: number,
+  cols: number,
+): string | undefined {
+  if (state.view !== "agent") return undefined;
+  const phase = state.phases[state.selectedPhaseIndex];
+  const agent = phase?.agents[state.selectedAgentIndex];
+  if (!phase || !agent) return undefined;
+  const { rightWidth } = agentSplitColumnWidths(cols);
+  const detailLines = buildAgentDetailLines(agent, rightWidth);
+  const innerRows = Math.max(1, bodyRows - 2);
+  const maxScroll = Math.max(0, detailLines.length - innerRows);
+  if (maxScroll <= 0) return undefined;
+  const scroll = Math.min(state.agentDetailScroll, maxScroll);
+  const from = scroll + 1;
+  const to = Math.min(scroll + innerRows, detailLines.length);
+  const arrow = scroll < maxScroll ? " ↓" : scroll > 0 ? " ↑" : "";
+  return `${from}-${to} of ${detailLines.length}${arrow}`;
 }
 
-function footerHints(state: WorkflowsPanelState): string {
+export function workflowsPanelFooterHints(
+  state: WorkflowsPanelState,
+  opts?: { scrollHint?: string; cols?: number },
+): string {
+  return footerHints(state, opts);
+}
+
+function footerHints(
+  state: WorkflowsPanelState,
+  opts?: { scrollHint?: string; cols?: number },
+): string {
+  const cols = opts?.cols ?? 80;
   if (state.view === "agent") {
-    return `${ansi.muted}esc back to phases${ansi.reset}`;
+    const hints = `${ansi.muted}↑/↓ agent · j/k scroll · esc back · s save${ansi.reset}`;
+    const hint = opts?.scrollHint;
+    if (hint) {
+      return alignRight(hints, `${ansi.muted}${hint}${ansi.reset}`, cols);
+    }
+    return hints;
   }
   if (state.view === "detail") {
     const run = state.runs[state.selectedIndex];
     const running = run?.status === "running" || run?.status === "pending";
-    const hints = ["↑/↓ select", "Tab agent", "Enter detail", "esc back", "s save"];
+    const hints =
+      state.detailFocus === "phase"
+        ? ["↑/↓ phase", "Enter/→ agents", "esc back", "s save"]
+        : ["↑/↓ agent", "Enter/→ detail", "←/esc back", "s save"];
     if (running) hints.push("x stop");
     return `${ansi.muted}${hints.join(" · ")}${ansi.reset}`;
   }
@@ -365,7 +480,7 @@ export function renderWorkflowsFullScreen(
       set(line);
     }
     while (row < rows - 1) set("");
-    set(workflowsPanelFooterHints(state));
+    set(workflowsPanelFooterHints(state, { cols }));
     return screen;
   }
 
@@ -402,7 +517,7 @@ export function renderWorkflowsFullScreen(
 
   const body =
     state.view === "agent"
-      ? renderAgentBody(state, cols)
+      ? renderAgentBody(state, cols, bodyRows)
       : renderDetailBody(state, cols, bodyRows);
 
   for (const line of body) {
@@ -410,11 +525,29 @@ export function renderWorkflowsFullScreen(
     set(line);
   }
   while (row < footerRow) set("");
-  screen[footerRow] = padRow(workflowsPanelFooterHints(state), cols);
+
+  const scrollHint =
+    state.view === "agent" ? agentDetailScrollHint(state, bodyRows, cols) : undefined;
+  screen[footerRow] = padRow(workflowsPanelFooterHints(state, { scrollHint, cols }), cols);
   return screen;
 }
 
 /** Legacy line list — used in tests; prefer renderWorkflowsFullScreen in layout. */
 export function renderWorkflowsPanelLines(state: WorkflowsPanelState, cols: number): string[] {
   return renderWorkflowsFullScreen(state, cols, 40).filter((line) => line.trim().length > 0);
+}
+
+export function createInitialWorkflowsPanelState(
+  runs: WorkflowRunRecord[] = [],
+): WorkflowsPanelState {
+  return {
+    view: "list",
+    runs,
+    selectedIndex: 0,
+    selectedPhaseIndex: 0,
+    selectedAgentIndex: 0,
+    phases: [],
+    detailFocus: "phase",
+    agentDetailScroll: 0,
+  };
 }
