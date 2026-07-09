@@ -3,8 +3,8 @@ import { normalizeToolConfirmResult } from "@kako/shared";
 
 describe("normalizeToolConfirmResult", () => {
   it("wraps boolean results", () => {
-    expect(normalizeToolConfirmResult(true)).toEqual({ allowed: true });
-    expect(normalizeToolConfirmResult(false)).toEqual({ allowed: false });
+    expect(normalizeToolConfirmResult(true)).toEqual({ allowed: true, inputPatch: undefined });
+    expect(normalizeToolConfirmResult(false)).toEqual({ allowed: false, inputPatch: undefined });
   });
 
   it("passes through structured results", () => {
@@ -17,6 +17,7 @@ describe("normalizeToolConfirmResult", () => {
       allowed: true,
       permissionMode: "bypassPermissions",
       denialReason: undefined,
+      inputPatch: undefined,
     });
   });
 
@@ -30,6 +31,21 @@ describe("normalizeToolConfirmResult", () => {
       allowed: false,
       permissionMode: undefined,
       denialReason: "User requested plan changes",
+      inputPatch: undefined,
+    });
+  });
+
+  it("passes inputPatch through", () => {
+    expect(
+      normalizeToolConfirmResult({
+        allowed: true,
+        inputPatch: { scriptPath: "/tmp/preview.js" },
+      }),
+    ).toEqual({
+      allowed: true,
+      permissionMode: undefined,
+      denialReason: undefined,
+      inputPatch: { scriptPath: "/tmp/preview.js" },
     });
   });
 });

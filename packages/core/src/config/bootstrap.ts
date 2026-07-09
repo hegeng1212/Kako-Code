@@ -11,8 +11,9 @@ import {
   getMemoryDir,
   getRuntimeDir,
   getSkillsDir,
+  getWorkflowTemplatesDir,
 } from "./paths.js";
-import { findBundledAgentsDir, findBundledSkillsDir } from "./bundled-assets.js";
+import { findBundledAgentsDir, findBundledSkillsDir, findBundledWorkflowsDir } from "./bundled-assets.js";
 
 const DEFAULT_SKILLS_YAML = `# Global slash command mappings for Kako CLI
 # Map command name -> skill id or multiline prompt text
@@ -111,6 +112,14 @@ export async function initializeKakoHome(): Promise<KakoHomeInitResult> {
 
   if (await seedDirFromBundled(await findBundledSkillsDir(), getSkillsDir(), "brainstorming/SKILL.md")) {
     created.push(getSkillsDir());
+  }
+
+  const workflowTemplates = await findBundledWorkflowsDir();
+  if (
+    workflowTemplates &&
+    (await seedDirFromBundled(workflowTemplates, getWorkflowTemplatesDir(), "deep-research.js"))
+  ) {
+    created.push(getWorkflowTemplatesDir());
   }
 
   if (await writeFileIfMissing(join(getConfigDir(), "skills.yaml"), DEFAULT_SKILLS_YAML)) {

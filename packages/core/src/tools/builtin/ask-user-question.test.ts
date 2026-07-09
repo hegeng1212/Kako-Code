@@ -140,6 +140,7 @@ describe("formatAskUserQuestionResult", () => {
     });
     expect(text).toContain("Your questions have been answered");
     expect(text).toContain('"Q?"="A"');
+    expect(text).toContain("You can now continue with these answers in mind.");
   });
 
   it("serializes declined state for model consumption", () => {

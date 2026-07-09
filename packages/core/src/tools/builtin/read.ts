@@ -4,7 +4,7 @@ import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_READ_DESCRIPTION } from "../claude-tool-text.js";
 import { findSkillByMdPath } from "../../skills/loader.js";
-import { isImagePath, isOfficeDocumentPath, isPdfPath, NOTEBOOK_EXTENSION } from "../../media/mime.js";
+import { isImagePath, isOfficeDocumentPath, isPdfPath, isSpreadsheetPath, NOTEBOOK_EXTENSION } from "../../media/mime.js";
 import { readMediaFile } from "../../media/read-media.js";
 import { formatNotebookForRead } from "./notebook.js";
 import { formatTextLines } from "./text-format.js";
@@ -53,6 +53,8 @@ export interface ParsedReadInput {
   offset: number;
   limit: number;
   pages?: string;
+  explicitLimit: boolean;
+  explicitOffset: boolean;
 }
 
 export function parseReadInput(raw: Record<string, unknown>): ParsedReadInput {
@@ -63,10 +65,12 @@ export function parseReadInput(raw: Record<string, unknown>): ParsedReadInput {
   if (!isAbsolute(filePath)) {
     throw new Error("Read requires file_path to be an absolute path");
   }
+  const explicitLimit = raw.limit !== undefined && raw.limit !== null;
+  const explicitOffset = raw.offset !== undefined && raw.offset !== null;
   const offset = resolveReadOffset(raw.offset);
-  const limit = resolveReadLimit(raw.limit);
+  const limit = explicitLimit ? resolveReadLimit(raw.limit) : MAX_READ_LINES;
   const pages = raw.pages !== undefined ? String(raw.pages).trim() : undefined;
-  return { filePath, offset, limit, pages };
+  return { filePath, offset, limit, pages, explicitLimit, explicitOffset };
 }
 
 export function resolveReadOffset(offset: unknown): number {
@@ -114,10 +118,13 @@ export const readHandler: ToolHandler = async (input, context) => {
   const ext = extensionOf(parsed.filePath);
 
   if (isImagePath(parsed.filePath) || isPdfPath(parsed.filePath) || isOfficeDocumentPath(parsed.filePath)) {
+    const spreadsheetProbe =
+      isSpreadsheetPath(parsed.filePath) && !parsed.explicitLimit;
     const media = await readMediaFile(parsed.filePath, {
       pages: parsed.pages,
-      offset: parsed.offset,
-      limit: parsed.limit,
+      offset: parsed.explicitOffset ? parsed.offset : undefined,
+      limit: spreadsheetProbe ? undefined : parsed.limit,
+      explicitLimit: parsed.explicitLimit,
     });
     if (typeof media !== "string") {
       return media;

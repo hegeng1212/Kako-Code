@@ -18,6 +18,12 @@ describe("adaptClaudeCodeToolText", () => {
     );
   });
 
+  it("substitutes workflow registry paths", () => {
+    expect(adaptClaudeCodeToolText("Load from .claude/workflows/review.js")).toBe(
+      "Load from .kako/workflows/review.js",
+    );
+  });
+
   it("substitutes git co-author and PR footer lines", () => {
     const raw = `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 🤖 Generated with [Claude Code](https://claude.com/claude-code)`;

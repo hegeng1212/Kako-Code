@@ -10,4 +10,5 @@ export * from "./session.js";
 export * from "./hook.js";
 export * from "./observability.js";
 export * from "./provider.js";
+export * from "./search.js";
 export * from "./mcp.js";

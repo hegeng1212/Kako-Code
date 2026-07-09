@@ -1,11 +1,22 @@
 import {
+  aggregateWorkflowJournal,
+  countRunningWorkflows,
   findLeadingAbsolutePath,
   isImagePath,
+  loadWorkflowMetaFromScriptPath,
+  loadWorkflowRuns,
   normalizeClipboardPath,
+  primaryRunningWorkflow,
   readClipboardImage,
   readClipboardText,
+  readJournalEntries,
+  saveWorkflowArtifact,
+  stopWorkflowByRunId,
   storeClipboardImage,
   storeUserAttachment,
+  type SystemSkillEntry,
+  type WorkflowMeta,
+  type WorkflowRunRecord,
 } from "@kako/core";
 import type { AskUserQuestionItem, AskUserQuestionResult, UserAttachment } from "@kako/shared";
 import { extractImageLabelsInOrder, formatImageMarker, nextImageIndexFromText } from "./image-markers.js";
@@ -56,9 +67,48 @@ import {
   renderPlanReviewPanelLines,
   type PlanReviewDecision,
 } from "./plan-review.js";
-import { openPlanInEditor, readPlanFileText } from "./open-editor.js";
+import { openFileInEditor, openPlanInEditor, readPlanFileText } from "./open-editor.js";
 import { renderHistorySeparator, renderPlanModeFooterHint } from "./input-footer.js";
+import {
+  completeSlashSuggestion,
+  filterSlashSuggestions,
+  planSlashSuggestFooter,
+  renderSlashSuggestLines,
+  resolveSlashSubmitValue,
+  shouldShowSlashMenu,
+  slashSuggestQuery,
+  SLASH_SUGGEST_HINT,
+} from "./slash-suggest.js";
+import {
+  renderWorkflowFooterLine,
+  renderWorkflowWaitingLine,
+  type WorkflowFooterState,
+} from "./workflow-footer.js";
+import {
+  buildWorkflowConfirmChoiceRows,
+  padWorkflowConfirmLines,
+  renderWorkflowConfirmContentLines,
+  renderWorkflowConfirmPanelLines,
+  WORKFLOW_CONFIRM_HINT,
+  workflowConfirmDecisionFromRow,
+  workflowConfirmOptionIndexFromRow,
+  workflowConfirmPanelRowCount,
+  workflowConfirmToggleScript,
+  type WorkflowConfirmDecision,
+  type WorkflowConfirmViewState,
+} from "./workflow-confirm.js";
+import {
+  renderWorkflowsFullScreen,
+  sortWorkflowRuns,
+  type WorkflowsPanelState,
+} from "./workflows-panel.js";
 import { InputHistory } from "./input-history.js";
+import type { ChatHeaderMode } from "./cli-usage.js";
+import {
+  renderChatHeader,
+  resolveEffectiveHeaderMode,
+  type WelcomeScreenOptions,
+} from "./welcome.js";
 import { ansi, displayWidth, visibleLength } from "./ansi.js";
 import type { PermissionMode } from "@kako/shared";
 
@@ -73,6 +123,9 @@ const CLEAR_SCROLLBACK = "\x1b[3J";
 const ENABLE_MOUSE = "\x1b[?1000h\x1b[?1006h";
 const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
 const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
+/** xterm focus-in/out reporting — repaint after hide/show or tab switch. */
+const ENABLE_FOCUS_REPORTING = "\x1b[?1004h";
+const DISABLE_FOCUS_REPORTING = "\x1b[?1004l";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 /** Disable all mouse tracking including motion (preserves drag-to-select). */
@@ -146,11 +199,13 @@ type InputAction =
   | { type: "cursorEnd" }
   | { type: "historyUp" }
   | { type: "historyDown" }
+  | { type: "tab" }
   | { type: "shiftTab" }
   | { type: "paste" }
   | { type: "pasteText"; text: string }
   | { type: "scroll"; delta: number }
   | { type: "click"; row: number; col: number }
+  | { type: "focusIn" }
   | { type: "interrupt" };
 
 function prevCodePointIndex(text: string, index: number): number {
@@ -207,6 +262,16 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
 
     if (ch === "\x1b") {
       const rest = data.slice(i);
+      if (rest.startsWith("\x1b[I")) {
+        actions.push({ type: "focusIn" });
+        i += 3;
+        continue;
+      }
+      if (rest.startsWith("\x1b[O")) {
+        i += 3;
+        continue;
+      }
+
       const x10 = rest.match(/^\x1b\[M([\x20-\x7e])([\x21-\x7e])([\x21-\x7e])/);
       if (x10) {
         const btn = x10[1]!.charCodeAt(0) - 32;
@@ -275,6 +340,10 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
           actions.push({ type: "cursorRight" });
         } else if (code === "D") {
           actions.push({ type: "cursorLeft" });
+        } else if (code === "I") {
+          actions.push({ type: "focusIn" });
+        } else if (code === "O") {
+          // focus out — ignore
         } else if (code === "Z") {
           actions.push({ type: "shiftTab" });
         }
@@ -286,7 +355,13 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
       continue;
     }
 
-    if (ch >= " " || ch === "\t") {
+    if (ch === "\t") {
+      actions.push({ type: "tab" });
+      i++;
+      continue;
+    }
+
+    if (ch >= " ") {
       actions.push({ type: "char", char: ch });
     }
     i++;
@@ -295,13 +370,42 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
   return { actions, rest: data.slice(i) };
 }
 
+/** Coalesce char/enter bursts that look like unbracketed terminal paste. */
+export async function coalescePasteActions(actions: InputAction[]): Promise<InputAction[]> {
+  if (actions.length >= 2 && actions.every((action) => action.type === "char")) {
+    const text = actions.map((action) => (action.type === "char" ? action.char : "")).join("");
+    return [{ type: "pasteText", text }];
+  }
+  if (
+    actions.length >= 3 &&
+    actions.some((action) => action.type === "enter") &&
+    actions.every((action) => action.type === "char" || action.type === "enter")
+  ) {
+    let text = "";
+    for (const action of actions) {
+      if (action.type === "char") text += action.char;
+      else if (action.type === "enter") text += "\n";
+    }
+    if (text.includes("\n")) {
+      return [{ type: "pasteText", text }];
+    }
+  }
+  return actions;
+}
+
 function footerSeparator(cols: number): string {
   return `${ansi.line}${H.repeat(cols)}${ansi.reset}`;
 }
 
+function inputFooterSeparator(cols: number): string {
+  return `${ansi.inputBorder}${H.repeat(cols)}${ansi.reset}`;
+}
+
 export class ChatLayout {
-  private getHeader: () => string;
+  private getWelcomeOpts: () => WelcomeScreenOptions;
   private footerParts: ClaudeFooterParts;
+  private readonly preferredHeaderMode: ChatHeaderMode;
+  private lastEffectiveHeaderMode: ChatHeaderMode | null = null;
   private plainLines: string[] = [];
   private turns: ChatTurn[] = [];
   private activeTurn: ChatTurn | null = null;
@@ -318,6 +422,11 @@ export class ChatLayout {
   private shortcutsOverride: string | null = null;
   private exitHintTimer: ReturnType<typeof setTimeout> | null = null;
   private resizeListener: (() => void) | null = null;
+  private resumeListener: (() => void) | null = null;
+  private redrawDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPaintedHeaderLines = 0;
+  /** Set when the terminal may have cleared the alt-screen buffer (focus/resume). */
+  private viewportNeedsFullRedraw = false;
   private inputListener: ((chunk: string) => void) | null = null;
   private inputResolve: ((value: string) => void) | null = null;
   private inputReject: ((reason: ExitRequestedError) => void) | null = null;
@@ -364,6 +473,43 @@ export class ChatLayout {
   private planReviewText = "";
   private planReviewSelected = 0;
   private planReviewResolve: ((decision: PlanReviewDecision) => void) | null = null;
+
+  private slashInvokableSkills: SystemSkillEntry[] = [];
+  private slashSuggestSelected = 0;
+  private lastSlashSuggestQuery = "";
+  /** Tracks last painted slash-menu footer extent for clearing shrink leftovers. */
+  private slashFooterDrawExtent = { top: 0, rows: 0 };
+  /** maxVisible passed to renderSlashSuggestLines — kept in sync with footer budget. */
+  private slashSuggestMaxVisible = 4;
+
+  private workflowFooter: WorkflowFooterState | null = null;
+  private workflowWaitingCount = 0;
+  private workflowPollTimer: ReturnType<typeof setInterval> | null = null;
+  private workflowPollSessionId = "";
+
+  private readingWorkflowsPanel = false;
+  private workflowsPanelState: WorkflowsPanelState = {
+    view: "list",
+    runs: [],
+    selectedIndex: 0,
+    selectedPhaseIndex: 0,
+    selectedAgentIndex: 0,
+    phases: [],
+  };
+  private workflowsPanelSessionId = "";
+  private workflowsPanelResolve: (() => void) | null = null;
+
+  private workflowConfirmMode = false;
+  private workflowConfirmMeta: WorkflowMeta | null = null;
+  private workflowConfirmArgs: unknown;
+  private workflowConfirmScriptSource = "";
+  private workflowConfirmScriptPath = "";
+  private workflowConfirmView: WorkflowConfirmViewState = {
+    scriptVisible: false,
+    scriptToggled: false,
+    selectedIndex: 0,
+  };
+  private workflowConfirmResolve: ((decision: WorkflowConfirmDecision) => void) | null = null;
 
   private inputHistory = new InputHistory();
   private permissionMode: PermissionMode = "default";
@@ -434,23 +580,131 @@ export class ChatLayout {
   /** Cached visible content rows — skip unchanged lines so text stays selectable. */
   private lastContentRendered: string[] = [];
 
-  constructor(getHeader: () => string, footerParts: ClaudeFooterParts) {
-    this.getHeader = getHeader;
+  constructor(
+    getWelcomeOpts: () => WelcomeScreenOptions,
+    footerParts: ClaudeFooterParts,
+    preferredHeaderMode: ChatHeaderMode = "standard",
+  ) {
+    this.getWelcomeOpts = getWelcomeOpts;
     this.footerParts = footerParts;
+    this.preferredHeaderMode = preferredHeaderMode;
+  }
+
+  private effectiveHeaderMode(): ChatHeaderMode {
+    return resolveEffectiveHeaderMode(this.preferredHeaderMode, getTerminalSize());
   }
 
   get headerText(): string {
-    return this.getHeader();
+    const { cols } = getTerminalSize();
+    return renderChatHeader(this.getWelcomeOpts(), this.effectiveHeaderMode(), cols);
   }
 
   get headerLines(): string[] {
-    return this.headerText.split("\n").filter((line, index) => !(index === 0 && line === ""));
+    const lines = this.headerText.split("\n");
+    if (this.effectiveHeaderMode() === "mini") return lines;
+    return lines.filter((line, index) => !(index === 0 && line === ""));
   }
 
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
     this.nextImageIndex = 1;
     this.pendingImages = [];
+  }
+
+  setSlashInvokableSkills(skills: SystemSkillEntry[]): void {
+    this.slashInvokableSkills = skills;
+  }
+
+  isTurnInProgress(): boolean {
+    return Boolean(this.activeTurn && this.activeTurn.phase !== "done");
+  }
+
+  appendWorkflowCompletedEvent(text: string): void {
+    this.appendTurnTimeline(text);
+  }
+
+  startWorkflowPolling(sessionId: string): void {
+    this.stopWorkflowPolling();
+    this.workflowPollSessionId = sessionId;
+    void this.refreshWorkflowFooter(sessionId);
+    this.workflowPollTimer = setInterval(() => {
+      void this.refreshWorkflowFooter(this.workflowPollSessionId);
+    }, 1000);
+  }
+
+  stopWorkflowPolling(): void {
+    if (this.workflowPollTimer) {
+      clearInterval(this.workflowPollTimer);
+      this.workflowPollTimer = null;
+    }
+    this.workflowPollSessionId = "";
+  }
+
+  async refreshWorkflowFooter(sessionId: string): Promise<void> {
+    if (!sessionId) return;
+    try {
+      const runs = await loadWorkflowRuns(sessionId);
+      const primary = primaryRunningWorkflow(runs);
+      if (primary && (primary.status === "running" || primary.status === "pending")) {
+        const start = new Date(primary.startedAt).getTime();
+        this.workflowFooter = {
+          name: primary.name,
+          description: primary.description,
+          agentsDone: primary.agentsDone,
+          agentsTotal: primary.agentsTotal,
+          agentsFailed: primary.agentsFailed,
+          elapsedMs: Date.now() - start,
+          status: primary.status === "pending" ? "pending" : "running",
+          currentPhase: primary.currentPhase,
+        };
+      } else {
+        this.workflowFooter = null;
+      }
+      this.workflowWaitingCount = this.isTurnInProgress() ? countRunningWorkflows(runs) : 0;
+      if (this.readingWorkflowsPanel && this.workflowsPanelSessionId === sessionId) {
+        this.workflowsPanelState = {
+          ...this.workflowsPanelState,
+          runs: sortWorkflowRuns(runs),
+        };
+      }
+      if (!this.active) return;
+      if (this.readingWorkflowsPanel && this.workflowsPanelSessionId === sessionId) {
+        if (this.workflowsPanelState.view === "detail" || this.workflowsPanelState.view === "agent") {
+          const run = this.workflowsPanelState.runs[this.workflowsPanelState.selectedIndex];
+          if (run) await this.loadWorkflowsPanelPhases(run);
+        }
+        this.drawWorkflowsPanel();
+        return;
+      }
+      if (this.readingLine && !this.inputBuffer.length) {
+        this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
+      } else {
+        this.invalidateContentCache();
+        this.redrawContent();
+      }
+    } catch {
+      // Ignore transient read errors during polling.
+    }
+  }
+
+  async openWorkflowsPanel(sessionId: string): Promise<void> {
+    const runs = sortWorkflowRuns(await loadWorkflowRuns(sessionId));
+    this.workflowsPanelSessionId = sessionId;
+    this.workflowsPanelState = {
+      view: "list",
+      runs,
+      selectedIndex: 0,
+      selectedPhaseIndex: 0,
+      selectedAgentIndex: 0,
+      phases: [],
+    };
+    this.readingWorkflowsPanel = true;
+    this.invalidateContentCache();
+    this.drawWorkflowsPanel();
+
+    return new Promise((resolve) => {
+      this.workflowsPanelResolve = resolve;
+    });
   }
 
   consumePendingAttachments(text: string): UserAttachment[] {
@@ -466,7 +720,7 @@ export class ChatLayout {
   }
 
   get headerHeight(): number {
-    return this.headerLines.length;
+    return this.effectiveHeaderMode() === "standard" ? this.headerLines.length : 0;
   }
 
   get contentHeight(): number {
@@ -479,28 +733,61 @@ export class ChatLayout {
     return rows - this.footerHeight + 1;
   }
 
+  /** Footer height capped so input/slash menu never overlaps the welcome header. */
+  private maxFooterHeight(): number {
+    const { rows } = getTerminalSize();
+    return Math.max(this.defaultFooterHeight, rows - this.headerHeight - 1);
+  }
+
+  private clampFooterHeight(requested: number): number {
+    return Math.min(requested, this.maxFooterHeight());
+  }
+
   start(): void {
     this.active = true;
     process.stdout.write(ENTER_ALT_SCREEN);
     process.stdout.write(HIDE_CURSOR);
     this.attachInput();
-    this.resizeListener = () => this.redraw();
+    this.resizeListener = () => this.scheduleFullRedraw();
     process.stdout.on("resize", this.resizeListener);
+    if (process.platform !== "win32") {
+      this.resumeListener = () => this.scheduleFullRedraw();
+      process.on("SIGCONT", this.resumeListener);
+    }
     this.redraw();
   }
 
   stop(): void {
     if (!this.active) return;
     this.stopTurnTick();
+    this.stopWorkflowPolling();
     this.clearExitHint();
     this.detachInput();
     if (this.resizeListener) {
       process.stdout.off("resize", this.resizeListener);
       this.resizeListener = null;
     }
+    if (this.resumeListener) {
+      process.off("SIGCONT", this.resumeListener);
+      this.resumeListener = null;
+    }
+    if (this.redrawDebounceTimer) {
+      clearTimeout(this.redrawDebounceTimer);
+      this.redrawDebounceTimer = null;
+    }
     process.stdout.write(LEAVE_ALT_SCREEN);
     process.stdout.write(SHOW_CURSOR);
     this.active = false;
+  }
+
+  private scheduleFullRedraw(): void {
+    if (!this.active) return;
+    this.viewportNeedsFullRedraw = true;
+    if (this.redrawDebounceTimer) clearTimeout(this.redrawDebounceTimer);
+    this.redrawDebounceTimer = setTimeout(() => {
+      this.redrawDebounceTimer = null;
+      this.redraw();
+    }, 32);
   }
 
   private attachInput(): void {
@@ -511,6 +798,7 @@ export class ChatLayout {
     if (process.stdout.isTTY) {
       process.stdout.write(ENABLE_MOUSE);
       process.stdout.write(ENABLE_BRACKETED_PASTE);
+      process.stdout.write(ENABLE_FOCUS_REPORTING);
     }
     this.inputListener = (chunk: string) => this.onInput(chunk);
     process.stdin.on("data", this.inputListener);
@@ -528,13 +816,22 @@ export class ChatLayout {
     if (process.stdout.isTTY) {
       process.stdout.write(DISABLE_MOUSE);
       process.stdout.write(DISABLE_BRACKETED_PASTE);
+      process.stdout.write(DISABLE_FOCUS_REPORTING);
     }
   }
 
   private onInput(chunk: string): void {
     if (!this.active) return;
+    if (this.workflowConfirmMode) {
+      void this.handleWorkflowConfirmInput(chunk);
+      return;
+    }
     if (this.planReviewMode) {
       void this.handlePlanReviewInput(chunk);
+      return;
+    }
+    if (this.readingWorkflowsPanel) {
+      void this.handleWorkflowsPanelInput(chunk);
       return;
     }
     if (this.readingChoice) {
@@ -559,6 +856,10 @@ export class ChatLayout {
     for (const action of expanded) {
       if (action.type === "click") {
         this.handleClick(action.row, action.col);
+        continue;
+      }
+      if (action.type === "focusIn") {
+        this.scheduleFullRedraw();
         continue;
       }
       if (action.type === "scroll") {
@@ -844,14 +1145,16 @@ export class ChatLayout {
 
   private updateWizardFooterHeight(): void {
     const { cols } = getTerminalSize();
-    this.activeFooterHeight = questionWizardPanelRowCount({
-      questions: this.wizardQuestions,
-      answers: this.wizardAnswers,
-      focusIndex: this.wizardFocus,
-      rows: this.choiceRows,
-      selectedIndex: this.choiceSelected,
-      cols,
-    });
+    this.activeFooterHeight = this.clampFooterHeight(
+      questionWizardPanelRowCount({
+        questions: this.wizardQuestions,
+        answers: this.wizardAnswers,
+        focusIndex: this.wizardFocus,
+        rows: this.choiceRows,
+        selectedIndex: this.choiceSelected,
+        cols,
+      }),
+    );
   }
 
   private redrawWizardPanel(): void {
@@ -951,18 +1254,20 @@ export class ChatLayout {
 
   private updateChoiceFooterHeight(): void {
     const { cols } = getTerminalSize();
-    this.activeFooterHeight = choicePanelRowCount({
-      header: this.choiceHeader,
-      question: this.choiceQuestion,
-      rows: this.choiceRows,
-      selectedIndex: this.choiceSelected,
-      cols,
-      questionIndex: this.choiceQuestionIndex,
-      questionTotal: this.choiceQuestionTotal,
-      showHeader: this.choiceShowHeaderForPanel(),
-      multiSelect: this.choiceMultiSelect,
-      checkedOptionIndexes: this.choiceCheckedOptions,
-    });
+    this.activeFooterHeight = this.clampFooterHeight(
+      choicePanelRowCount({
+        header: this.choiceHeader,
+        question: this.choiceQuestion,
+        rows: this.choiceRows,
+        selectedIndex: this.choiceSelected,
+        cols,
+        questionIndex: this.choiceQuestionIndex,
+        questionTotal: this.choiceQuestionTotal,
+        showHeader: this.choiceShowHeaderForPanel(),
+        multiSelect: this.choiceMultiSelect,
+        checkedOptionIndexes: this.choiceCheckedOptions,
+      }),
+    );
   }
 
   /** Multi-question wizard always shows the chip bar; single-question hides it until ↑/↓. */
@@ -1035,6 +1340,8 @@ export class ChatLayout {
   private handleReadLineAction(action: InputAction): void {
     const placeholder = this.readLinePlaceholder;
     const plain = this.readLinePlain;
+    const suggestions = this.filteredSlashSuggestions();
+    const slashOpen = suggestions.length > 0;
 
     if (action.type === "interrupt") {
       const reject = this.inputReject;
@@ -1043,7 +1350,13 @@ export class ChatLayout {
       return;
     }
     if (action.type === "enter") {
-      const value = this.inputBuffer;
+      const value = slashOpen
+        ? resolveSlashSubmitValue(
+            this.inputBuffer,
+            suggestions,
+            this.slashSuggestSelected,
+          )
+        : this.inputBuffer;
       const resolve = this.inputResolve;
       this.inputHistory.commit(value);
       this.inputHistory.resetBrowse();
@@ -1051,6 +1364,27 @@ export class ChatLayout {
       process.stdout.write(HIDE_CURSOR);
       this.drawFooter("", plain ? undefined : placeholder);
       resolve?.(value);
+      return;
+    }
+    if (slashOpen && action.type === "historyUp") {
+      this.slashSuggestSelected = Math.max(0, this.slashSuggestSelected - 1);
+      this.refreshInputFooter(plain, placeholder);
+      return;
+    }
+    if (slashOpen && action.type === "historyDown") {
+      this.slashSuggestSelected = Math.min(
+        suggestions.length - 1,
+        this.slashSuggestSelected + 1,
+      );
+      this.refreshInputFooter(plain, placeholder);
+      return;
+    }
+    if (slashOpen && (action.type === "tab" || action.type === "shiftTab")) {
+      this.applySlashTabComplete(suggestions);
+      this.refreshInputFooter(plain, placeholder);
+      return;
+    }
+    if (action.type === "tab") {
       return;
     }
     if (action.type === "historyUp") {
@@ -1103,6 +1437,76 @@ export class ChatLayout {
       this.inputCursor += action.char.length;
     } else {
       // enter / interrupt handled above
+    }
+
+    this.refreshInputFooter(plain, placeholder);
+  }
+
+  private applySlashTabComplete(suggestions: SystemSkillEntry[]): void {
+    const entry = suggestions[this.slashSuggestSelected] ?? suggestions[0];
+    if (!entry) return;
+    this.inputBuffer = completeSlashSuggestion(this.inputBuffer, entry);
+    this.inputCursor = this.inputBuffer.length;
+    this.slashSuggestSelected = 0;
+    this.lastSlashSuggestQuery = slashSuggestQuery(this.inputBuffer, this.inputCursor) ?? "";
+  }
+
+  private filteredSlashSuggestions(): SystemSkillEntry[] {
+    if (!this.readingLine || this.readingChoice || this.wizardMode || this.readingWorkflowsPanel) {
+      return [];
+    }
+    if (!shouldShowSlashMenu(this.inputBuffer, this.inputCursor)) return [];
+    const query = slashSuggestQuery(this.inputBuffer, this.inputCursor);
+    if (query === null) return [];
+    return filterSlashSuggestions(query, this.slashInvokableSkills);
+  }
+
+  private syncSlashSuggestSelection(suggestions: SystemSkillEntry[]): void {
+    const query = slashSuggestQuery(this.inputBuffer, this.inputCursor) ?? "";
+    if (query !== this.lastSlashSuggestQuery) {
+      this.slashSuggestSelected = 0;
+      this.lastSlashSuggestQuery = query;
+    }
+    if (!suggestions.length) {
+      this.slashSuggestSelected = 0;
+      return;
+    }
+    if (this.slashSuggestSelected >= suggestions.length) {
+      this.slashSuggestSelected = suggestions.length - 1;
+    }
+  }
+
+  private updateSlashSuggestFooterHeight(suggestions: SystemSkillEntry[]): void {
+    if (!suggestions.length) {
+      this.activeFooterHeight = this.defaultFooterHeight;
+      this.slashSuggestMaxVisible = 4;
+      return;
+    }
+    const { cols } = getTerminalSize();
+    const plan = planSlashSuggestFooter({
+      skills: suggestions,
+      selectedIndex: this.slashSuggestSelected,
+      cols,
+      maxHeight: this.maxFooterHeight(),
+      inputFooterHeight: this.defaultFooterHeight,
+    });
+    this.activeFooterHeight = plan.height;
+    this.slashSuggestMaxVisible = plan.maxVisible > 0 ? plan.maxVisible : 4;
+  }
+
+  private refreshInputFooter(plain: boolean, placeholder?: string): void {
+    const suggestions = this.filteredSlashSuggestions();
+    this.syncSlashSuggestSelection(suggestions);
+    const prevHeight = this.activeFooterHeight;
+    this.updateSlashSuggestFooterHeight(suggestions);
+
+    if (suggestions.length > 0 || prevHeight !== this.activeFooterHeight) {
+      this.invalidateContentCache();
+      this.redrawContent();
+      if (this.effectiveHeaderMode() === "standard") {
+        this.refreshHeader();
+      }
+      return;
     }
 
     this.drawFooter(
@@ -1174,7 +1578,7 @@ export class ChatLayout {
       this.inputBuffer.slice(0, this.inputCursor) + text + this.inputBuffer.slice(this.inputCursor);
     this.inputCursor += text.length;
     if (this.readingLine) {
-      this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
+      this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
     }
   }
 
@@ -1185,18 +1589,30 @@ export class ChatLayout {
     this.inputBuffer = "";
     this.inputCursor = 0;
     this.readLinePlaceholder = undefined;
-    if (!this.readingChoice) {
+    this.slashSuggestSelected = 0;
+    this.lastSlashSuggestQuery = "";
+    this.slashFooterDrawExtent = { top: 0, rows: 0 };
+    this.slashSuggestMaxVisible = 4;
+    if (!this.readingChoice && !this.readingWorkflowsPanel) {
       this.activeFooterHeight = this.defaultFooterHeight;
     }
+  }
+
+  private scrollableHeaderLines(): RenderLine[] {
+    if (this.effectiveHeaderMode() !== "mini") return [];
+    return this.headerLines.map((text) => ({ text }));
   }
 
   private allRenderLines(): RenderLine[] {
     if (this.planReviewMode) {
       return this.buildPlanReviewContentLines();
     }
+    if (this.workflowConfirmMode) {
+      return this.buildWorkflowConfirmContentLines();
+    }
     const { cols } = getTerminalSize();
     const now = Date.now();
-    const lines: RenderLine[] = [CHAT_EDGE_LINE];
+    const lines: RenderLine[] = [...this.scrollableHeaderLines(), CHAT_EDGE_LINE];
     for (const text of this.plainLines) {
       lines.push({ text });
     }
@@ -1214,10 +1630,14 @@ export class ChatLayout {
 
   /** Pinned rows at the bottom of the content area (above input). */
   private pinnedBottomLines(): string[] {
-    if (this.planReviewMode) return [];
-    if (!this.activeTurn || this.activeTurn.phase === "done") return [];
+    if (this.planReviewMode || this.workflowConfirmMode) return [];
+    const lines: string[] = [];
+    if (this.workflowWaitingCount > 0) {
+      lines.push(renderWorkflowWaitingLine(this.workflowWaitingCount));
+    }
+    if (!this.activeTurn || this.activeTurn.phase === "done") return lines;
     const now = Date.now();
-    const lines = [renderSmooshingLine(this.activeTurn, now)];
+    lines.push(renderSmooshingLine(this.activeTurn, now));
     if (this.tipText) {
       lines.push(renderTipLine(this.tipText));
     }
@@ -1678,11 +2098,11 @@ export class ChatLayout {
       this.toggleThought(line.meta.turnId);
       return;
     }
-    if (line && isToolGroupToggleLine(line.meta) && line.meta.groupId) {
+    if (line && line.meta && isToolGroupToggleLine(line.meta) && line.meta.groupId) {
       this.toggleToolGroup(line.meta.turnId, line.meta.groupId);
       return;
     }
-    if (line && isChoiceToggleLine(line.meta) && line.meta.choiceId) {
+    if (line && line.meta && isChoiceToggleLine(line.meta) && line.meta.choiceId) {
       this.toggleChoice(line.meta.turnId, line.meta.choiceId);
       return;
     }
@@ -1711,6 +2131,7 @@ export class ChatLayout {
     if (!this.activeTurn || this.activeTurn.phase === "done") return;
     if (this.readingConfirm) return;
     if (this.planReviewMode) return;
+    if (this.workflowConfirmMode) return;
     this.activeTurn.pulseFrame = (this.activeTurn.pulseFrame + 1) % 4;
     const elapsed = (Date.now() - this.activeTurn.thinkingStartedAt) / 1000;
     if (elapsed >= 3 && !this.tipText) {
@@ -1732,6 +2153,7 @@ export class ChatLayout {
     if (this.exitHintTimer) return;
     if (this.readingConfirm) return;
     if (this.planReviewMode) return;
+    if (this.workflowConfirmMode) return;
     if (this.activeTurn && this.activeTurn.phase !== "done") {
       this.shortcutsOverride = renderGeneratingStatus(this.activeTurn);
     } else if (!this.exitHintTimer) {
@@ -1741,6 +2163,16 @@ export class ChatLayout {
 
   redraw(): void {
     if (!this.active) return;
+    if (this.readingWorkflowsPanel) {
+      process.stdout.write(CLEAR_SCROLLBACK + "\x1b[2J");
+      this.drawWorkflowsPanel();
+      return;
+    }
+    const mode = this.effectiveHeaderMode();
+    if (this.lastEffectiveHeaderMode !== null && this.lastEffectiveHeaderMode !== mode) {
+      this.lastPaintedHeaderLines = 0;
+    }
+    this.lastEffectiveHeaderMode = mode;
     this.invalidateContentCache();
     if (this.followBottom) {
       this.scrollToBottom();
@@ -1751,26 +2183,49 @@ export class ChatLayout {
     const { cols } = getTerminalSize();
     let out = moveTo(1, 1) + CLEAR_SCROLLBACK + "\x1b[2J";
 
-    for (let i = 0; i < this.headerLines.length; i++) {
-      out += moveTo(i + 1);
-      out += clearLine();
-      out += padToWidth(this.headerLines[i]!, cols);
+    if (this.effectiveHeaderMode() === "standard") {
+      for (let i = 0; i < this.headerLines.length; i++) {
+        out += moveTo(i + 1);
+        out += clearLine();
+        out += padToWidth(this.headerLines[i]!, cols);
+      }
+      for (let i = this.headerLines.length; i < this.lastPaintedHeaderLines; i++) {
+        out += moveTo(i + 1);
+        out += clearLine();
+      }
+      this.lastPaintedHeaderLines = this.headerLines.length;
+    } else if (this.lastPaintedHeaderLines > 0) {
+      for (let i = 0; i < this.lastPaintedHeaderLines; i++) {
+        out += moveTo(i + 1);
+        out += clearLine();
+      }
+      this.lastPaintedHeaderLines = 0;
     }
 
     out += this.renderContentBuffer(cols);
     process.stdout.write(out);
-    if (this.planReviewMode) {
+    if (this.workflowConfirmMode) {
+      this.drawWorkflowConfirmFooter();
+    } else if (this.planReviewMode) {
       this.drawPlanReviewFooter();
+    } else if (this.readingWorkflowsPanel) {
+      this.drawWorkflowsPanel();
     } else if (this.readingChoice) {
       this.drawActiveChoiceFooter();
     } else {
       this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
     }
+    this.viewportNeedsFullRedraw = false;
   }
 
   /** Repaint the welcome header after provider/model changes from Web UI. */
   refreshHeader(): void {
     if (!this.active) return;
+    if (this.effectiveHeaderMode() === "mini") {
+      this.invalidateContentCache();
+      this.redrawContent();
+      return;
+    }
     const { cols } = getTerminalSize();
     let out = "";
     for (let i = 0; i < this.headerLines.length; i++) {
@@ -1794,16 +2249,10 @@ export class ChatLayout {
     const pinned = this.pinnedBottomLines();
     const scrollH = this.scrollableContentHeight();
     const visible = this.visibleContentLines();
-    const maxOffset = this.maxScrollOffset();
-    const scrolledUp = this.scrollOffset < maxOffset;
     let out = "";
 
     for (let i = 0; i < scrollH; i++) {
-      let line = visible[i] ?? "";
-      if (i === 0 && scrolledUp) {
-        const hint = `${ansi.muted}↑ ${maxOffset - this.scrollOffset} earlier lines · PgUp/PgDn to scroll${ansi.reset}`;
-        line = visibleLength(hint) <= cols ? hint : line;
-      }
+      const line = visible[i] ?? "";
       const padded = padToWidth(line, cols);
       if (incremental && this.lastContentRendered[i] === padded) continue;
       this.lastContentRendered[i] = padded;
@@ -1847,9 +2296,25 @@ export class ChatLayout {
 
   private redrawContent(): void {
     if (!this.active) return;
+    if (this.viewportNeedsFullRedraw) {
+      this.redraw();
+      return;
+    }
+    if (this.lastContentRendered.length !== this.contentHeight) {
+      this.invalidateContentCache();
+    }
+    if (this.readingWorkflowsPanel) {
+      this.drawWorkflowsPanel();
+      return;
+    }
+    if (this.effectiveHeaderMode() === "standard") {
+      this.refreshHeader();
+    }
     const { cols } = getTerminalSize();
     process.stdout.write(this.renderContentBuffer(cols, true));
-    if (this.planReviewMode) {
+    if (this.workflowConfirmMode) {
+      this.drawWorkflowConfirmFooter();
+    } else if (this.planReviewMode) {
       this.drawPlanReviewFooter();
     } else if (this.readingChoice) {
       this.drawActiveChoiceFooter();
@@ -1894,12 +2359,19 @@ export class ChatLayout {
   }
 
   private footerShortcutsLine(inputValue: string): string {
-    if (this.permissionMode === "plan" && !this.readingConfirm && !this.planReviewMode) {
+    if (this.permissionMode === "plan" && !this.readingConfirm && !this.planReviewMode && !this.workflowConfirmMode) {
       return renderPlanModeFooterHint();
     }
     if (this.readingLine) {
       if (inputValue.length > 0) return "";
       if (this.exitHintTimer && this.shortcutsOverride) return this.shortcutsOverride;
+      if (
+        this.workflowFooter &&
+        (this.workflowFooter.status === "running" || this.workflowFooter.status === "pending")
+      ) {
+        const { cols } = getTerminalSize();
+        return renderWorkflowFooterLine(this.workflowFooter, cols);
+      }
       return this.footerParts.shortcuts;
     }
     if (this.shortcutsOverride) return this.shortcutsOverride;
@@ -1911,32 +2383,68 @@ export class ChatLayout {
       const label = `History ${this.inputHistory.indicatorPosition()}/${this.inputHistory.length}`;
       return renderHistorySeparator(label, cols);
     }
-    return footerSeparator(cols);
+    return inputFooterSeparator(cols);
   }
 
   private drawFooter(inputValue: string, placeholder?: string): void {
     const { cols, rows } = getTerminalSize();
     const top = this.footerTop;
     const shortcuts = this.footerShortcutsLine(inputValue);
-    const footerRows = [
+    const suggestions =
+      this.readingLine && !this.readingChoice && !this.wizardMode && !this.readingWorkflowsPanel
+        ? this.filteredSlashSuggestions()
+        : [];
+
+    const inputBlock = [
       padToWidth(this.footerTopSeparator(cols), cols),
       padToWidth(this.renderInputLine(inputValue, placeholder), cols),
-      padToWidth(footerSeparator(cols), cols),
-      padToWidth(shortcuts, cols),
+      padToWidth(inputFooterSeparator(cols), cols),
+      padToWidth(suggestions.length ? SLASH_SUGGEST_HINT : shortcuts, cols),
     ];
+
+    const footerRows = suggestions.length
+      ? [
+          padToWidth(footerSeparator(cols), cols),
+          ...renderSlashSuggestLines({
+            skills: suggestions,
+            selectedIndex: this.slashSuggestSelected,
+            cols,
+            maxVisible: this.slashSuggestMaxVisible,
+          }).map((line) => padToWidth(line, cols)),
+          padToWidth(footerSeparator(cols), cols),
+          ...inputBlock,
+        ]
+      : inputBlock;
+
+    const paintedEnd = top + footerRows.length;
+    const prevExtent = this.slashFooterDrawExtent;
     let out = "";
     for (let i = 0; i < footerRows.length; i++) {
       out += moveTo(top + i);
       out += clearLine();
       out += footerRows[i]!;
     }
-    // Choice/wizard panels use a taller footer — clear leftover lines after shrinking.
-    for (let i = top + footerRows.length; i <= rows; i++) {
+
+    const prevBottom = prevExtent.top > 0 ? prevExtent.top + prevExtent.rows : 0;
+    for (let i = paintedEnd; i < prevBottom; i++) {
+      if (i > rows) break;
       out += moveTo(i);
       out += clearLine();
     }
+    for (let i = paintedEnd; i <= rows; i++) {
+      out += moveTo(i);
+      out += clearLine();
+    }
+
+    if (suggestions.length) {
+      this.slashFooterDrawExtent = { top, rows: footerRows.length };
+    } else {
+      this.slashFooterDrawExtent = { top: 0, rows: 0 };
+    }
+
     process.stdout.write(out);
     if (this.inputResolve) {
+      this.inputRow = top + footerRows.length - inputBlock.length + 1;
       const col = Math.min(cols, this.inputCursorCol(inputValue, this.inputCursor));
       process.stdout.write(moveTo(this.inputRow, col));
       process.stdout.write(SHOW_CURSOR);
@@ -1955,9 +2463,13 @@ export class ChatLayout {
   }
 
   private teardownInput(): void {
+    if (this.workflowConfirmResolve) {
+      this.finishWorkflowConfirm({ action: "cancel" });
+    }
     if (this.planReviewResolve) {
       this.finishPlanReview({ action: "cancel" });
     }
+    this.closeWorkflowsPanel();
     this.finishChoice();
     this.finishReadLine();
   }
@@ -2090,7 +2602,7 @@ export class ChatLayout {
 
   private updatePlanReviewFooterHeight(): void {
     const { cols } = getTerminalSize();
-    this.activeFooterHeight = planReviewPanelRowCount(cols);
+    this.activeFooterHeight = this.clampFooterHeight(planReviewPanelRowCount(cols));
   }
 
   private drawPlanReviewFooter(): void {
@@ -2202,6 +2714,419 @@ export class ChatLayout {
     this.planReviewPath = "";
     this.planReviewText = "";
     this.planReviewSelected = 0;
+
+    const entry = this.findLastWaitingToolEntry();
+    if (entry) entry.awaitingApproval = false;
+
+    this.restoreDefaultFooter();
+    this.invalidateContentCache();
+    this.redrawContent();
+    if (this.activeTurn && this.activeTurn.phase !== "done") {
+      this.updateGeneratingFooter();
+    }
+    resolve?.(decision);
+  }
+
+  private drawWorkflowsPanel(): void {
+    const { cols, rows } = getTerminalSize();
+    const screen = renderWorkflowsFullScreen(this.workflowsPanelState, cols, rows);
+    let out = "";
+    for (let i = 0; i < rows; i++) {
+      out += moveTo(i + 1);
+      out += clearLine();
+      out += padToWidth(screen[i] ?? "", cols);
+    }
+    process.stdout.write(out);
+    process.stdout.write(HIDE_CURSOR);
+  }
+
+  private redrawWorkflowsPanel(): void {
+    this.drawWorkflowsPanel();
+  }
+
+  private closeWorkflowsPanel(): void {
+    if (!this.readingWorkflowsPanel) return;
+    const resolve = this.workflowsPanelResolve;
+    this.workflowsPanelResolve = null;
+    this.readingWorkflowsPanel = false;
+    this.workflowsPanelSessionId = "";
+    this.workflowsPanelState = {
+      view: "list",
+      runs: [],
+      selectedIndex: 0,
+      selectedPhaseIndex: 0,
+      selectedAgentIndex: 0,
+      phases: [],
+    };
+    this.activeFooterHeight = this.defaultFooterHeight;
+    this.invalidateContentCache();
+    this.redraw();
+    resolve?.();
+  }
+
+  private async loadWorkflowsPanelPhases(run: WorkflowRunRecord): Promise<void> {
+    const meta = await loadWorkflowMetaFromScriptPath(run.scriptPath);
+    const entries = await readJournalEntries(this.workflowsPanelSessionId, run.runId);
+    this.workflowsPanelState = {
+      ...this.workflowsPanelState,
+      phases: aggregateWorkflowJournal(entries, meta?.phases ?? []),
+    };
+  }
+
+  private sortedWorkflowRuns(): WorkflowRunRecord[] {
+    return sortWorkflowRuns(this.workflowsPanelState.runs);
+  }
+
+  private async handleWorkflowsPanelInput(chunk: string): Promise<void> {
+    const { actions: inputActions } = parseInputActions(chunk);
+    for (const action of inputActions) {
+      if (action.type === "scroll") {
+        return;
+      }
+    }
+
+    for (const action of inputActions) {
+      if (action.type === "char") {
+        const key = action.char.toLowerCase();
+        if (key === "s") {
+          const run = this.sortedWorkflowRuns()[this.workflowsPanelState.selectedIndex];
+          if (!run) return;
+          try {
+            const { markdownPath } = await saveWorkflowArtifact(this.workflowsPanelSessionId, run);
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              notice: `Saved to ${markdownPath}`,
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              notice: `Save failed: ${message}`,
+            };
+          }
+          this.redrawWorkflowsPanel();
+          return;
+        }
+        if (key === "x") {
+          const run = this.sortedWorkflowRuns()[this.workflowsPanelState.selectedIndex];
+          if (!run) return;
+          if (run.status !== "running" && run.status !== "pending") return;
+          try {
+            await stopWorkflowByRunId(this.workflowsPanelSessionId, run.runId);
+            const runs = sortWorkflowRuns(await loadWorkflowRuns(this.workflowsPanelSessionId));
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              runs,
+              notice: `Stopped ${run.name}`,
+            };
+            void this.refreshWorkflowFooter(this.workflowsPanelSessionId);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              notice: `Stop failed: ${message}`,
+            };
+          }
+          this.redrawWorkflowsPanel();
+          return;
+        }
+      }
+      if (action.type === "shiftTab" && this.workflowsPanelState.view === "detail") {
+        const phase = this.workflowsPanelState.phases[this.workflowsPanelState.selectedPhaseIndex];
+        if (!phase?.agents.length) continue;
+        this.workflowsPanelState = {
+          ...this.workflowsPanelState,
+          view: "agent",
+          selectedAgentIndex: 0,
+          notice: undefined,
+        };
+        this.redrawWorkflowsPanel();
+        return;
+      }
+    }
+
+    const { actions } = parseChoiceInputActions(chunk);
+    for (const action of actions) {
+      if (action.type === "interrupt" || action.type === "escape") {
+        if (this.workflowsPanelState.view === "agent") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            view: "detail",
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+          return;
+        }
+        if (this.workflowsPanelState.view === "detail") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            view: "list",
+            selectedPhaseIndex: 0,
+            selectedAgentIndex: 0,
+            phases: [],
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+          return;
+        }
+        this.closeWorkflowsPanel();
+        return;
+      }
+
+      if (this.workflowsPanelState.view === "list") {
+        const runs = this.sortedWorkflowRuns();
+        if (action.type === "up") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedIndex: Math.max(0, this.workflowsPanelState.selectedIndex - 1),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        if (action.type === "down") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedIndex: Math.min(runs.length - 1, this.workflowsPanelState.selectedIndex + 1),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        if (action.type === "enter") {
+          const run = runs[this.workflowsPanelState.selectedIndex];
+          if (!run) return;
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            view: "detail",
+            selectedPhaseIndex: 0,
+            selectedAgentIndex: 0,
+            notice: undefined,
+          };
+          await this.loadWorkflowsPanelPhases(run);
+          this.redrawWorkflowsPanel();
+        }
+        continue;
+      }
+
+      if (this.workflowsPanelState.view === "detail") {
+        const phases = this.workflowsPanelState.phases;
+        if (action.type === "up") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedPhaseIndex: Math.max(0, this.workflowsPanelState.selectedPhaseIndex - 1),
+            selectedAgentIndex: 0,
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        if (action.type === "down") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedPhaseIndex: Math.min(
+              Math.max(phases.length - 1, 0),
+              this.workflowsPanelState.selectedPhaseIndex + 1,
+            ),
+            selectedAgentIndex: 0,
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        if (action.type === "enter") {
+          const phase = phases[this.workflowsPanelState.selectedPhaseIndex];
+          if (phase?.agents.length) {
+            this.workflowsPanelState = {
+              ...this.workflowsPanelState,
+              view: "agent",
+              selectedAgentIndex: 0,
+              notice: undefined,
+            };
+            this.redrawWorkflowsPanel();
+          }
+        }
+        continue;
+      }
+
+      if (this.workflowsPanelState.view === "agent") {
+        const phase = this.workflowsPanelState.phases[this.workflowsPanelState.selectedPhaseIndex];
+        const agents = phase?.agents ?? [];
+        if (action.type === "up") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedAgentIndex: Math.max(0, this.workflowsPanelState.selectedAgentIndex - 1),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+        if (action.type === "down") {
+          this.workflowsPanelState = {
+            ...this.workflowsPanelState,
+            selectedAgentIndex: Math.min(
+              Math.max(agents.length - 1, 0),
+              this.workflowsPanelState.selectedAgentIndex + 1,
+            ),
+            notice: undefined,
+          };
+          this.redrawWorkflowsPanel();
+        }
+      }
+    }
+  }
+
+  /** Workflow approval screen — scrollable summary on top, action choices below. */
+  async readWorkflowConfirm(opts: {
+    meta: WorkflowMeta;
+    args: unknown;
+    scriptSource: string;
+    scriptPath: string;
+  }): Promise<WorkflowConfirmDecision> {
+    const entry = this.findLastWaitingToolEntry();
+    if (entry) entry.awaitingApproval = true;
+
+    this.workflowConfirmMode = true;
+    this.workflowConfirmMeta = opts.meta;
+    this.workflowConfirmArgs = opts.args;
+    this.workflowConfirmScriptSource = opts.scriptSource;
+    this.workflowConfirmScriptPath = opts.scriptPath;
+    this.workflowConfirmView = {
+      scriptVisible: false,
+      scriptToggled: false,
+      selectedIndex: 0,
+    };
+    this.scrollOffset = 0;
+    this.followBottom = false;
+    this.shortcutsOverride = null;
+    this.updateWorkflowConfirmFooterHeight();
+    this.invalidateContentCache();
+    this.redraw();
+
+    return new Promise((resolve) => {
+      this.workflowConfirmResolve = resolve;
+    });
+  }
+
+  private buildWorkflowConfirmContentLines(): RenderLine[] {
+    const { cols } = getTerminalSize();
+    const meta = this.workflowConfirmMeta;
+    if (!meta) return [];
+    const texts = renderWorkflowConfirmContentLines({
+      meta,
+      args: this.workflowConfirmArgs,
+      scriptSource: this.workflowConfirmScriptSource,
+      scriptVisible: this.workflowConfirmView.scriptVisible,
+      cols,
+    });
+    return texts.map((text) => ({ text }));
+  }
+
+  private updateWorkflowConfirmFooterHeight(): void {
+    const { cols } = getTerminalSize();
+    this.activeFooterHeight = this.clampFooterHeight(
+      workflowConfirmPanelRowCount(cols, this.workflowConfirmView),
+    );
+  }
+
+  private drawWorkflowConfirmFooter(): void {
+    const { cols, rows } = getTerminalSize();
+    const top = this.footerTop;
+    const panelLines = renderWorkflowConfirmPanelLines({
+      state: this.workflowConfirmView,
+      scriptPath: this.workflowConfirmScriptPath,
+      cols,
+    });
+    const sep = footerSeparator(cols);
+    const footerRows = [
+      padToWidth(sep, cols),
+      ...padWorkflowConfirmLines(panelLines, cols),
+      padToWidth(sep, cols),
+      padToWidth(WORKFLOW_CONFIRM_HINT, cols),
+    ];
+
+    let out = "";
+    for (let i = 0; i < footerRows.length; i++) {
+      out += moveTo(top + i);
+      out += clearLine();
+      out += footerRows[i]!;
+    }
+    for (let i = top + footerRows.length; i <= rows; i++) {
+      out += moveTo(i);
+      out += clearLine();
+    }
+    process.stdout.write(out);
+    process.stdout.write(HIDE_CURSOR);
+  }
+
+  private async handleWorkflowConfirmInput(chunk: string): Promise<void> {
+    if (chunk.includes("\x07")) {
+      await openFileInEditor(this.workflowConfirmScriptPath);
+      this.workflowConfirmScriptSource = await readPlanFileText(this.workflowConfirmScriptPath);
+      this.invalidateContentCache();
+      this.redrawContent();
+      return;
+    }
+
+    const { actions: scrollActions } = parseInputActions(chunk);
+    for (const action of scrollActions) {
+      if (action.type === "scroll") {
+        this.scrollBy(action.delta);
+        this.redrawContent();
+        return;
+      }
+    }
+
+    const rows = buildWorkflowConfirmChoiceRows(this.workflowConfirmView);
+    const { actions } = parseChoiceInputActions(chunk);
+    for (const action of actions) {
+      if (action.type === "interrupt" || action.type === "escape") {
+        this.finishWorkflowConfirm({ action: "cancel" });
+        return;
+      }
+      if (action.type === "up") {
+        this.workflowConfirmView = {
+          ...this.workflowConfirmView,
+          selectedIndex: Math.max(0, this.workflowConfirmView.selectedIndex - 1),
+        };
+        this.updateWorkflowConfirmFooterHeight();
+        this.drawWorkflowConfirmFooter();
+      }
+      if (action.type === "down") {
+        this.workflowConfirmView = {
+          ...this.workflowConfirmView,
+          selectedIndex: Math.min(rows.length - 1, this.workflowConfirmView.selectedIndex + 1),
+        };
+        this.updateWorkflowConfirmFooterHeight();
+        this.drawWorkflowConfirmFooter();
+      }
+      if (action.type === "enter") {
+        const row = rows[this.workflowConfirmView.selectedIndex];
+        if (!row) return;
+        const optionIndex = workflowConfirmOptionIndexFromRow(row);
+        if (optionIndex === 1) {
+          this.workflowConfirmView = workflowConfirmToggleScript(this.workflowConfirmView);
+          this.updateWorkflowConfirmFooterHeight();
+          this.invalidateContentCache();
+          this.redrawContent();
+          return;
+        }
+        this.finishWorkflowConfirm(
+          workflowConfirmDecisionFromRow(row, this.workflowConfirmScriptPath),
+        );
+        return;
+      }
+    }
+  }
+
+  private finishWorkflowConfirm(decision: WorkflowConfirmDecision): void {
+    const resolve = this.workflowConfirmResolve;
+    this.workflowConfirmResolve = null;
+    this.workflowConfirmMode = false;
+    this.workflowConfirmMeta = null;
+    this.workflowConfirmArgs = undefined;
+    this.workflowConfirmScriptSource = "";
+    this.workflowConfirmScriptPath = "";
+    this.workflowConfirmView = {
+      scriptVisible: false,
+      scriptToggled: false,
+      selectedIndex: 0,
+    };
 
     const entry = this.findLastWaitingToolEntry();
     if (entry) entry.awaitingApproval = false;

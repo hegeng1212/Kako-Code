@@ -15,6 +15,11 @@ import type {
   ProviderRegistry,
   ProviderTestResult,
   ProviderTestStreamEvent,
+  SearchProviderPreset,
+  SearchProviderProfile,
+  SearchRegistry,
+  SearchTestResult,
+  SkillDefinition,
   SkillHubAnalyzeRepoResult,
   SkillHubSearchHit,
   SkillBuildResult,
@@ -174,6 +179,10 @@ export const api = {
     );
   },
   getSkills: () => request<{ skills: InstalledSkillRecord[] }>("/skills"),
+  getSkillDetail: (name: string) =>
+    request<{ record: InstalledSkillRecord; definition: SkillDefinition }>(
+      `/skills/${encodeURIComponent(name)}`,
+    ),
   searchSkills: (q: string) =>
     request<{ skills: SkillHubSearchHit[] }>(`/skills/search?q=${encodeURIComponent(q)}`),
   getPopularSkills: (limit = 10) =>
@@ -268,5 +277,17 @@ export const api = {
     request<{ ok: boolean }>("/skills/open-dir", {
       method: "POST",
       body: JSON.stringify({ path }),
+    }),
+  getSearchPresets: () => request<SearchProviderPreset[]>("/search/presets"),
+  getSearch: () => request<SearchRegistry>("/search"),
+  saveSearch: (providers: SearchProviderProfile[]) =>
+    request<SearchRegistry>("/search", {
+      method: "PUT",
+      body: JSON.stringify({ providers }),
+    }),
+  testSearch: (body: { providerId: string; query?: string }) =>
+    request<SearchTestResult>("/search/test", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 };

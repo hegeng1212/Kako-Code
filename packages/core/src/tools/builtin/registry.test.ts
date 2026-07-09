@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import {
   BUILTIN_TOOLS,
@@ -30,6 +30,7 @@ describe("builtin tool registry", () => {
       "NotebookEdit",
       "Bash",
       "Monitor",
+      "TaskStop",
       "AskUserQuestion",
       "EnterPlanMode",
       "ExitPlanMode",
@@ -38,7 +39,15 @@ describe("builtin tool registry", () => {
       "CronCreate",
       "CronDelete",
       "CronList",
+      "ScheduleWakeup",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskUpdate",
+      "WebFetch",
+      "WebSearch",
       "Skill",
+      "Workflow",
     ]);
   });
 
@@ -47,6 +56,23 @@ describe("builtin tool registry", () => {
     const llmTools = registry.toLLMTools(["Read", "Bash"]);
     expect(llmTools.map((t) => t.name)).toEqual(["Read", "Bash"]);
     expect(llmTools[0]?.inputSchema).toMatchObject({ type: "object" });
+  });
+
+  it("localizes WebSearch month hint from user messages", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-31T20:00:00.000Z"));
+
+    const registry = registryWithBuiltins();
+    const zhTool = registry.toLLMTools(["WebSearch"], {
+      messages: [{ role: "user", content: "帮我搜索" }],
+    })[0];
+    const enTool = registry.toLLMTools(["WebSearch"], {
+      messages: [{ role: "user", content: "search news" }],
+    })[0];
+    expect(zhTool?.description).toContain("February 2026");
+    expect(enTool?.description).toMatch(/The current month is \w+ \d{4}/);
+
+    vi.useRealTimers();
   });
 
   it("defaults to all built-ins when agent tools omitted", () => {

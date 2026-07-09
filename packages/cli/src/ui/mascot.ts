@@ -6,3 +6,10 @@ export const KAKO_DINO = [
   "    ██ ██    ",
   "   ▄▀    ▀▄  ",
 ];
+
+/** Left-aligned mini header icon — Claude-style block face, 10 display cols per row. */
+export const KAKO_DINO_MINI = [
+  "▄██████▄  ",
+  "█ ■  ■ █  ",
+  "█ ▪  ▪ █  ",
+];

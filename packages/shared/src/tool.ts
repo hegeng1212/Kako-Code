@@ -3,6 +3,7 @@ import type { AskUserQuestionPrompt } from "./ask-user-question.js";
 
 /** JSON Schema subset for tool input/output definitions. */
 export interface JsonSchema {
+  $schema?: string;
   type?: string;
   description?: string;
   properties?: Record<string, JsonSchema>;
@@ -17,6 +18,8 @@ export interface JsonSchema {
   maximum?: number;
   exclusiveMinimum?: number;
   propertyNames?: JsonSchema;
+  pattern?: string;
+  maxLength?: number;
 }
 
 /** Tool definition registered in the Tool Registry. */

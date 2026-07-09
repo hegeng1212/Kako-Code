@@ -1,7 +1,12 @@
 import { access } from "node:fs/promises";
+import { release } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentDefinition, LLMMessage, SkillMetadata, TranscriptMessage } from "@kako/shared";
 import { buildUserContentBlocks } from "../media/attachments.js";
+import {
+  attachmentIncludesDocument,
+  formatAttachmentSystemPromptAddendum,
+} from "../media/attachment-reminders.js";
 import { mergeTextWithBlocks } from "../llm/content-blocks.js";
 import { formatSkillsIndex } from "../skills/loader.js";
 import { formatSubagentSystemReminder } from "./subagent-catalog.js";
@@ -47,25 +52,30 @@ export async function resolveEnvironmentInfo(cwd: string, model: string): Promis
 }
 
 export function formatEnvironmentSection(env: EnvironmentInfo): string {
+  const osVersion =
+    env.platform === "darwin"
+      ? `Darwin ${release()}`
+      : env.platform === "win32"
+        ? `Windows ${release()}`
+        : `${env.platform} ${release()}`;
   return `\n\n# Environment
 You have been invoked in the following environment:
  - Primary working directory: ${env.cwd}
  - Is a git repository: ${env.isGitRepository}
  - Platform: ${env.platform}
  - Shell: ${env.shell}
- - Model: ${env.model}`;
+ - OS Version: ${osVersion}
+ - Model: ${env.model} (configured for this session via Kako provider settings)`;
 }
 
 export function formatCurrentDateLine(now = new Date()): string {
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, "0");
   const d = String(now.getDate()).padStart(2, "0");
-  const hours = String(now.getHours()).padStart(2, "0");
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  return `Today's date is ${y}/${m}/${d} ${hours}:${minutes}.`;
+  return `Today's date is ${y}-${m}-${d}.`;
 }
 
-/** Harness-injected context block prepended to each user message sent to the LLM. */
+/** Harness-injected optional context (workspace + date). File contracts are injected separately. */
 export function formatUserContextReminder(workspaceKakoMd?: string, now = new Date()): string {
   const contextBody = workspaceKakoMd?.trim() ?? "";
   const contextSection = contextBody ? `${contextBody}\n` : "";
@@ -141,13 +151,18 @@ export async function buildMessages(options: MessageBuildOptions): Promise<LLMMe
 
   for (const msg of options.transcript) {
     if (msg.role === "user") {
-      const body = await buildUserContentBlocks(msg.content, msg.attachments);
+      const llmText =
+        typeof msg.metadata?.llmText === "string" ? msg.metadata.llmText : msg.content;
+      const body = await buildUserContentBlocks(llmText, msg.attachments);
+      const hasDocumentAttachments = attachmentIncludesDocument(msg.attachments);
+      const reminder = hasDocumentAttachments
+        ? ""
+        : formatUserContextReminder(options.workspaceKakoMd, now);
       messages.push({
         role: "user",
-        content: mergeTextWithBlocks(
-          formatUserContextReminder(options.workspaceKakoMd, now),
-          body,
-        ),
+        content: reminder
+          ? mergeTextWithBlocks(reminder, body)
+          : body,
       });
     } else if (msg.role === "assistant") {
       const assistant: LLMMessage = { role: "assistant", content: msg.content };

@@ -9,6 +9,7 @@ import type {
 } from "@kako/shared";
 import { api } from "../api";
 import { InstallProgressButton } from "./InstallProgressButton";
+import { IconPlus } from "./RowIcons";
 
 function SkillBuildValidationPanel({
   validation,
@@ -87,7 +88,10 @@ function SkillBuildQuestions({
 
   return (
     <div className="skills-build-questions">
-      <strong>请确认以下问题</strong>
+      <div className="skills-build-questions__head">
+        <strong>请确认以下问题</strong>
+        <span>选择一项继续构建</span>
+      </div>
       {questions.map((question) => (
         <div key={question.id} className="skills-build-question">
           <p>{question.text}</p>
@@ -97,7 +101,7 @@ function SkillBuildQuestions({
                 <button
                   key={option.id}
                   type="button"
-                  className="btn btn--ghost btn--sm"
+                  className="skills-build-option"
                   disabled={disabled}
                   onClick={() => onAnswer(option.label, question)}
                 >
@@ -253,27 +257,40 @@ export function SkillsBuildChat({ onInstalled, onError, onSuccess }: SkillsBuild
         描述你想要的技能，可多轮对话逐步完善。内置工具无需确认；引用 MCP 工具时会提示已使用的工具（绿字），仅在工具不存在时显示红字确认。
       </p>
 
-      <div className="skills-build-chat__messages">
-        {messages.length === 0 && (
-          <p className="skills-build-chat__empty">从下方输入技能需求开始对话，例如宝宝生长数据记录技能…</p>
-        )}
-        {messages.map((msg, index) => (
-          <div
-            key={`${msg.role}-${index}`}
-            className={`skills-build-chat__bubble skills-build-chat__bubble--${msg.role}`}
-          >
-            <span className="skills-build-chat__role">{msg.role === "user" ? "你" : "助手"}</span>
-            <div className="skills-build-chat__content">{msg.content}</div>
-          </div>
-        ))}
-        {loading && (
-          <div className="skills-build-chat__bubble skills-build-chat__bubble--assistant">
-            <span className="skills-build-chat__role">助手</span>
-            <div className="skills-build-chat__content skills-build-chat__typing">思考中…</div>
-          </div>
-        )}
-        <div ref={chatEndRef} />
-      </div>
+      <section className="skills-build-panel">
+        <header className="skills-build-panel__head">
+          <h3>对话</h3>
+          {messages.length > 0 && (
+            <button type="button" className="btn btn--toolbar btn--sm" disabled={loading} onClick={resetChat}>
+              重新开始
+            </button>
+          )}
+        </header>
+
+        <div className="skills-build-chat__messages">
+          {messages.length === 0 && (
+            <p className="skills-build-chat__empty">
+              从下方输入技能需求开始对话，例如：帮我做一个宝宝生长数据记录技能…
+            </p>
+          )}
+          {messages.map((msg, index) => (
+            <div
+              key={`${msg.role}-${index}`}
+              className={`skills-build-chat__bubble skills-build-chat__bubble--${msg.role}`}
+            >
+              <span className="skills-build-chat__role">{msg.role === "user" ? "你" : "助手"}</span>
+              <div className="skills-build-chat__content">{msg.content}</div>
+            </div>
+          ))}
+          {loading && (
+            <div className="skills-build-chat__bubble skills-build-chat__bubble--assistant">
+              <span className="skills-build-chat__role">助手</span>
+              <div className="skills-build-chat__content skills-build-chat__typing">思考中…</div>
+            </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
+      </section>
 
       <SkillBuildQuestions
         questions={
@@ -288,7 +305,7 @@ export function SkillsBuildChat({ onInstalled, onError, onSuccess }: SkillsBuild
       />
 
       {draftSkillMd && (
-        <div className="skills-build-preview skills-build-preview--inline">
+        <section className="skills-build-panel skills-build-preview skills-build-preview--inline">
           <div className="skills-build-preview__header">
             <h3>当前草稿</h3>
             {readyToSave && <span className="tag tag--active">可保存</span>}
@@ -311,10 +328,10 @@ export function SkillsBuildChat({ onInstalled, onError, onSuccess }: SkillsBuild
               onClick={() => void handleSave()}
             />
           </div>
-        </div>
+        </section>
       )}
 
-      <div className="skills-build-chat__composer">
+      <section className="skills-build-panel skills-build-chat__composer">
         {pendingAttachments.length > 0 && (
           <div className="skills-build-chat__attachments">
             {pendingAttachments.map((file, index) => (
@@ -344,49 +361,49 @@ export function SkillsBuildChat({ onInstalled, onError, onSuccess }: SkillsBuild
             e.target.value = "";
           }}
         />
-        <textarea
-          className="input skills-build-chat__input"
-          rows={3}
-          placeholder="补充需求、回答疑问，或描述要调用的 MCP 工具…"
-          value={input}
-          disabled={loading}
-          onChange={(e) => setInput(e.target.value)}
-          onPaste={(e) => {
-            const items = e.clipboardData?.items;
-            if (!items) return;
-            const imageFiles: File[] = [];
-            for (const item of items) {
-              if (item.kind === "file" && item.type.startsWith("image/")) {
-                const file = item.getAsFile();
-                if (file) imageFiles.push(file);
+        <label className="field skills-build-chat__field">
+          <span className="field__label">输入消息</span>
+          <textarea
+            className="skills-build-chat__input"
+            rows={4}
+            placeholder="补充需求、回答疑问，或描述要调用的 MCP 工具…"
+            value={input}
+            disabled={loading}
+            onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items;
+              if (!items) return;
+              const imageFiles: File[] = [];
+              for (const item of items) {
+                if (item.kind === "file" && item.type.startsWith("image/")) {
+                  const file = item.getAsFile();
+                  if (file) imageFiles.push(file);
+                }
               }
-            }
-            if (imageFiles.length) {
-              e.preventDefault();
-              void addFiles(imageFiles);
-            }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void sendUserMessage(input);
-            }
-          }}
-        />
+              if (imageFiles.length) {
+                e.preventDefault();
+                void addFiles(imageFiles);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void sendUserMessage(input);
+              }
+            }}
+          />
+          <span className="field__help">⌘/Ctrl + Enter 发送</span>
+        </label>
         <div className="skills-build-chat__composer-actions">
           <button
             type="button"
-            className="btn btn--ghost btn--sm"
+            className="btn btn--toolbar"
             disabled={loading}
             onClick={() => fileInputRef.current?.click()}
           >
+            <IconPlus className="btn__icon" />
             添加附件
           </button>
-          {messages.length > 0 && (
-            <button type="button" className="btn btn--ghost btn--sm" disabled={loading} onClick={resetChat}>
-              重新开始
-            </button>
-          )}
           <button
             type="button"
             className="btn btn--primary"
@@ -396,7 +413,7 @@ export function SkillsBuildChat({ onInstalled, onError, onSuccess }: SkillsBuild
             {loading ? "发送中…" : "发送"}
           </button>
         </div>
-      </div>
+      </section>
     </div>
   );
 }

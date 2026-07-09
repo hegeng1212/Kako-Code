@@ -66,7 +66,7 @@ export async function findLeadingAbsolutePath(
   const normalized = unescapePathCandidate(fromSlash);
   const candidates: number[] = [normalized.length];
   for (let i = 0; i < normalized.length; i++) {
-    if (normalized[i] === " ") {
+    if (normalized[i] === " " || normalized[i] === "\n") {
       candidates.push(i);
     }
   }
@@ -85,6 +85,32 @@ export async function findLeadingAbsolutePath(
   }
 
   return null;
+}
+
+/** Extract consecutive absolute file paths from pasted clipboard text. */
+export async function parsePastedFilePaths(
+  text: string,
+): Promise<{ paths: string[]; rest: string }> {
+  const paths: string[] = [];
+  let remaining = text.replace(/\r\n/g, "\n");
+
+  while (remaining.length) {
+    remaining = remaining.replace(/^[\s\n]+/, "");
+    if (!remaining) break;
+    const leading = await findLeadingAbsolutePath(remaining);
+    if (!leading) break;
+    if (!paths.includes(leading.path)) paths.push(leading.path);
+    remaining = leading.rest;
+  }
+
+  return { paths, rest: remaining.trim() };
+}
+
+async function extractSequentialBarePaths(
+  text: string,
+): Promise<{ paths: string[]; text: string }> {
+  const { paths, rest } = await parsePastedFilePaths(text);
+  return { paths, text: rest.replace(/\s+/g, " ").trim() };
 }
 
 /** Extract `@/absolute/path` markers, including paths with spaces when they exist on disk. */
@@ -140,10 +166,9 @@ export async function parsePathReferences(text: string): Promise<ParsedPathRefer
     return { paths, text: remaining };
   }
 
-  const leading = await findLeadingAbsolutePath(text);
-  if (leading) {
-    paths.push(leading.path);
-    return { paths, text: leading.rest };
+  const leading = await extractSequentialBarePaths(text);
+  if (leading.paths.length) {
+    return leading;
   }
 
   return { paths, text: text.trim() };

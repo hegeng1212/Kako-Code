@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { displayWidth } from "./ansi.js";
-import { CHAT_FOOTER_HEIGHT, getTerminalSize, parseInputActions, wrapContentLines } from "./terminal-layout.js";
+import { CHAT_FOOTER_HEIGHT, coalescePasteActions, getTerminalSize, parseInputActions, wrapContentLines } from "./terminal-layout.js";
 
 describe("displayWidth", () => {
   it("counts CJK characters as width 2", () => {
@@ -10,6 +10,10 @@ describe("displayWidth", () => {
 });
 
 describe("parseInputActions", () => {
+  it("parses terminal focus-in for viewport repaint", () => {
+    expect(parseInputActions("\x1b[I").actions).toEqual([{ type: "focusIn" }]);
+  });
+
   it("parses page up as scroll", () => {
     const { actions } = parseInputActions("\x1b[5~");
     expect(actions).toEqual([{ type: "scroll", delta: -1 }]);
@@ -43,6 +47,10 @@ describe("parseInputActions", () => {
     expect(parseInputActions("\x1b[B").actions).toEqual([{ type: "historyDown" }]);
   });
 
+  it("parses Tab as tab action", () => {
+    expect(parseInputActions("\t").actions).toEqual([{ type: "tab" }]);
+  });
+
   it("parses shift+tab", () => {
     expect(parseInputActions("\x1b[Z").actions).toEqual([{ type: "shiftTab" }]);
   });
@@ -66,6 +74,18 @@ describe("parseInputActions", () => {
     const next = parseInputActions(`${rest}\x1b[201~`);
     expect(next.actions).toEqual([{ type: "pasteText", text: "/tmp/a.png" }]);
     expect(next.rest).toBe("");
+  });
+
+  it("coalesces unbracketed multiline paste into pasteText", async () => {
+    const { actions } = parseInputActions("line one\nline two");
+    const coalesced = await coalescePasteActions(actions);
+    expect(coalesced).toEqual([{ type: "pasteText", text: "line one\nline two" }]);
+  });
+
+  it("coalesces rapid char burst into pasteText", async () => {
+    const { actions } = parseInputActions("hello world");
+    const coalesced = await coalescePasteActions(actions);
+    expect(coalesced).toEqual([{ type: "pasteText", text: "hello world" }]);
   });
 });
 

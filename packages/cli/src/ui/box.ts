@@ -107,7 +107,7 @@ export function renderClaudeFooterParts(options?: {
   shortcuts?: string;
 }): ClaudeFooterParts {
   const termWidth = process.stdout.columns ?? 100;
-  const line = ansi.line + H.repeat(termWidth) + ansi.reset;
+  const line = ansi.inputBorder + H.repeat(termWidth) + ansi.reset;
   const placeholder =
     options?.placeholder ?? 'Try "explain this codebase"';
   const shortcuts =
@@ -131,6 +131,6 @@ export function renderClaudeFooter(options?: {
   const includeInputLine = options?.includeInputLine ?? true;
   const lines = ["", parts.topSep];
   if (includeInputLine) lines.push(parts.inputLine);
-  lines.push(parts.bottomSep, parts.shortcuts, "");
+  lines.push(parts.bottomSep, parts.shortcuts);
   return lines.join("\n");
 }

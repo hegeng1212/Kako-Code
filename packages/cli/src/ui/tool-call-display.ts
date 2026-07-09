@@ -4,10 +4,12 @@ import { wrapContentLines } from "./text-wrap.js";
 import {
   formatToolInvocationLabel,
   isPlanFileDetail,
+  isWorkflowDetail,
   toolCallFailurePhrase,
   toolCallStatPhrase,
   toolCallSuccessPhrase,
   toolCallWaitingPhrase,
+  workflowNameFromDetail,
 } from "./tool-call-phrases.js";
 
 export type ToolCallStatus = "waiting" | "success" | "error";
@@ -74,6 +76,33 @@ export function renderToolCallStatusLine(entry: ToolCallTimelineEntry): string {
 
 export function isPlanFileTool(entry: Pick<ToolCallTimelineEntry, "name" | "detail">): boolean {
   return (entry.name === "Write" || entry.name === "Edit") && isPlanFileDetail(entry.detail);
+}
+
+export function isWorkflowTool(entry: Pick<ToolCallTimelineEntry, "name" | "detail">): boolean {
+  return entry.name === "Workflow";
+}
+
+function renderWorkflowsSlashLink(): string {
+  return `${ansi.planBorder}/workflows${ansi.reset}`;
+}
+
+export function renderWorkflowViewHintLine(): string {
+  return `${ansi.muted}   └ ${renderWorkflowsSlashLink()} ${ansi.muted}to view dynamic workflow runs${ansi.reset}`;
+}
+
+export function renderWorkflowToolLines(entry: ToolCallTimelineEntry): string[] {
+  const wfName = isWorkflowDetail(entry.detail)
+    ? workflowNameFromDetail(entry.detail)
+    : entry.detail.trim() || "workflow";
+  const header = `${ansi.green}⏺${ansi.reset} ${ansi.text}Workflow(dynamic workflow: ${wfName})${ansi.reset}`;
+  if (entry.status === "error") {
+    const detail = entry.errorDetail?.trim() || toolCallFailurePhrase(entry.name, entry.detail);
+    return [header, `${ansi.red}   ✘ ${detail}${ansi.reset}`];
+  }
+  if (entry.status === "waiting" || entry.status === "success") {
+    return [header, renderWorkflowViewHintLine()];
+  }
+  return [renderToolCallStatusLine(entry)];
 }
 
 /** Collapsed activity summary: Thought for 10s, listed 1 directory, read 2 files */
@@ -146,7 +175,7 @@ export function renderToolGroupDetailLine(entry: ToolCallTimelineEntry): string 
 export function collectActivityStats(entries: ToolCallTimelineEntry[]): string[] {
   const stats: string[] = [];
   for (const entry of entries) {
-    if (isPlanFileTool(entry)) continue;
+    if (isPlanFileTool(entry) || isWorkflowTool(entry)) continue;
     const stat = toolCallStatPhrase(entry.name, entry.detail, entry.output);
     if (stat) stats.push(stat);
   }

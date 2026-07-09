@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import {
   ansi,
+  displayWidth,
   pink,
   pinkBold,
   stripAnsi,
@@ -15,7 +16,8 @@ import {
   renderClaudeFooterParts,
   renderClaudeTwoColumnBox,
 } from "./box.js";
-import { KAKO_DINO } from "./mascot.js";
+import { KAKO_DINO, KAKO_DINO_MINI } from "./mascot.js";
+import type { ChatHeaderMode } from "./cli-usage.js";
 
 const H = "─";
 
@@ -122,6 +124,66 @@ export function renderWelcomeScreen(opts: WelcomeScreenOptions): string {
   return renderClaudeTwoColumnBox(title, leftLines, rightLines, {
     leftAlign: "center",
   });
+}
+
+const MINI_ICON_WIDTH = 10;
+const MINI_LEFT_MARGIN = " ";
+const MINI_ICON_TEXT_GAP = " ";
+
+function padMiniIconColumn(text: string): string {
+  const w = displayWidth(text);
+  if (w >= MINI_ICON_WIDTH) return text;
+  return text + " ".repeat(MINI_ICON_WIDTH - w);
+}
+
+function miniHeaderTitle(version: string): string {
+  return `${ansi.text}${ansi.bold}Kako${ansi.reset} ${ansi.muted}v${version}${ansi.reset}`;
+}
+
+function miniHeaderMetaLine(opts: WelcomeScreenOptions): string {
+  return `${ansi.muted}${opts.modelLabel} · ${opts.agentName} agent${ansi.reset}`;
+}
+
+/** Compact pinned header — icon + version, model, cwd (Claude Code mini style). */
+export function renderMiniHeader(opts: WelcomeScreenOptions, cols = process.stdout.columns ?? 80): string {
+  const pathBudget = Math.max(16, cols - MINI_ICON_WIDTH - MINI_LEFT_MARGIN.length - MINI_ICON_TEXT_GAP.length - 2);
+  const textLines = [
+    miniHeaderTitle(opts.version),
+    miniHeaderMetaLine(opts),
+    `${ansi.muted}${shortenPath(opts.cwd, pathBudget)}${ansi.reset}`,
+  ];
+  const iconLines = KAKO_DINO_MINI.map((row) => pink(row));
+  const out: string[] = [""];
+  for (let i = 0; i < textLines.length; i++) {
+    out.push(
+      `${MINI_LEFT_MARGIN}${padMiniIconColumn(iconLines[i] ?? "")}${MINI_ICON_TEXT_GAP}${textLines[i] ?? ""}`,
+    );
+  }
+  return out.join("\n");
+}
+
+export function renderChatHeader(
+  opts: WelcomeScreenOptions,
+  mode: ChatHeaderMode,
+  cols = process.stdout.columns ?? 80,
+): string {
+  return mode === "standard" ? renderWelcomeScreen(opts) : renderMiniHeader(opts, cols);
+}
+
+/** Below this terminal height, the standard welcome box is replaced by mini header. */
+export const COMPACT_HEADER_MAX_ROWS = 32;
+
+export function shouldUseCompactHeader(size: { rows: number; cols: number }): boolean {
+  return size.rows < COMPACT_HEADER_MAX_ROWS;
+}
+
+export function resolveEffectiveHeaderMode(
+  preferred: ChatHeaderMode,
+  size: { rows: number; cols: number },
+): ChatHeaderMode {
+  if (preferred === "mini") return "mini";
+  if (shouldUseCompactHeader(size)) return "mini";
+  return "standard";
 }
 
 export function renderInputHint(): string {

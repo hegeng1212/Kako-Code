@@ -7,17 +7,13 @@ export const CLAUDE_READ_DESCRIPTION = `Reads a file from the local filesystem.
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
 - Reads images (PNG, JPG, …) and presents them visually. Reads PDFs via the \`pages\` parameter (e.g. "1-5", max 20 pages/request; required for PDFs over 10 pages). Reads Jupyter notebooks (.ipynb) as cells with outputs.
+- **Attached files** (see <file-attachment-contract>): prefer **Bash as the first tool** — stat, sample first rows, extract chunks. Read is for later targeted slices or embedded images only. Spreadsheet Read without \`limit\` returns ~20 probe rows; use Bash for analytics instead of repeated Read.
 - Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.
 - Do NOT re-read a file you just edited to verify — Edit/Write would have errored if the change failed, and the harness tracks file state for you.`;
 
-export const CLAUDE_WRITE_DESCRIPTION = `Writes a file to the local filesystem.
+export const CLAUDE_WRITE_DESCRIPTION = `Writes a file to the local filesystem, overwriting if one exists.
 
-Usage:
-- This tool will overwrite the existing file if there is one at the provided path.
-- If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`;
+When to use: creating a new file, or fully replacing one you've already Read. Overwriting an existing file you haven't Read will fail. For partial changes, use Edit instead.`;
 
 export const CLAUDE_EDIT_DESCRIPTION = `Performs exact string replacement in a file.
 
@@ -256,7 +252,8 @@ Reach for this when the task matches an available agent type, when you have inde
 export const CLAUDE_BASH_DESCRIPTION = `Executes a bash command and returns its output.
 
 - Working directory persists between calls, but prefer absolute paths — \`cd\` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.
-- IMPORTANT: Avoid using this tool to run \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.
+- When <file-attachment-contract> is present, **Bash must be your first tool**. Run the exact harness command from the contract: **kako peek-spreadsheet** for Excel/CSV, **kako peek-presentation** for PowerPoint — do not use python-pptx, pandas, pip install, or node -e.
+- For other tasks: avoid \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` when a dedicated tool (Read, etc.) fits — except \`head\` for attached csv/tsv under <file-attachment-contract>.
 - \`timeout\` is in milliseconds: default 120000, max 600000.
 - \`run_in_background\` runs the command detached: it keeps running across turns and re-invokes you when it exits. No \`&\` needed. Foreground \`sleep\` is blocked; use Monitor with an until-loop to wait on a condition.
 
@@ -269,13 +266,259 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 - End PR bodies with:
 🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
 
+export const CLAUDE_WEB_FETCH_DESCRIPTION = `Fetches a URL, converts the page to markdown, and answers \`prompt\` against it using a small fast model.
+
+- Fails on authenticated/private URLs — use an authenticated MCP tool or \`gh\` for those instead.
+- HTTP is upgraded to HTTPS. Cross-host redirects are returned to you rather than followed; call again with the redirect URL.
+- Responses are cached for 15 minutes per URL.`;
+
+export const CLAUDE_WEB_FETCH_URL_DESCRIPTION = "The URL to fetch content from";
+
+export const CLAUDE_WEB_FETCH_PROMPT_DESCRIPTION = "The prompt to run on the fetched content";
+
+export const CLAUDE_WEB_SEARCH_DESCRIPTION = `Search the web. Returns result blocks with titles and URLs. US-only.
+
+- The current month is {{CURRENT_MONTH_YEAR}} — use this when searching for recent information.
+- \`allowed_domains\` / \`blocked_domains\` filter results.
+- After answering from results, end with a "Sources:" list of the URLs you used as markdown links.`;
+
+export const CLAUDE_WEB_SEARCH_QUERY_DESCRIPTION = "The search query to use";
+
+export const CLAUDE_WEB_SEARCH_ALLOWED_DOMAINS_DESCRIPTION =
+  "Only include search results from these domains";
+
+export const CLAUDE_WEB_SEARCH_BLOCKED_DOMAINS_DESCRIPTION =
+  "Never include search results from these domains";
+
 export const CLAUDE_SKILL_DESCRIPTION = `Execute a skill within the main conversation
 
-When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
+When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
 
-Invoke skills using this tool with the skill name only (no arguments). When you invoke a skill, you will see <command-{name}> is running… followed by the expanded prompt. The skill's prompt will expand and provide detailed instructions on how to complete the task.
+When users reference a "slash command" or "/<something>", they are referring to a skill. Use this tool to invoke it.
 
-Only use skills listed in <available_skills> below. Do not invoke a skill that is already running. Do not use this tool for built-in CLI commands (like /help, /clear, etc.).`;
+How to invoke:
+- Set \`skill\` to the exact name of an available skill (no leading slash). For plugin-namespaced skills use the fully qualified \`plugin:skill\` form.
+- Set \`args\` to pass optional arguments.
+- Some skills are scoped to a directory: their name is prefixed with the directory (e.g. \`apps/web:deploy\`) and their description says which directory they apply to. When a skill name has both a scoped and an unscoped variant, pick by the files you are working on: if the files are under a variant's directory, invoke that variant (most specific directory wins); otherwise invoke the unscoped one.
+
+Important:
+- Available skills are listed in system-reminder messages in the conversation
+- Only invoke a skill that appears in that list, or one the user explicitly typed as \`/<name>\` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool
+- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
+- NEVER mention a skill without actually calling this tool
+- Do not invoke a skill that is already running
+- Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
+- If you see a <command-name> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again`;
+
+export const CLAUDE_SKILL_SKILL_DESCRIPTION =
+  "The name of a skill from the available-skills list. Do not guess names.";
+
+export const CLAUDE_SKILL_ARGS_DESCRIPTION = "Optional arguments for the skill";
+
+export const CLAUDE_TASK_CREATE_DESCRIPTION = `Use this tool to create a structured task list for your current coding session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
+It also helps the user understand the progress of the task and overall progress of their requests.
+
+## When to Use This Tool
+
+Use this tool proactively in these scenarios:
+
+- Complex multi-step tasks - When a task requires 3 or more distinct steps or actions
+- Non-trivial and complex tasks - Tasks that require careful planning or multiple operations
+- Plan mode - When using plan mode, create a task list to track the work
+- User explicitly requests todo list - When the user directly asks you to use the todo list
+- User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)
+- After receiving new instructions - Immediately capture user requirements as tasks
+- When you start working on a task - Mark it as in_progress BEFORE beginning work
+- After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation
+
+## When NOT to Use This Tool
+
+Skip using this tool when:
+- There is only a single, straightforward task
+- The task is trivial and tracking it provides no organizational benefit
+- The task can be completed in less than 3 trivial steps
+- The task is purely conversational or informational
+
+NOTE that you should not use this tool if there is only one trivial task to do. In this case you are better off just doing the task directly.
+
+## Task Fields
+
+- **subject**: A brief, actionable title in imperative form (e.g., "Fix authentication bug in login flow")
+- **description**: What needs to be done
+- **activeForm** (optional): Present continuous form shown in the spinner when the task is in_progress (e.g., "Fixing authentication bug"). If omitted, the spinner shows the subject instead.
+
+All tasks are created with status \`pending\`.
+
+## Tips
+
+- Create tasks with clear, specific subjects that describe the outcome
+- After creating tasks, use TaskUpdate to set up dependencies (blocks/blockedBy) if needed
+- Check TaskList first to avoid creating duplicate tasks
+`;
+
+export const CLAUDE_TASK_CREATE_SUBJECT_DESCRIPTION = "A brief title for the task";
+
+export const CLAUDE_TASK_CREATE_DESCRIPTION_FIELD_DESCRIPTION = "What needs to be done";
+
+export const CLAUDE_TASK_CREATE_ACTIVE_FORM_DESCRIPTION =
+  'Present continuous form shown in spinner when in_progress (e.g., "Running tests")';
+
+export const CLAUDE_TASK_CREATE_METADATA_DESCRIPTION =
+  "Arbitrary metadata to attach to the task";
+
+export const CLAUDE_TASK_GET_DESCRIPTION = `Use this tool to retrieve a task by its ID from the task list.
+
+## When to Use This Tool
+
+- When you need the full description and context before starting work on a task
+- To understand task dependencies (what it blocks, what blocks it)
+- After being assigned a task, to get complete requirements
+
+## Output
+
+Returns full task details:
+- **subject**: Task title
+- **description**: Detailed requirements and context
+- **status**: 'pending', 'in_progress', or 'completed'
+- **blocks**: Tasks waiting on this one to complete
+- **blockedBy**: Tasks that must complete before this one can start
+
+## Tips
+
+- After fetching a task, verify its blockedBy list is empty before beginning work.
+- Use TaskList to see all tasks in summary form.
+`;
+
+export const CLAUDE_TASK_GET_TASK_ID_DESCRIPTION = "The ID of the task to retrieve";
+
+export const CLAUDE_TASK_LIST_DESCRIPTION = `Use this tool to list all tasks in the task list.
+
+## When to Use This Tool
+
+- To see what tasks are available to work on (status: 'pending', no owner, not blocked)
+- To check overall progress on the project
+- To find tasks that are blocked and need dependencies resolved
+- After completing a task, to check for newly unblocked work or claim the next available task
+- **Prefer working on tasks in ID order** (lowest ID first) when multiple tasks are available, as earlier tasks often set up context for later ones
+
+## Output
+
+Returns a summary of each task:
+- **id**: Task identifier (use with TaskGet, TaskUpdate)
+- **subject**: Brief description of the task
+- **status**: 'pending', 'in_progress', or 'completed'
+- **owner**: Agent ID if assigned, empty if available
+- **blockedBy**: List of open task IDs that must be resolved first (tasks with blockedBy cannot be claimed until dependencies resolve)
+
+Use TaskGet with a specific task ID to view full details including description and comments.
+`;
+
+export const CLAUDE_TASK_UPDATE_DESCRIPTION = `Use this tool to update a task in the task list.
+
+## When to Use This Tool
+
+**Mark tasks as resolved:**
+- When you have completed the work described in a task
+- When a task is no longer needed or has been superseded
+- IMPORTANT: Always mark your assigned tasks as resolved when you finish them
+- After resolving, call TaskList to find your next task
+
+- ONLY mark a task as completed when you have FULLY accomplished it
+- If you encounter errors, blockers, or cannot finish, keep the task as in_progress
+- When blocked, create a new task describing what needs to be resolved
+- Never mark a task as completed if:
+  - Tests are failing
+  - Implementation is partial
+  - You encountered unresolved errors
+  - You couldn't find necessary files or dependencies
+
+**Delete tasks:**
+- When a task is no longer relevant or was created in error
+- Setting status to \`deleted\` permanently removes the task
+
+**Update task details:**
+- When requirements change or become clearer
+- When establishing dependencies between tasks
+
+## Fields You Can Update
+
+- **status**: The task status (see Status Workflow below)
+- **subject**: Change the task title (imperative form, e.g., "Run tests")
+- **description**: Change the task description
+- **activeForm**: Present continuous form shown in spinner when in_progress (e.g., "Running tests")
+- **owner**: Change the task owner (agent name)
+- **metadata**: Merge metadata keys into the task (set a key to null to delete it)
+- **addBlocks**: Mark tasks that cannot start until this one completes
+- **addBlockedBy**: Mark tasks that must complete before this one can start
+
+## Status Workflow
+
+Status progresses: \`pending\` → \`in_progress\` → \`completed\`
+
+Use \`deleted\` to permanently remove a task.
+
+## Staleness
+
+Make sure to read a task's latest state using \`TaskGet\` before updating it.
+
+## Examples
+
+Mark task as in progress when starting work:
+\`\`\`json
+{"taskId": "1", "status": "in_progress"}
+\`\`\`
+
+Mark task as completed after finishing work:
+\`\`\`json
+{"taskId": "1", "status": "completed"}
+\`\`\`
+
+Delete a task:
+\`\`\`json
+{"taskId": "1", "status": "deleted"}
+\`\`\`
+
+Claim a task by setting owner:
+\`\`\`json
+{"taskId": "1", "owner": "my-name"}
+\`\`\`
+
+Set up task dependencies:
+\`\`\`json
+{"taskId": "2", "addBlockedBy": ["1"]}
+\`\`\`
+`;
+
+export const CLAUDE_TASK_UPDATE_TASK_ID_DESCRIPTION = "The ID of the task to update";
+
+export const CLAUDE_TASK_UPDATE_STATUS_DESCRIPTION = "New status for the task";
+
+export const CLAUDE_TASK_UPDATE_SUBJECT_DESCRIPTION = "New subject for the task";
+
+export const CLAUDE_TASK_UPDATE_DESCRIPTION_FIELD_DESCRIPTION = "New description for the task";
+
+export const CLAUDE_TASK_UPDATE_ACTIVE_FORM_DESCRIPTION =
+  'Present continuous form shown in spinner when in_progress (e.g., "Running tests")';
+
+export const CLAUDE_TASK_UPDATE_OWNER_DESCRIPTION = "New owner for the task";
+
+export const CLAUDE_TASK_UPDATE_METADATA_DESCRIPTION =
+  "Metadata keys to merge into the task. Set a key to null to delete it.";
+
+export const CLAUDE_TASK_UPDATE_ADD_BLOCKS_DESCRIPTION = "Task IDs that this task blocks";
+
+export const CLAUDE_TASK_UPDATE_ADD_BLOCKED_BY_DESCRIPTION = "Task IDs that block this task";
+
+export const CLAUDE_TASK_STOP_DESCRIPTION = `
+- Stops a running background task by its ID
+- Takes a task_id parameter identifying the task to stop
+- Returns a success or failure status
+- Use this tool when you need to terminate a long-running task
+`;
+
+export const CLAUDE_TASK_STOP_TASK_ID_DESCRIPTION = "The ID of the background task to stop";
+
+export const CLAUDE_TASK_STOP_SHELL_ID_DESCRIPTION = "Deprecated: use task_id instead";
 
 export const CLAUDE_CRON_CREATE_DESCRIPTION = `Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.
 
@@ -326,6 +569,41 @@ export const CLAUDE_CRON_DELETE_DESCRIPTION =
 
 export const CLAUDE_CRON_LIST_DESCRIPTION =
   "List all cron jobs scheduled via CronCreate in this session.";
+
+export const CLAUDE_SCHEDULE_WAKEUP_DESCRIPTION = `Schedule when to resume work in /loop dynamic mode — the user invoked /loop without an interval, asking you to self-pace iterations of a specific task.
+
+Do NOT schedule a short-interval wakeup to poll for background work you started — when harness-tracked work finishes, you are re-invoked automatically, so polling is wasted. Instead schedule a long fallback (1200s+) so the loop survives if the work hangs or never notifies. The exception is external work the harness cannot track (a CI run, a deploy, a remote queue) — there, pick a delay matched to how fast that state actually changes.
+
+Pass the same /loop prompt back via \`prompt\` each turn so the next firing repeats the task. For an autonomous /loop (no user prompt), pass the literal sentinel \`<<autonomous-loop-dynamic>>\` as \`prompt\` instead — the runtime resolves it back to the autonomous-loop instructions at fire time. (There is a similar \`<<autonomous-loop>>\` sentinel for CronCreate-based autonomous loops; do not confuse the two — ScheduleWakeup always uses the \`-dynamic\` variant.) Omit the call to end the loop.
+
+## Picking delaySeconds
+
+The Anthropic prompt cache has a 5-minute TTL. Sleeping past 300 seconds means the next wake-up reads your full conversation context uncached — slower and more expensive. So the natural breakpoints:
+
+- **Under 5 minutes (60s–270s)**: cache stays warm. Right for actively polling external state the harness can't notify you about — a CI run, a deploy, a remote queue.
+- **5 minutes to 1 hour (300s–3600s)**: pay the cache miss. Right when there's no point checking sooner — waiting on something that takes minutes to change, genuinely idle, or as the long fallback heartbeat when something else is the primary wake signal.
+
+**Don't pick 300s.** It's the worst-of-both: you pay the cache miss without amortizing it. If you're tempted to "wait 5 minutes," either drop to 270s (stay in cache) or commit to 1200s+ (one cache miss buys a much longer wait). Don't think in round-number minutes — think in cache windows.
+
+For idle ticks with no specific signal to watch, default to **1200s–1800s** (20–30 min). The loop checks back, you don't burn cache 12× per hour for nothing, and the user can always interrupt if they need you sooner.
+
+Think about what you're actually waiting for, not just "how long should I sleep." If you're polling a CI run that takes ~8 minutes, sleeping 60s burns the cache 8 times before it finishes — sleep ~270s twice instead.
+
+The runtime clamps to [60, 3600], so you don't need to clamp yourself.
+
+## The reason field
+
+One short sentence on what you chose and why. Goes to telemetry and is shown back to the user. "watching CI run" beats "waiting." The user reads this to understand what you're doing without having to predict your cadence in advance — make it specific.
+`;
+
+export const CLAUDE_SCHEDULE_WAKEUP_DELAY_DESCRIPTION =
+  "Seconds from now to wake up. Clamped to [60, 3600] by the runtime.";
+
+export const CLAUDE_SCHEDULE_WAKEUP_PROMPT_DESCRIPTION =
+  "The /loop input to fire on wake-up. Pass the same /loop input verbatim each turn so the next firing re-enters the skill and continues the loop. For autonomous /loop (no user prompt), pass the literal sentinel `<<autonomous-loop-dynamic>>` instead (the dynamic-pacing variant, not the CronCreate-mode `<<autonomous-loop>>`).";
+
+export const CLAUDE_SCHEDULE_WAKEUP_REASON_DESCRIPTION =
+  "One short sentence explaining the chosen delay. Goes to telemetry and is shown to the user. Be specific.";
 
 export const CLAUDE_MONITOR_DESCRIPTION = `Start a background monitor that streams events from a long-running script. Each stdout line is an event — you keep working and notifications arrive in the chat. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
 

@@ -45,8 +45,41 @@ export function getSessionMemoryDir(sessionId: string): string {
   return join(getMemoryDir(), "sessions", sessionId);
 }
 
+export function getSessionWorkflowScriptPath(
+  sessionId: string,
+  name: string,
+  runId: string,
+): string {
+  return join(getSessionMemoryDir(sessionId), "workflows", "scripts", `${name}-${runId}.js`);
+}
+
+/** Staging copy for workflow launch confirmation (editable before run). */
+export function getWorkflowPreviewScriptPath(sessionId: string, name: string): string {
+  return join(getSessionMemoryDir(sessionId), "workflows", "scripts", `.preview-${name}.js`);
+}
+
+export function getSessionWorkflowRunDir(sessionId: string, runId: string): string {
+  return join(getSessionMemoryDir(sessionId), "subagents", "workflows", runId);
+}
+
+export function getSessionWorkflowJournalPath(sessionId: string, runId: string): string {
+  return join(getSessionWorkflowRunDir(sessionId, runId), "journal.jsonl");
+}
+
+export function getSessionWorkflowRunsPath(sessionId: string): string {
+  return join(getSessionMemoryDir(sessionId), "workflows", "runs.json");
+}
+
 export function getProjectsIndexPath(): string {
   return join(getIndexDir(), "projects.json");
+}
+
+export function getSessionReportsDir(sessionId: string): string {
+  return join(getSessionMemoryDir(sessionId), "reports");
+}
+
+export function getWorkflowTemplatesDir(): string {
+  return join(getKakoHome(), "workflows", "templates");
 }
 
 export function getSessionMetaPath(sessionId: string): string {

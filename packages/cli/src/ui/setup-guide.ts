@@ -1,4 +1,5 @@
 import type { ProviderReadiness } from "@kako/shared";
+import { fetchWithTimeout } from "@kako/core";
 import { ansi, pink, pinkBold, stripAnsi } from "./ansi.js";
 import {
   computeClaudeBoxLayout,
@@ -21,9 +22,7 @@ export interface SetupGuideOptions {
 
 async function isApiAvailable(apiUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${apiUrl}/api/health`, {
-      signal: AbortSignal.timeout(2000),
-    });
+    const res = await fetchWithTimeout(`${apiUrl}/api/health`, undefined, 2000);
     return res.ok;
   } catch {
     return false;

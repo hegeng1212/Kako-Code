@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type {
   AgentId,
   AskUserQuestionPrompt,
+  LLMMessage,
   PermissionMode,
   SessionId,
   ToolCall,
@@ -14,7 +15,9 @@ import type {
   WorktreeSessionInfo,
 } from "@kako/shared";
 import { normalizeToolConfirmResult } from "@kako/shared";
+import { collectUserTextFromMessages } from "../locale/user-timezone.js";
 import { resolvePath } from "./builtin/path.js";
+import { buildWebSearchDescription } from "./builtin/web-search.js";
 import { findSkillByMdPath } from "../skills/loader.js";
 import { isToolCallInTrustedScope } from "./permission-scope.js";
 
@@ -26,6 +29,8 @@ export interface ToolRegistryOptions {
   confirm?: (toolCall: ToolCall) => Promise<ToolConfirmResult>;
   askUserQuestion?: AskUserQuestionPrompt;
   allowedSkills?: string[];
+  /** Skills pre-activated via slash harness (skip Skill tool round-trip). */
+  initialActivatedSkills?: string[];
   /** Active plan file path when in plan mode (Write/Edit allowed only here). */
   planFilePath?: string;
   worktreeSession?: WorktreeSessionInfo;
@@ -46,6 +51,13 @@ export class ToolRegistry {
 
   constructor(options: ToolRegistryOptions) {
     this.options = options;
+    for (const name of options.initialActivatedSkills ?? []) {
+      this.activatedSkills.add(name.trim());
+    }
+  }
+
+  activateSkill(name: string): void {
+    this.activatedSkills.add(name.trim());
   }
 
   private normalizePath(path: string): string {
@@ -107,10 +119,14 @@ export class ToolRegistry {
     return all.filter((d) => allowed.has(d.name));
   }
 
-  toLLMTools(names?: string[]) {
+  toLLMTools(names?: string[], options?: { messages?: LLMMessage[] }) {
+    const userText = options?.messages?.length
+      ? collectUserTextFromMessages(options.messages)
+      : undefined;
     return this.getDefinitions(names).map((tool) => ({
       name: tool.name,
-      description: tool.description,
+      description:
+        tool.name === "WebSearch" ? buildWebSearchDescription(userText) : tool.description,
       inputSchema: tool.inputSchema as Record<string, unknown>,
     }));
   }
@@ -148,6 +164,9 @@ export class ToolRegistry {
         );
       }
       approvedPermissionMode = confirmResult.permissionMode;
+      if (confirmResult.inputPatch) {
+        Object.assign(toolCall.input, confirmResult.inputPatch);
+      }
     }
 
     if (mode === "plan" && isWriteTool(toolCall.name)) {
@@ -188,7 +207,7 @@ export class ToolRegistry {
       }
       const result = this.result(toolCall, start, "success", output);
       if (toolCall.name === "Skill") {
-        const skillName = toolCall.input.command ?? toolCall.input.skill;
+        const skillName = toolCall.input.skill ?? toolCall.input.command;
         if (typeof skillName === "string") {
           this.activatedSkills.add(String(skillName).trim());
         }

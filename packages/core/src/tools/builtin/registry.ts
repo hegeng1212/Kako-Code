@@ -2,6 +2,7 @@ import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import type { ToolRegistry } from "../registry.js";
 import { bashHandler, bashToolDefinition } from "./bash.js";
 import { monitorHandler, monitorToolDefinition } from "./monitor.js";
+import { taskStopHandler, taskStopToolDefinition } from "./task-stop.js";
 import {
   askUserQuestionHandler,
   askUserQuestionToolDefinition,
@@ -9,7 +10,18 @@ import {
 import { cronCreateHandler, cronCreateToolDefinition } from "./cron-create.js";
 import { cronDeleteHandler, cronDeleteToolDefinition } from "./cron-delete.js";
 import { cronListHandler, cronListToolDefinition } from "./cron-list.js";
+import {
+  scheduleWakeupHandler,
+  scheduleWakeupToolDefinition,
+} from "./schedule-wakeup.js";
+import { taskCreateHandler, taskCreateToolDefinition } from "./task-create.js";
+import { taskGetHandler, taskGetToolDefinition } from "./task-get.js";
+import { taskListHandler, taskListToolDefinition } from "./task-list.js";
+import { taskUpdateHandler, taskUpdateToolDefinition } from "./task-update.js";
+import { webFetchHandler, webFetchToolDefinition } from "./web-fetch.js";
+import { webSearchHandler, webSearchToolDefinition } from "./web-search.js";
 import { skillHandler, skillToolDefinition } from "./skill.js";
+import { workflowHandler, workflowToolDefinition } from "./workflow.js";
 import { readHandler, readToolDefinition } from "./read.js";
 import { writeHandler, writeToolDefinition } from "./write.js";
 import { editHandler, editToolDefinition } from "./edit.js";
@@ -48,6 +60,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   { definition: notebookEditToolDefinition, handler: notebookEditHandler },
   { definition: bashToolDefinition, handler: bashHandler },
   { definition: monitorToolDefinition, handler: monitorHandler },
+  { definition: taskStopToolDefinition, handler: taskStopHandler },
   { definition: askUserQuestionToolDefinition, handler: askUserQuestionHandler },
   { definition: enterPlanModeToolDefinition, handler: enterPlanModeHandler },
   { definition: exitPlanModeToolDefinition, handler: exitPlanModeHandler },
@@ -56,8 +69,16 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   { definition: cronCreateToolDefinition, handler: cronCreateHandler },
   { definition: cronDeleteToolDefinition, handler: cronDeleteHandler },
   { definition: cronListToolDefinition, handler: cronListHandler },
+  { definition: scheduleWakeupToolDefinition, handler: scheduleWakeupHandler },
+  { definition: taskCreateToolDefinition, handler: taskCreateHandler },
+  { definition: taskGetToolDefinition, handler: taskGetHandler },
+  { definition: taskListToolDefinition, handler: taskListHandler },
+  { definition: taskUpdateToolDefinition, handler: taskUpdateHandler },
+  { definition: webFetchToolDefinition, handler: webFetchHandler },
+  { definition: webSearchToolDefinition, handler: webSearchHandler },
   { definition: skillToolDefinition, handler: skillHandler },
-  // Glob, Grep, WebFetch, Agent, Memory — add when defined
+  { definition: workflowToolDefinition, handler: workflowHandler },
+  // Glob, Grep, Agent, Memory — add when defined
 ];
 
 /** Names of all built-in tools with implementations. */

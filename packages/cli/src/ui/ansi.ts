@@ -14,7 +14,9 @@ export const ansi = {
   muted: "\x1b[38;5;245m",
   /** Placeholder / hint text. */
   placeholder: "\x1b[38;5;243m",
-  /** Footer separator lines. */
+  /** Input box border — bright white like Claude Code. */
+  inputBorder: "\x1b[38;5;255m",
+  /** Footer separator lines (non-input panels). */
   line: "\x1b[38;5;238m",
   /** Table box-drawing borders. */
   tableBorder: "\x1b[38;5;255m",
@@ -23,6 +25,8 @@ export const ansi = {
   green: "\x1b[38;5;114m",
   yellow: "\x1b[38;5;221m",
   red: "\x1b[38;5;203m",
+  blue: "\x1b[38;5;117m",
+  magenta: "\x1b[38;5;176m",
 };
 
 export function stripAnsi(text: string): string {

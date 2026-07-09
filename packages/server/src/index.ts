@@ -22,6 +22,7 @@ import {
   KAKO_LICENSE,
   KAKO_LICENSE_URL,
   listInstalledSkills,
+  getInstalledSkillDetail,
   installSkillFromHub,
   installSkillsFromGithub,
   installSkillsFromArchive,
@@ -38,8 +39,12 @@ import {
   fetchPopularSkillHub,
   setSkillEnabled,
   openPathInFileManager,
+  loadSearchRegistry,
+  updateSearchRegistry,
+  SEARCH_PROVIDER_PRESETS,
+  testSearchProvider,
 } from "@kako/core";
-import type { ProviderProfile, ProviderTestConfig, McpServerConfig } from "@kako/shared";
+import type { ProviderProfile, ProviderTestConfig, McpServerConfig, SearchProviderProfile } from "@kako/shared";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -158,6 +163,44 @@ app.post("/api/providers/test/stream", async (c) => {
       return;
     }
   });
+});
+
+// --- Search settings ---
+app.get("/api/search/presets", (c) => c.json(SEARCH_PROVIDER_PRESETS));
+
+app.get("/api/search", async (c) => {
+  const registry = await loadSearchRegistry();
+  return c.json(registry);
+});
+
+app.put("/api/search", async (c) => {
+  const body = await c.req.json<{ providers: SearchProviderProfile[] }>();
+  const registry = await updateSearchRegistry(body.providers);
+  return c.json(registry);
+});
+
+app.post("/api/search/test", async (c) => {
+  const body = await c.req.json<{ providerId: string; query?: string }>();
+  const start = Date.now();
+  try {
+    const result = await testSearchProvider(
+      body.providerId as SearchProviderProfile["id"],
+      body.query ?? "test",
+    );
+    return c.json({
+      success: true,
+      providerId: body.providerId,
+      latencyMs: result.latencyMs,
+      resultCount: result.resultCount,
+    });
+  } catch (error) {
+    return c.json({
+      success: false,
+      providerId: body.providerId,
+      latencyMs: Date.now() - start,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 // --- MCP servers ---
@@ -446,6 +489,16 @@ app.put("/api/skills/:name/enabled", async (c) => {
   const skill = await setSkillEnabled(c.req.param("name"), body.enabled);
   if (!skill) return c.json({ error: "Skill not found" }, 404);
   return c.json({ skills: await listInstalledSkills() });
+});
+
+app.get("/api/skills/:name", async (c) => {
+  try {
+    const detail = await getInstalledSkillDetail(c.req.param("name"));
+    return c.json(detail);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ error: message }, 404);
+  }
 });
 
 app.post("/api/skills/open-dir", async (c) => {

@@ -93,7 +93,7 @@ describe("filterSkillsForAgent", () => {
 });
 
 describe("formatSkillsIndex", () => {
-  it("lists skills with use case and Skill activation flow", () => {
+  it("lists skills in Claude Code-style Skill tool catalog", () => {
     const text = formatSkillsIndex([
       {
         name: "brainstorming",
@@ -102,13 +102,8 @@ describe("formatSkillsIndex", () => {
         skillMdPath: "/x/SKILL.md",
       },
     ]);
-    expect(text).toContain("<system-reminder>");
-    expect(text).toContain("brainstorming");
-    expect(text).toContain("使用场景");
-    expect(text).toContain("Use before creative work");
-    expect(text).toContain("file_path: /x/SKILL.md");
-    expect(text).toContain("Skill");
-    expect(text).toContain("harness loads");
-    expect(text).toContain("does not auto-select");
+    expect(text).toContain("The following skills are available for use with the Skill tool:");
+    expect(text).toContain("- brainstorming: Use before creative work");
+    expect(text).not.toContain("<system-reminder>");
   });
 });

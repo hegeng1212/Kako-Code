@@ -73,14 +73,11 @@ export function normalizeSubagentType(raw: string | undefined): string {
   return aliases[key] ?? raw.trim();
 }
 
-/** Validate spawn request before loading sub-agent definitions or running loops. */
+/** Validate subagent type and unsupported isolation modes before spawning. */
 export function assertSubAgentSpawnAllowed(
   input: AgentToolInput,
   parentSubagents: string[],
 ): string {
-  if (input.run_in_background) {
-    throw new Error("Background sub-agents are not supported yet");
-  }
   if (input.isolation === "remote") {
     throw new Error('Isolation mode "remote" is not supported yet');
   }

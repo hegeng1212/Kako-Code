@@ -7,7 +7,7 @@ export async function resolveUserTurnInput(
   text: string,
   pendingAttachments: UserAttachment[] = [],
 ): Promise<UserTurnInput> {
-  const { paths, text: questionText } = await parsePathReferences(text);
+  const { paths } = await parsePathReferences(text);
   const stored: UserAttachment[] = [...pendingAttachments];
 
   for (const path of paths) {
@@ -15,7 +15,7 @@ export async function resolveUserTurnInput(
   }
 
   return {
-    text: questionText,
+    text: text.trim(),
     attachments: stored.length ? stored : undefined,
   };
 }

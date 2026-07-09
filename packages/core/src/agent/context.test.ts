@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { TranscriptMessage } from "@kako/shared";
 import {
   buildMessages,
@@ -34,7 +37,7 @@ describe("formatUserContextReminder", () => {
     expect(text).toContain("<system-reminder>");
     expect(text).toContain("# Project rules");
     expect(text).toContain("# currentDate");
-    expect(text).toContain("Today's date is 2026/07/06 16:00.");
+    expect(text).toContain("Today's date is 2026-07-06.");
     expect(text).toContain("may or may not be relevant");
   });
 
@@ -42,6 +45,7 @@ describe("formatUserContextReminder", () => {
     const text = formatUserContextReminder(undefined);
     expect(text).toContain("# currentDate");
     expect(text).not.toContain("undefined");
+    expect(text).not.toContain("file-attachment-contract");
   });
 });
 
@@ -68,7 +72,8 @@ describe("buildSystemPromptBase", () => {
     });
     expect(system).toContain("You are Kako.");
     expect(system).toContain("# Environment");
-    expect(system).toContain("/tmp/proj");
+    expect(system).toContain("OS Version:");
+    expect(system).toContain("configured for this session via Kako provider settings");
     expect(system).toContain("## User Instructions");
     expect(system).toContain("Always use TypeScript.");
     expect(system).toContain("Available agent types");
@@ -124,6 +129,48 @@ describe("buildMessages", () => {
     expect(messages[2]?.content).toBe("你好！");
     expect(messages[3]?.content).toContain("继续");
     expect(messages[3]?.content).toContain("<system-reminder>");
+  });
+
+  it("injects attachment workflow on user messages with document attachments", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kako-ctx-"));
+      const file = join(dir, "report.csv");
+      await writeFile(file, "a,b\n1,2\n", "utf-8");
+      try {
+        const messages = await buildMessages({
+          definition: baseDefinition,
+          transcript: [
+            transcriptMsg({
+              role: "user",
+              content: `${file}  summary`,
+              attachments: [
+                {
+                  name: "report.csv",
+                  path: file,
+                  mimeType: "text/csv",
+                  kind: "document",
+                },
+              ],
+            }),
+          ],
+          environment,
+          now: new Date("2026-07-06T12:00:00"),
+        });
+        const user = messages[1]?.content;
+        const text =
+          typeof user === "string"
+            ? user
+            : Array.isArray(user)
+              ? user.map((b) => ("text" in b ? b.text : "")).join("\n")
+              : String(user);
+        expect(text).toContain("<file-attachment-contract>");
+        expect(text).toContain("<user-query>");
+        expect(text).toContain("First tool");
+        expect(text).toContain("Bash");
+        expect(text).toContain("summary");
+        expect(text).not.toContain("<system-reminder>");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("replays assistant tool_calls before tool results", async () => {

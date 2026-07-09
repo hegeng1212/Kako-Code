@@ -9,6 +9,7 @@ export function adaptClaudeCodeToolText(text: string): string {
     .replaceAll(".claude/scheduled_tasks.json", "~/.kako/config/scheduled_tasks.json")
     .replaceAll(".claude/worktrees/", ".kako/worktrees/")
     .replaceAll(".claude/commands/", ".kako/commands/")
+    .replaceAll(".claude/workflows/", ".kako/workflows/")
     .replaceAll("this Claude session", "this Kako session")
     .replaceAll("when Claude exits", "when Kako exits")
     .replace(

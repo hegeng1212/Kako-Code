@@ -5,6 +5,7 @@ import type { InstalledSkillRecord, SkillDefinition, SkillMetadata } from "@kako
 import { findBundledSkillsDir } from "../config/bundled-assets.js";
 import { getSkillsDir } from "../config/paths.js";
 import { loadSkillsManifest } from "./manifest.js";
+import { isSystemSkill, loadSystemSkills, mergeSkillsForAgent } from "./system-skills.js";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
 
@@ -148,7 +149,21 @@ export function filterSkillsForAgent(
   return discovered.filter((skill) => allowed.has(skill.name));
 }
 
+export async function discoverSkillsForAgent(
+  cwd: string,
+  agentSkills: string[] | undefined,
+): Promise<SkillDefinition[]> {
+  const discovered = await discoverSkills(cwd);
+  const systemSkills = await loadSystemSkills();
+  return mergeSkillsForAgent(discovered, agentSkills, systemSkills);
+}
+
 export async function findSkillFile(skillName: string, cwd: string): Promise<string | null> {
+  if (isSystemSkill(skillName)) {
+    for (const skill of await loadSystemSkills()) {
+      if (skill.name === skillName) return skill.skillMdPath;
+    }
+  }
   for (const candidate of skillNameCandidates(skillName)) {
     const paths = [
       join(resolve(cwd), ".kako", "skills", candidate, "SKILL.md"),
@@ -185,25 +200,13 @@ export async function loadSkill(skillName: string, cwd: string): Promise<SkillDe
 export function formatSkillsIndex(skills: SkillMetadata[]): string {
   if (!skills.length) return "";
   const lines = skills.map((skill) => {
-    const desc = skill.description.trim() || "(no description)";
-    return [
-      `- **${skill.name}**`,
-      `  使用场景: ${desc}`,
-      `  file_path: ${skill.skillMdPath}`,
-    ].join("\n");
+    const desc = skill.description.trim().replace(/\s+/g, " ");
+    const when = desc || "Use when this skill matches the user's request.";
+    return `- ${skill.name}: ${when}`;
   });
-  return `\n\n<system-reminder>
-Available skills (index only — full instructions are NOT loaded yet):
+  return `\n\nThe following skills are available for use with the Skill tool:
 
-${lines.join("\n")}
-
-How to use a skill (you decide whether a skill matches the user's request):
-1. Call the **Skill** tool with \`skill\` (exact name from above) and optional \`args\`.
-2. The harness loads the skill file and injects full instructions into context; \`args\` becomes the next user message.
-3. Follow the loaded skill instructions for the rest of the turn.
-
-Do not guess skill content from this index. The harness does not auto-select skills for you.
-</system-reminder>`;
+${lines.join("\n")}`;
 }
 
 /** @deprecated Use formatSkillsIndex */

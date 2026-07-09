@@ -10,8 +10,10 @@ import type {
   McpToolMetrics,
 } from "@kako/shared";
 import { api } from "../api";
-import { aggregateMetrics, EMPTY_METRICS, MetricsBar, pct } from "./mcp-metrics-ui";
-import { IconEdit, IconPlay, IconSpinner, IconSync, IconTrash } from "./RowIcons";
+import { aggregateMetrics, CallCount, EMPTY_METRICS, MetricsBar, pct } from "./mcp-metrics-ui";
+import { IconChevronDown, IconEdit, IconPlay, IconPlus, IconRefresh, IconSpinner, IconSync, IconTrash } from "./RowIcons";
+import { PanelToolbar, ToolbarButton } from "./PanelToolbar";
+import { useConfirmDialog } from "./ConfirmDialog";
 import { McpFormPage } from "./McpFormPage";
 import { McpUsagePage } from "./McpUsagePage";
 
@@ -76,16 +78,17 @@ function McpServerCard({
 
   return (
     <li
-      className={`mcp-server-card ${!server.enabled ? "mcp-server-card--disabled" : ""}`}
+      className={`mcp-server-card ${!server.enabled ? "mcp-server-card--disabled" : ""} ${expanded ? "mcp-server-card--expanded" : ""}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div className="mcp-server-card__header">
+      <div className="mcp-server-card__row">
+        <div className="provider-row__drag" title="拖动排序（即将支持）" aria-hidden="true">
+          <span /><span /><span /><span /><span /><span />
+        </div>
+
         <button type="button" className="mcp-server-card__toggle" onClick={onToggleExpand}>
-          <span className="mcp-server-card__arrow">{expanded ? "▼" : "▶"}</span>
-          <div className="provider-icon" style={{ background: "#6366f1" }}>
-            M
-          </div>
+          <div className="provider-icon mcp-server-card__icon">M</div>
           <div className="mcp-server-card__info">
             <div className="provider-row__title">
               <span className="provider-row__name">{server.name}</span>
@@ -104,7 +107,7 @@ function McpServerCard({
               </span>
               <span className="tag tag--muted">{server.transport.toUpperCase()}</span>
             </div>
-            <div className="provider-row__url" style={{ cursor: "default" }}>
+            <div className="provider-row__url mcp-server-card__endpoint">
               {server.transport === "stdio"
                 ? `${server.command} ${server.args?.join(" ") ?? ""}`
                 : server.url}
@@ -116,6 +119,7 @@ function McpServerCard({
             )}
           </div>
         </button>
+
         <div className={`mcp-server-card__actions ${showActions ? "visible" : ""}`}>
           {server.enabled && connectFailed && !connected && (
             <button
@@ -171,6 +175,18 @@ function McpServerCard({
           >
             <IconTrash />
           </button>
+          <button
+            type="button"
+            className={`mcp-server-card__chevron ${expanded ? "mcp-server-card__chevron--open" : ""}`}
+            title={expanded ? "收起" : "展开详情"}
+            aria-label={expanded ? "收起" : "展开详情"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpand();
+            }}
+          >
+            <IconChevronDown />
+          </button>
         </div>
       </div>
 
@@ -198,15 +214,24 @@ function McpServerCard({
           )}
           {server.enabled && serverTools.length > 0 && (
             <table className="mcp-tools-table">
+              <colgroup>
+                <col />
+                <col />
+                <col className="mcp-tools-table__col-metric--calls" />
+                <col className="mcp-tools-table__col-metric--rate" />
+                <col className="mcp-tools-table__col-metric--duration" />
+                <col className="mcp-tools-table__col-metric--duration" />
+                <col className="mcp-tools-table__col-action" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>工具</th>
                   <th>描述</th>
-                  <th>调用量</th>
-                  <th>成功率</th>
-                  <th>平均</th>
-                  <th>P99</th>
-                  <th />
+                  <th className="mcp-tools-table__metric">调用量</th>
+                  <th className="mcp-tools-table__metric">成功率</th>
+                  <th className="mcp-tools-table__metric">平均</th>
+                  <th className="mcp-tools-table__metric">P99</th>
+                  <th className="mcp-tools-table__action" aria-label="操作" />
                 </tr>
               </thead>
               <tbody>
@@ -214,13 +239,19 @@ function McpServerCard({
                   const tm = toolMetrics.get(`${server.id}::${tool.name}`);
                   return (
                     <tr key={tool.name}>
-                      <td className="mcp-tools-table__name">{tool.name}</td>
-                      <td className="mcp-tools-table__desc">{tool.description}</td>
-                      <td>{tm?.totalCalls ?? 0}</td>
-                      <td>{tm ? pct(tm.successRate) : "—"}</td>
-                      <td>{tm ? `${tm.avgDurationMs}ms` : "—"}</td>
-                      <td>{tm ? `${tm.p99DurationMs}ms` : "—"}</td>
-                      <td>
+                      <td className="mcp-tools-table__name" title={tool.name}>
+                        {tool.name}
+                      </td>
+                      <td className="mcp-tools-table__desc" title={tool.description || undefined}>
+                        {tool.description || "—"}
+                      </td>
+                      <td className="mcp-tools-table__metric mcp-tools-table__metric--calls">
+                        <CallCount count={tm?.totalCalls ?? 0} />
+                      </td>
+                      <td className="mcp-tools-table__metric">{tm ? pct(tm.successRate) : "—"}</td>
+                      <td className="mcp-tools-table__metric">{tm ? `${tm.avgDurationMs}ms` : "—"}</td>
+                      <td className="mcp-tools-table__metric">{tm ? `${tm.p99DurationMs}ms` : "—"}</td>
+                      <td className="mcp-tools-table__action">
                         <button
                           type="button"
                           className="btn btn--ghost btn--sm"
@@ -261,6 +292,7 @@ export function McpPanel() {
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<McpActionToast | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { requestConfirm, dialog: confirmDialog } = useConfirmDialog();
 
   const statusMap = useMemo(
     () => new Map(statuses.map((s) => [s.id, s])),
@@ -318,6 +350,15 @@ export function McpPanel() {
     [summary],
   );
 
+  const refreshConnectingStatus = useCallback(async () => {
+    try {
+      const statusRes = await api.getMcpStatus();
+      setStatuses(statusRes.servers);
+    } catch {
+      // ignore transient poll errors
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -357,9 +398,43 @@ export function McpPanel() {
 
   useEffect(() => {
     if (!hasConnecting) return;
-    const timer = window.setInterval(() => void refresh(), 2000);
-    return () => window.clearInterval(timer);
-  }, [hasConnecting, refresh]);
+
+    let cancelled = false;
+    let timer: number | undefined;
+    let delayMs = 2_000;
+    let polls = 0;
+    const maxPolls = 90;
+
+    const tick = () => {
+      if (cancelled || polls >= maxPolls) return;
+      if (document.hidden) {
+        timer = window.setTimeout(tick, Math.max(delayMs, 10_000));
+        return;
+      }
+      polls += 1;
+      void refreshConnectingStatus().finally(() => {
+        if (cancelled) return;
+        delayMs = Math.min(Math.round(delayMs * 1.25), 10_000);
+        timer = window.setTimeout(tick, delayMs);
+      });
+    };
+
+    timer = window.setTimeout(tick, delayMs);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [hasConnecting, refreshConnectingStatus]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (!document.hidden && hasConnecting) {
+        void refreshConnectingStatus();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [hasConnecting, refreshConnectingStatus]);
 
   useEffect(() => {
     if (!actionToast) return;
@@ -432,7 +507,13 @@ export function McpPanel() {
   }
 
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`删除 MCP 服务「${name}」？`)) return;
+    const ok = await requestConfirm({
+      title: "删除 MCP 服务",
+      message: `确定删除「${name}」？此操作不可恢复。`,
+      confirmLabel: "删除",
+      danger: true,
+    });
+    if (!ok) return;
     const m = await api.removeMcp(id);
     setServers(m.servers);
     if (expandedId === id) setExpandedId(null);
@@ -496,26 +577,32 @@ export function McpPanel() {
     <section className="mcp-panel">
       {error && <div className="banner banner--error">{error}</div>}
 
-      <div className="mcp-toolbar">
-        <button className="btn btn--primary" onClick={() => setView("add")}>
-          + 添加 MCP
-        </button>
-        <button className="btn btn--ghost" onClick={() => void refresh()} disabled={loading}>
-          刷新
-        </button>
-        <button
-          className="btn btn--ghost mcp-toolbar__usage"
-          onClick={() => {
-            void refresh();
-            setView("usage");
-          }}
-        >
-          使用情况
-          {obsStats && obsStats.mcpLogs > 0 && (
-            <span className="mcp-toolbar__badge">{obsStats.mcpLogs}</span>
-          )}
-        </button>
-      </div>
+      <PanelToolbar
+        className="panel-toolbar--mcp"
+        badge={
+          <>
+            已配置 <strong>{servers.length}</strong> 个 MCP 服务
+          </>
+        }
+        actions={
+          <>
+            <ToolbarButton title="刷新" onClick={() => void refresh()} disabled={loading}>
+              <IconRefresh className="btn__icon" />
+              刷新
+            </ToolbarButton>
+            <ToolbarButton title="使用情况" onClick={() => { void refresh(); setView("usage"); }}>
+              使用情况
+              {obsStats && obsStats.mcpLogs > 0 && (
+                <span className="panel-toolbar__count">{obsStats.mcpLogs}</span>
+              )}
+            </ToolbarButton>
+            <ToolbarButton title="添加 MCP" onClick={() => setView("add")}>
+              <IconPlus className="btn__icon" />
+              添加 MCP
+            </ToolbarButton>
+          </>
+        }
+      />
 
       <ul className="mcp-server-list">
         {servers.map((server) => {
@@ -561,7 +648,9 @@ export function McpPanel() {
 
       {!servers.length && !loading && (
         <div className="empty-state">
+          <div className="empty-state__icon" aria-hidden="true">⬡</div>
           <p>暂无 MCP 服务</p>
+          <span className="empty-state__hint">点击右上角「添加 MCP」创建第一个服务</span>
         </div>
       )}
 
@@ -588,6 +677,7 @@ export function McpPanel() {
           </button>
         </div>
       )}
+      {confirmDialog}
     </section>
   );
 }

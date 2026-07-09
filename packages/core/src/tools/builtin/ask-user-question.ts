@@ -224,7 +224,7 @@ export function formatAskUserQuestionResult(result: AskUserQuestionResult): stri
     );
   }
 
-  return `Your questions have been answered: ${answerPairs.join(", ")}. Continue based on these answers.`;
+  return `Your questions have been answered: ${answerPairs.join(", ")}. You can now continue with these answers in mind.`;
 }
 
 export const askUserQuestionHandler: ToolHandler = async (input, context) => {

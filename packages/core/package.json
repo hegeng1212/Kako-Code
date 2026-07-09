@@ -11,8 +11,13 @@
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "bundled"
+  ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "prepare": "node scripts/sync-bundled-workflows.mjs",
+    "build": "node scripts/sync-bundled-workflows.mjs && tsup src/index.ts --format esm --dts",
     "dev": "tsup src/index.ts --format esm --dts --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -25,6 +30,7 @@
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
     "sqlite-vec": "^0.1.6",
+    "undici": "^7.16.0",
     "xlsx": "^0.18.5",
     "yaml": "^2.8.0",
     "zod": "^3.25.76"

@@ -10,11 +10,17 @@ import { ProviderRow } from "./components/ProviderRow";
 import { ProviderFormPage } from "./components/ProviderFormPage";
 import { McpPanel } from "./components/McpPanel";
 import { SkillsPanel } from "./components/SkillsPanel";
+import { SettingsPage } from "./components/SettingsPage";
+import { PanelToolbar, ToolbarButton } from "./components/PanelToolbar";
+import { useConfirmDialog } from "./components/ConfirmDialog";
+import { IconPlus, IconRefresh, IconProviders, IconMcp, IconSkills, IconSettings } from "./components/RowIcons";
 
 type Tab = "providers" | "mcp" | "skills";
 type ProviderView = "list" | "add" | "edit";
+type AppView = "main" | "settings";
 
 export function App() {
+  const [appView, setAppView] = useState<AppView>("main");
   const [tab, setTab] = useState<Tab>("providers");
   const [providerView, setProviderView] = useState<ProviderView>("list");
   const [registry, setRegistry] = useState<ProviderRegistry | null>(null);
@@ -27,6 +33,7 @@ export function App() {
   const [version, setVersion] = useState<string | null>(null);
   const [license, setLicense] = useState<string | null>(null);
   const [licenseUrl, setLicenseUrl] = useState<string | null>(null);
+  const { requestConfirm, dialog: confirmDialog } = useConfirmDialog();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -68,6 +75,17 @@ export function App() {
 
   const active = registry?.active;
 
+  if (appView === "settings") {
+    return (
+      <SettingsPage
+        onBack={() => setAppView("main")}
+        version={version}
+        license={license}
+        licenseUrl={licenseUrl}
+      />
+    );
+  }
+
   if (providerView === "add" || providerView === "edit") {
     return (
       <ProviderFormPage
@@ -98,22 +116,10 @@ export function App() {
       <header className="topbar">
         <div className="topbar__left">
           <span className="topbar__brand">Kako</span>
-          {version && <span className="topbar__version">v{version}</span>}
-          {license &&
-            (licenseUrl ? (
-              <a
-                className="topbar__license"
-                href={licenseUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="开源许可证"
-              >
-                {license}
-              </a>
-            ) : (
-              <span className="topbar__license">{license}</span>
-            ))}
-          <button className="topbar__icon" title="刷新" onClick={() => void refresh()}>↻</button>
+          {version && <span className="topbar__version" title="Kako 版本">v{version}</span>}
+          <button className="topbar__icon" title="刷新" onClick={() => void refresh()}>
+            <IconRefresh className="topbar__icon-svg" />
+          </button>
         </div>
 
         <nav className="topbar__tabs">
@@ -121,32 +127,34 @@ export function App() {
             className={`topbar__tab ${tab === "providers" ? "topbar__tab--active" : ""}`}
             onClick={() => setTab("providers")}
           >
+            <IconProviders className="topbar__tab-icon" />
             模型供应商
           </button>
           <button
             className={`topbar__tab ${tab === "mcp" ? "topbar__tab--active" : ""}`}
             onClick={() => setTab("mcp")}
           >
+            <IconMcp className="topbar__tab-icon" />
             MCP 服务
           </button>
           <button
             className={`topbar__tab ${tab === "skills" ? "topbar__tab--active" : ""}`}
             onClick={() => setTab("skills")}
           >
+            <IconSkills className="topbar__tab-icon" />
             Skills
           </button>
         </nav>
 
         <div className="topbar__right">
-          {tab === "providers" && (
-            <button
-              className="fab"
-              onClick={() => setProviderView("add")}
-              title="添加供应商"
-            >
-              +
-            </button>
-          )}
+          <button
+            className="topbar__icon"
+            title="设置"
+            aria-label="设置"
+            onClick={() => setAppView("settings")}
+          >
+            <IconSettings className="topbar__icon-svg" />
+          </button>
         </div>
       </header>
 
@@ -156,6 +164,26 @@ export function App() {
 
         {tab === "providers" && registry && (
           <>
+            <PanelToolbar
+              badge={
+                <>
+                  已配置 <strong>{registry.providers.length}</strong> 个模型供应商
+                </>
+              }
+              actions={
+                <>
+                  <ToolbarButton title="刷新" onClick={() => void refresh()} disabled={loading}>
+                    <IconRefresh className="btn__icon" />
+                    刷新
+                  </ToolbarButton>
+                  <ToolbarButton title="添加供应商" onClick={() => setProviderView("add")}>
+                    <IconPlus className="btn__icon" />
+                    添加供应商
+                  </ToolbarButton>
+                </>
+              }
+            />
+
             <ul className="provider-list">
               {registry.providers.map((p) => (
                 <ProviderRow
@@ -217,7 +245,13 @@ export function App() {
                     }
                   }}
                   onDelete={async () => {
-                    if (!confirm(`删除供应商「${p.name}」？`)) return;
+                    const ok = await requestConfirm({
+                      title: "删除供应商",
+                      message: `确定删除「${p.name}」？此操作不可恢复。`,
+                      confirmLabel: "删除",
+                      danger: true,
+                    });
+                    if (!ok) return;
                     const reg = await api.removeProvider(p.id);
                     setRegistry(reg);
                   }}
@@ -227,10 +261,9 @@ export function App() {
 
             {!registry.providers.length && (
               <div className="empty-state">
+                <div className="empty-state__icon" aria-hidden="true">◇</div>
                 <p>还没有模型供应商</p>
-                <button className="btn btn--primary" onClick={() => setProviderView("add")}>
-                  + 添加供应商
-                </button>
+                <span className="empty-state__hint">点击右上角「添加供应商」创建第一个配置</span>
               </div>
             )}
 
@@ -248,6 +281,7 @@ export function App() {
         {tab === "mcp" && <McpPanel />}
         {tab === "skills" && <SkillsPanel />}
       </main>
+      {confirmDialog}
     </div>
   );
 }

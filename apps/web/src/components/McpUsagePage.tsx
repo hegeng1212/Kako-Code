@@ -6,7 +6,7 @@ import type {
   McpToolMetrics,
 } from "@kako/shared";
 import { api } from "../api";
-import { MetricsBar, pct } from "./mcp-metrics-ui";
+import { CallCount, MetricsBar, pct } from "./mcp-metrics-ui";
 
 interface McpUsagePageProps {
   globalMetrics: McpCallMetrics;
@@ -102,7 +102,9 @@ export function McpUsagePage({
                   {serverUsageRows.map((row) => (
                     <tr key={row.serverId}>
                       <td className="mcp-usage-table__name">{row.serverName}</td>
-                      <td>{row.totalCalls}</td>
+                      <td>
+                        <CallCount count={row.totalCalls} />
+                      </td>
                       <td>{row.successCount}</td>
                       <td>{row.errorCount}</td>
                       <td>{pct(row.successRate)}</td>
@@ -146,7 +148,9 @@ export function McpUsagePage({
                     <tr key={`${row.serverId}::${row.toolName}`}>
                       <td>{row.serverName}</td>
                       <td className="mcp-usage-table__name">{row.toolName}</td>
-                      <td>{row.totalCalls}</td>
+                      <td>
+                        <CallCount count={row.totalCalls} />
+                      </td>
                       <td>{pct(row.successRate)}</td>
                       <td>{row.avgDurationMs}ms</td>
                       <td>{row.p99DurationMs}ms</td>
@@ -187,29 +191,40 @@ export function McpUsagePage({
                 <p className="mcp-hint">暂无调用记录</p>
               ) : (
                 <table className="mcp-logs-table">
+                  <colgroup>
+                    <col className="mcp-logs-table__col-time" />
+                    <col className="mcp-logs-table__col-status" />
+                    <col className="mcp-logs-table__col-duration" />
+                    <col />
+                    <col className="mcp-logs-table__col-action" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>时间</th>
                       <th>状态</th>
                       <th>耗时</th>
                       <th>工具</th>
-                      <th />
+                      <th className="mcp-logs-table__action" aria-label="操作" />
                     </tr>
                   </thead>
                   <tbody>
                     {logs.map((log) => (
                       <tr key={log.toolUseId}>
-                        <td>{new Date(log.timestamp).toLocaleString()}</td>
-                        <td>
+                        <td className="mcp-logs-table__time">
+                          {new Date(log.timestamp).toLocaleString()}
+                        </td>
+                        <td className="mcp-logs-table__status">
                           <span
                             className={`tag ${log.status === "success" ? "tag--active" : "tag--warn"}`}
                           >
                             {log.status}
                           </span>
                         </td>
-                        <td>{log.durationMs}ms</td>
-                        <td>{log.mcpToolName}</td>
-                        <td>
+                        <td className="mcp-logs-table__duration">{log.durationMs}ms</td>
+                        <td className="mcp-logs-table__tool" title={log.mcpToolName}>
+                          {log.mcpToolName}
+                        </td>
+                        <td className="mcp-logs-table__action">
                           <button
                             type="button"
                             className="btn btn--ghost btn--sm"
@@ -234,6 +249,14 @@ export function McpUsagePage({
               </p>
             ) : (
               <table className="mcp-logs-table">
+                <colgroup>
+                  <col className="mcp-logs-table__col-time" />
+                  <col className="mcp-logs-table__col-service" />
+                  <col />
+                  <col className="mcp-logs-table__col-status" />
+                  <col className="mcp-logs-table__col-duration" />
+                  <col className="mcp-logs-table__col-action" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>时间</th>
@@ -241,24 +264,30 @@ export function McpUsagePage({
                     <th>工具</th>
                     <th>状态</th>
                     <th>耗时</th>
-                    <th />
+                    <th className="mcp-logs-table__action" aria-label="操作" />
                   </tr>
                 </thead>
                 <tbody>
                   {recentLogs.map((log) => (
                     <tr key={log.toolUseId}>
-                      <td>{new Date(log.timestamp).toLocaleString()}</td>
-                      <td>{serverNameById.get(log.mcpServerId) ?? log.mcpServerId}</td>
-                      <td className="mcp-usage-table__name">{log.mcpToolName}</td>
-                      <td>
+                      <td className="mcp-logs-table__time">
+                        {new Date(log.timestamp).toLocaleString()}
+                      </td>
+                      <td className="mcp-logs-table__service">
+                        {serverNameById.get(log.mcpServerId) ?? log.mcpServerId}
+                      </td>
+                      <td className="mcp-logs-table__tool" title={log.mcpToolName}>
+                        {log.mcpToolName}
+                      </td>
+                      <td className="mcp-logs-table__status">
                         <span
                           className={`tag ${log.status === "success" ? "tag--active" : "tag--warn"}`}
                         >
                           {log.status}
                         </span>
                       </td>
-                      <td>{log.durationMs}ms</td>
-                      <td>
+                      <td className="mcp-logs-table__duration">{log.durationMs}ms</td>
+                      <td className="mcp-logs-table__action">
                         <button
                           type="button"
                           className="btn btn--ghost btn--sm"

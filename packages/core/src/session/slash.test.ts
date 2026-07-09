@@ -83,4 +83,28 @@ describe("handleSlashCommand", () => {
     const result = await handleSlashCommand("/commit", ctx);
     expect(result).toEqual({ type: "message", text: "Generate a commit message" });
   });
+
+  it("returns workflows-panel for /workflows", async () => {
+    const result = await handleSlashCommand("/workflows", ctx);
+    expect(result).toEqual({ type: "workflows-panel" });
+  });
+
+  it("returns skill-slash for deep-research", async () => {
+    const result = await handleSlashCommand("/deep-research test topic", ctx);
+    expect(result.type).toBe("skill-slash");
+    if (result.type === "skill-slash") {
+      expect(result.name).toBe("deep-research");
+      expect(result.handler).toBe("dynamic-workflow");
+      expect(result.args).toBe("test topic");
+    }
+  });
+
+  it("returns skill-slash for /init with skill handler", async () => {
+    const result = await handleSlashCommand("/init", ctx);
+    expect(result.type).toBe("skill-slash");
+    if (result.type === "skill-slash") {
+      expect(result.name).toBe("init");
+      expect(result.handler).toBe("skill");
+    }
+  });
 });

@@ -63,4 +63,19 @@ describe("parsePathReferences", () => {
     expect(parsed.paths).toEqual([]);
     expect(parsed.text).toBe("hello world");
   });
+
+  it("extracts multiple leading file paths before question", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "kako-path-ref-multi-"));
+    const fileA = join(dir, "a.xlsx");
+    const fileB = join(dir, "b.xlsx");
+    await writeFile(fileA, "x", "utf-8");
+    await writeFile(fileB, "x", "utf-8");
+    try {
+      const parsed = await parsePathReferences(`${fileA}\n${fileB}\n这是什么内容`);
+      expect(parsed.paths).toEqual([fileA, fileB]);
+      expect(parsed.text).toBe("这是什么内容");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

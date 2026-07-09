@@ -85,10 +85,13 @@ cp -R apps/web/dist "$KAKO_INSTALL/web"
 pnpm --filter @kako/server deploy "$KAKO_INSTALL/server-app" --prod --legacy
 cp -R agents "$KAKO_INSTALL/agents"
 cp -R skills "$KAKO_INSTALL/skills"
+cp -R workflows "$KAKO_INSTALL/workflows"
 
 cat > "$BIN_DIR/kako" <<EOF
 #!/usr/bin/env bash
 export KAKO_INSTALL="$KAKO_INSTALL"
+export KAKO_SRC="$KAKO_SRC"
+export KAKO_HOME="$KAKO_HOME"
 CLI="\$KAKO_INSTALL/dist/index.js"
 if ! command -v node >/dev/null 2>&1; then
   echo "Kako requires Node.js >= 20." >&2

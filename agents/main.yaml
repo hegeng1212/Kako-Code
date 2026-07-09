@@ -7,6 +7,8 @@ tools:
   - Write
   - Edit
   - Bash
+  - Monitor
+  - TaskStop
   - Agent
   - AskUserQuestion
   - EnterPlanMode
@@ -17,6 +19,13 @@ tools:
   - CronCreate
   - CronDelete
   - CronList
+  - ScheduleWakeup
+  - TaskCreate
+  - TaskGet
+  - TaskList
+  - TaskUpdate
+  - WebFetch
+  - WebSearch
 skills:
   - brainstorming
   - writing-plans

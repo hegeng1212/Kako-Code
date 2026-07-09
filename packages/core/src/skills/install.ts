@@ -1,6 +1,6 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { InstalledSkillRecord, SkillHubImportResult } from "@kako/shared";
+import type { InstalledSkillRecord, SkillDefinition, SkillHubImportResult } from "@kako/shared";
 import { getSkillsDir } from "../config/paths.js";
 import { parseSkillMd } from "./loader.js";
 import { skillInstallDirForName } from "./install-path.js";
@@ -110,6 +110,18 @@ export async function uninstallSkill(name: string): Promise<boolean> {
     await rm(record.installDir, { recursive: true, force: true }).catch(() => {});
   }
   return removeInstalledSkill(name);
+}
+
+export async function getInstalledSkillDetail(
+  name: string,
+): Promise<{ record: InstalledSkillRecord; definition: SkillDefinition }> {
+  const record = await getInstalledSkill(name);
+  if (!record) {
+    throw new Error(`Skill not found: ${name}`);
+  }
+  const content = await readFile(record.skillMdPath, "utf-8");
+  const definition = parseSkillMd(content, record.skillMdPath);
+  return { record, definition };
 }
 
 export async function listInstalledSkills(): Promise<InstalledSkillRecord[]> {

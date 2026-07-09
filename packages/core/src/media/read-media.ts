@@ -1,13 +1,85 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { LLMContentBlock } from "@kako/shared";
-import { isImagePath, isOfficeDocumentPath, isPdfPath, mimeTypeForPath } from "./mime.js";
+import { unzipSync } from "fflate";
+import { formatTextLines } from "../tools/builtin/text-format.js";
+import {
+  isImagePath,
+  isOfficeDocumentPath,
+  isPdfPath,
+  isTextDocumentPath,
+  mimeTypeForPath,
+} from "./mime.js";
 import { loadPdfParse } from "./pdf-env.js";
 
 export const MAX_PDF_PAGES_PER_REQUEST = 20;
 export const DOCUMENT_PREVIEW_MAX_CHARS = 2_000;
 export const SPREADSHEET_PREVIEW_MAX_ROWS = 5;
 export const SPREADSHEET_PREVIEW_MAX_COLS = 20;
+/** Default row cap when Read is called on a spreadsheet without an explicit limit. */
+export const SPREADSHEET_READ_PROBE_ROWS = 20;
 export const SPREADSHEET_DEFAULT_MAX_ROWS = 200;
+export const PRESENTATION_PREVIEW_MAX_SLIDES = 3;
+export const PLAIN_TEXT_READ_MAX_LINES = 2_000;
+const TEXT_SAMPLE_BYTES = 8_192;
+
+export function isLikelyTextBuffer(buffer: Buffer): boolean {
+  if (!buffer.length) return true;
+  const sample = buffer.subarray(0, Math.min(buffer.length, TEXT_SAMPLE_BYTES));
+  if (sample.includes(0)) return false;
+  let nonText = 0;
+  for (const byte of sample) {
+    if (byte === 9 || byte === 10 || byte === 13) continue;
+    if (byte >= 32 && byte <= 126) continue;
+    if (byte >= 128) continue;
+    nonText++;
+  }
+  return nonText / sample.length < 0.05;
+}
+
+function truncateDocumentPreview(header: string, body: string): string {
+  if (body.length <= DOCUMENT_PREVIEW_MAX_CHARS) {
+    return body ? `${header}\n\n${body}` : header;
+  }
+  return `${header}\n\n${body.slice(0, DOCUMENT_PREVIEW_MAX_CHARS)}\n\n… (preview truncated; use Read with offset/limit or Bash for more)`;
+}
+
+async function formatBinaryFileMessage(filePath: string): Promise<string> {
+  const info = await stat(filePath);
+  const mime = mimeTypeForPath(filePath);
+  return `Binary file: ${filePath}\nType: ${mime}\nSize: ${info.size} bytes\n\nNo text preview available. Use Bash (file, xxd) or appropriate tools to inspect.`;
+}
+
+async function extractPlainTextPreview(filePath: string): Promise<string> {
+  const content = await readFile(filePath, "utf-8");
+  return truncateDocumentPreview(`Text from ${filePath}`, content);
+}
+
+async function extractPlainTextRead(
+  filePath: string,
+  options?: { offset?: number; limit?: number },
+): Promise<string> {
+  const content = await readFile(filePath, "utf-8");
+  const lines = content.split("\n");
+  const offset = Math.max(1, options?.offset ?? 1);
+  const limit = options?.limit ?? PLAIN_TEXT_READ_MAX_LINES;
+  const body = formatTextLines(lines, offset, limit);
+  return `Text from ${filePath}\n\n${body}`;
+}
+
+async function readTextOrBinaryFallback(
+  filePath: string,
+  mode: "preview" | "read",
+  options?: { offset?: number; limit?: number },
+): Promise<string> {
+  const buffer = await readFile(filePath);
+  if (!isLikelyTextBuffer(buffer)) {
+    return formatBinaryFileMessage(filePath);
+  }
+  if (mode === "preview") {
+    return truncateDocumentPreview(`Text from ${filePath}`, buffer.toString("utf-8"));
+  }
+  return extractPlainTextRead(filePath, options);
+}
 
 export interface SpreadsheetReadOptions {
   sheet?: string;
@@ -90,13 +162,88 @@ export async function extractDocxText(filePath: string): Promise<string> {
   return `Document text from ${filePath}\n\n${text}`;
 }
 
+function slideNumberFromPath(path: string): number {
+  return Number(path.match(/slide(\d+)\.xml$/i)?.[1] ?? 0);
+}
+
+function extractTextRunsFromOfficeXml(xml: string): string {
+  return [...xml.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+export function extractPptxTextFromBuffer(
+  buffer: Uint8Array,
+  options: { maxSlides?: number } = {},
+): string {
+  const entries = unzipSync(buffer) as Record<string, Uint8Array>;
+  const slideKeys = Object.keys(entries)
+    .filter((key) => /^ppt\/slides\/slide\d+\.xml$/i.test(key))
+    .sort((a, b) => slideNumberFromPath(a) - slideNumberFromPath(b));
+  const noteKeys = new Map(
+    Object.keys(entries)
+      .filter((key) => /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(key))
+      .map((key) => [slideNumberFromPath(key.replace("notesSlide", "slide")), key] as const),
+  );
+
+  const maxSlides = options.maxSlides ?? slideKeys.length;
+  const sections: string[] = [];
+  for (const slideKey of slideKeys.slice(0, maxSlides)) {
+    const slideNum = slideNumberFromPath(slideKey);
+    const slideText = extractTextRunsFromOfficeXml(
+      new TextDecoder().decode(entries[slideKey]!),
+    );
+    const noteKey = noteKeys.get(slideNum);
+    const noteText = noteKey
+      ? extractTextRunsFromOfficeXml(new TextDecoder().decode(entries[noteKey]!))
+      : "";
+    const body = [slideText, noteText ? `Notes: ${noteText}` : ""].filter(Boolean).join("\n");
+    if (body) {
+      sections.push(`## Slide ${slideNum}\n${body}`);
+    }
+  }
+
+  if (!sections.length) {
+    throw new Error("No extractable slide text in PowerPoint file");
+  }
+  return sections.join("\n\n");
+}
+
+export async function extractPptxText(
+  filePath: string,
+  options: { maxSlides?: number } = {},
+): Promise<string> {
+  const buffer = await readFile(filePath);
+  const body = extractPptxTextFromBuffer(buffer, options);
+  const slideHint =
+    options.maxSlides !== undefined ? ` (first ${options.maxSlides} slides)` : "";
+  return `PowerPoint text from ${filePath}${slideHint}\n\n${body}`;
+}
+
+export async function formatLegacyPptMessage(filePath: string): Promise<string> {
+  const info = await stat(filePath);
+  return `PowerPoint legacy (.ppt) from ${filePath}\nSize: ${info.size} bytes\n\nBinary .ppt format — convert to .pptx externally, then use \`kako peek-presentation\`. Do not use python-pptx or pip install unless the user asks.`;
+}
+
+async function legacyPptGuidance(filePath: string): Promise<string> {
+  return formatLegacyPptMessage(filePath);
+}
+
 export async function extractSpreadsheetText(
   filePath: string,
   options: SpreadsheetReadOptions = {},
 ): Promise<string> {
   const buffer = await readFile(filePath);
   const XLSX = await import("xlsx");
-  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
+  const workbook =
+    ext === ".tsv"
+      ? XLSX.read(buffer.toString("utf-8"), { type: "string", FS: "\t" })
+      : ext === ".csv"
+        ? XLSX.read(buffer.toString("utf-8"), { type: "string" })
+        : XLSX.read(buffer, { type: "buffer" });
   const maxRows = options.maxRows ?? Number.POSITIVE_INFINITY;
   const maxCols = options.maxCols ?? Number.POSITIVE_INFINITY;
   const offsetRow = Math.max(1, options.offsetRow ?? 1);
@@ -133,7 +280,11 @@ export async function extractSpreadsheetText(
         : rows.length > sliced.length
           ? ` (first ${sliced.length} of ${rows.length} rows)`
           : "";
-    sections.push(`## Sheet: ${sheetName}${rowHint}\n${csv}`);
+    const truncateHint =
+      sliceEnd < rows.length
+        ? "\n… More rows exist. Use Read with offset/limit, or Bash to preprocess remaining data."
+        : "";
+    sections.push(`## Sheet: ${sheetName}${rowHint}\n${csv}${truncateHint}`);
   }
 
   if (sections.length === 1) {
@@ -153,18 +304,32 @@ export async function previewDocumentText(filePath: string): Promise<string> {
     if (body.length <= DOCUMENT_PREVIEW_MAX_CHARS) return full;
     return `${full.split("\n\n")[0]}\n\n${body.slice(0, DOCUMENT_PREVIEW_MAX_CHARS)}\n\n… (preview truncated; use Read with offset/limit or Bash for more)`;
   }
-  if ([".xlsx", ".xls", ".csv"].includes(ext)) {
+  if (ext === ".pptx") {
+    const full = await extractPptxText(filePath, {
+      maxSlides: PRESENTATION_PREVIEW_MAX_SLIDES,
+    });
+    const body = full.split("\n\n").slice(1).join("\n\n");
+    if (body.length <= DOCUMENT_PREVIEW_MAX_CHARS) return full;
+    return `${full.split("\n\n")[0]}\n\n${body.slice(0, DOCUMENT_PREVIEW_MAX_CHARS)}\n\n… (preview truncated; use Bash slide-range extraction for more)`;
+  }
+  if (ext === ".ppt") {
+    return legacyPptGuidance(filePath);
+  }
+  if ([".xlsx", ".xls", ".csv", ".tsv"].includes(ext)) {
     return extractSpreadsheetText(filePath, {
       maxRows: SPREADSHEET_PREVIEW_MAX_ROWS,
       maxCols: SPREADSHEET_PREVIEW_MAX_COLS,
     });
   }
-  throw new Error(`Unsupported document type: ${filePath}`);
+  if (isTextDocumentPath(filePath)) {
+    return extractPlainTextPreview(filePath);
+  }
+  return readTextOrBinaryFallback(filePath, "preview");
 }
 
 export async function readDocumentText(
   filePath: string,
-  options?: { pages?: string; offset?: number; limit?: number },
+  options?: { pages?: string; offset?: number; limit?: number; explicitLimit?: boolean },
 ): Promise<string> {
   if (isPdfPath(filePath)) {
     return extractPdfText(filePath, options?.pages);
@@ -173,18 +338,37 @@ export async function readDocumentText(
   if (ext === ".docx") {
     return extractDocxText(filePath);
   }
-  if ([".xlsx", ".xls", ".csv"].includes(ext)) {
+  if (ext === ".pptx") {
+    return extractPptxText(filePath);
+  }
+  if (ext === ".ppt") {
+    return legacyPptGuidance(filePath);
+  }
+  if ([".xlsx", ".xls", ".csv", ".tsv"].includes(ext)) {
+    const maxRows =
+      options?.explicitLimit === false
+        ? SPREADSHEET_READ_PROBE_ROWS
+        : options?.limit ?? SPREADSHEET_DEFAULT_MAX_ROWS;
     return extractSpreadsheetText(filePath, {
       offsetRow: options?.offset,
-      maxRows: options?.limit ?? SPREADSHEET_DEFAULT_MAX_ROWS,
+      maxRows,
     });
   }
-  throw new Error(`Unsupported document type: ${filePath}`);
+  if (isTextDocumentPath(filePath)) {
+    return extractPlainTextRead(filePath, {
+      offset: options?.offset,
+      limit: options?.limit,
+    });
+  }
+  return readTextOrBinaryFallback(filePath, "read", {
+    offset: options?.offset,
+    limit: options?.limit,
+  });
 }
 
 export async function readMediaFile(
   filePath: string,
-  options?: { pages?: string; offset?: number; limit?: number },
+  options?: { pages?: string; offset?: number; limit?: number; explicitLimit?: boolean },
 ): Promise<string | LLMContentBlock[]> {
   if (isImagePath(filePath)) {
     return readImageBlocks(filePath);
@@ -194,6 +378,7 @@ export async function readMediaFile(
       pages: options?.pages,
       offset: options?.offset,
       limit: options?.limit,
+      explicitLimit: options?.explicitLimit,
     });
   }
   throw new Error(`Unsupported media file: ${filePath}`);

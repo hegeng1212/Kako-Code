@@ -4,15 +4,14 @@ import {
   resolveKakoInstallRoot,
   resolveServerEntry,
   resolveWebDist,
+  fetchWithTimeout,
 } from "@kako/core";
 
 type ServerHealth = { api: boolean; webUi: boolean };
 
 async function fetchServerHealth(port: number): Promise<ServerHealth> {
   try {
-    const res = await fetch(`http://localhost:${port}/api/health`, {
-      signal: AbortSignal.timeout(1500),
-    });
+    const res = await fetchWithTimeout(`http://localhost:${port}/api/health`, undefined, 1500);
     if (!res.ok) return { api: false, webUi: false };
     const body = (await res.json()) as { webUi?: boolean };
     return { api: true, webUi: body.webUi === true };

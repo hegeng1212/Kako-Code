@@ -213,6 +213,18 @@ describe("readHandler adversarial", () => {
       expect(output).not.toContain("line49");
     });
   });
+
+  it("probes spreadsheets with ~20 rows when limit is omitted", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "data.csv");
+      const rows = ["a,b", ...Array.from({ length: 40 }, (_, i) => `${i},${i + 1}`)];
+      await writeFile(file, rows.join("\n"), "utf-8");
+
+      const output = String(await readHandler({ file_path: file }, toolContext(dir)));
+      expect(output).toContain("More rows exist");
+      expect(output).not.toContain("39,40");
+    });
+  });
 });
 
 describe("resolveReadLimit", () => {

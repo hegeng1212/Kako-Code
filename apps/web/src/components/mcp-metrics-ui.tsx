@@ -13,6 +13,25 @@ export function pct(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
 }
 
+/** Display up to 4 digits; >= 10_000 shows as 万 with 2 decimal places (floored). */
+export function formatCallCount(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) return "0";
+  const value = Math.floor(count);
+  if (value < 10_000) return String(value);
+  const wan = Math.floor((value / 10_000) * 100) / 100;
+  return `${wan.toFixed(2)}万`;
+}
+
+export function CallCount({ count }: { count: number }) {
+  const formatted = formatCallCount(count);
+  const full = Math.floor(count);
+  return (
+    <span className="mcp-call-count" title={full >= 10_000 ? String(full) : undefined}>
+      {formatted}
+    </span>
+  );
+}
+
 function metricsRow(label: string, value: string) {
   return (
     <div className="mcp-stat">
@@ -31,7 +50,7 @@ export function MetricsBar({
 }: McpCallMetrics) {
   return (
     <div className="mcp-metrics">
-      {metricsRow("调用量", String(totalCalls))}
+      {metricsRow("调用量", formatCallCount(totalCalls))}
       {metricsRow("成功", String(successCount))}
       {metricsRow("成功率", pct(successRate))}
       {metricsRow("平均耗时", `${avgDurationMs}ms`)}

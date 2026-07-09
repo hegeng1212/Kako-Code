@@ -8,6 +8,7 @@ import {
   renderToolCallStatusLine,
   renderToolInvocationLine,
   renderToolOutputLines,
+  renderWorkflowToolLines,
   type ToolCallTimelineEntry,
 } from "./tool-call-display.js";
 import { toolCallStatPhrase } from "./tool-call-phrases.js";
@@ -36,6 +37,53 @@ describe("tool-call-display", () => {
         ),
       ),
     ).toBe("Waiting.. Reading /tmp/a.md");
+  });
+
+  it("renders workflow waiting with /workflows hint", () => {
+    const text = stripAnsi(
+      renderWorkflowToolLines(
+        entry({
+          name: "Workflow",
+          detail: "dynamic workflow: deep-research",
+          status: "waiting",
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("Workflow(dynamic workflow: deep-research)");
+    expect(text).toContain("/workflows");
+    expect(text).toContain("to view dynamic workflow runs");
+    expect(text).not.toContain("Approve?");
+    expect(text).not.toContain("(y/n)");
+    expect(text).not.toContain("Completed in 0s");
+  });
+
+  it("renders workflow success with /workflows hint (launched, not finished)", () => {
+    const text = stripAnsi(
+      renderWorkflowToolLines(
+        entry({
+          name: "Workflow",
+          detail: "dynamic workflow: deep-research",
+          status: "success",
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("/workflows");
+    expect(text).not.toContain("Completed in 0s");
+  });
+
+  it("renders workflow error with header and detail", () => {
+    const text = stripAnsi(
+      renderWorkflowToolLines(
+        entry({
+          name: "Workflow",
+          detail: "dynamic workflow: deep-research",
+          status: "error",
+          errorDetail: "Workflow template not found: deep-research",
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("Workflow(dynamic workflow: deep-research)");
+    expect(text).toContain("Workflow template not found: deep-research");
   });
 
   it("renders approval prompt for confirmation-gated tools", () => {

@@ -7,6 +7,7 @@ import type {
 } from "@kako/shared";
 import { api } from "../api";
 import { InstallProgressButton } from "./InstallProgressButton";
+import { SkillZipUpload } from "./SkillZipUpload";
 import { SkillsBuildChat } from "./SkillsBuildChat";
 
 type AddTab = "hub" | "github" | "archive" | "build";
@@ -143,6 +144,7 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipError, setZipError] = useState<string | null>(null);
 
   useEffect(() => {
     if (tab !== "hub") return;
@@ -547,20 +549,13 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
           <p className="skills-add-hint">
             上传 .zip 压缩包（内含 SKILL.md）。适用于无法访问 SkillHub 时离线安装。
           </p>
-          <div className="skills-upload">
-            <input
-              type="file"
-              accept=".zip,application/zip"
-              onChange={(e) => setZipFile(e.target.files?.[0] ?? null)}
-            />
-            {zipFile && <span className="skills-upload__name">{zipFile.name}</span>}
-          </div>
-          <InstallProgressButton
-            variant="primary"
-            label="导入压缩包"
+          <SkillZipUpload
+            file={zipFile}
             installing={installingKey === "zip-import"}
-            disabled={!zipFile}
-            onClick={() => void handleZipImport()}
+            error={zipError}
+            onFileChange={setZipFile}
+            onError={setZipError}
+            onImport={() => void handleZipImport()}
           />
         </section>
       )}

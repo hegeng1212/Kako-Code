@@ -1,8 +1,13 @@
 import type { LLMMessage, ToolDefinition, ToolHandler } from "@kako/shared";
 import { wrapUserMessageForLlm } from "../../agent/context.js";
 import { loadSkill } from "../../skills/loader.js";
+import { isSystemSkill } from "../../skills/system-skills.js";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
-import { CLAUDE_SKILL_DESCRIPTION } from "../claude-tool-text.js";
+import {
+  CLAUDE_SKILL_ARGS_DESCRIPTION,
+  CLAUDE_SKILL_DESCRIPTION,
+  CLAUDE_SKILL_SKILL_DESCRIPTION,
+} from "../claude-tool-text.js";
 
 export const SKILL_DESCRIPTION = adaptClaudeCodeToolText(CLAUDE_SKILL_DESCRIPTION);
 
@@ -13,12 +18,16 @@ export const skillToolDefinition: ToolDefinition = {
     type: "object",
     additionalProperties: false,
     properties: {
-      command: {
+      skill: {
         type: "string",
-        description: 'The skill name (no arguments). E.g., "pdf" or "xlsx"',
+        description: CLAUDE_SKILL_SKILL_DESCRIPTION,
+      },
+      args: {
+        type: "string",
+        description: CLAUDE_SKILL_ARGS_DESCRIPTION,
       },
     },
-    required: ["command"],
+    required: ["skill"],
   },
 };
 
@@ -28,9 +37,9 @@ export interface ParsedSkillInput {
 }
 
 export function parseSkillInput(raw: Record<string, unknown>): ParsedSkillInput {
-  const skill = String(raw.command ?? raw.skill ?? "").trim();
+  const skill = String(raw.skill ?? raw.command ?? "").trim();
   if (!skill) {
-    throw new Error("Skill requires command (skill name)");
+    throw new Error("Skill requires skill");
   }
   if (skill.startsWith("/")) {
     throw new Error("Skill name must not include a leading slash");
@@ -40,6 +49,7 @@ export function parseSkillInput(raw: Record<string, unknown>): ParsedSkillInput 
 }
 
 export function assertSkillAllowed(skillName: string, allowedSkills: string[] | undefined): void {
+  if (isSystemSkill(skillName)) return;
   if (!allowedSkills?.length) return;
   if (!allowedSkills.includes(skillName)) {
     throw new Error(`Skill "${skillName}" is not available for this agent`);
@@ -112,7 +122,11 @@ export const skillHandler: ToolHandler = async (input, context) => {
   assertSkillAllowed(parsed.skill, context.allowedSkills);
 
   const loaded = await loadSkill(parsed.skill, context.cwd);
-  if (context.allowedSkills?.length && !context.allowedSkills.includes(loaded.name)) {
+  if (
+    context.allowedSkills?.length &&
+    !isSystemSkill(loaded.name) &&
+    !context.allowedSkills.includes(loaded.name)
+  ) {
     throw new Error(`Skill "${parsed.skill}" is not available for this agent`);
   }
   return formatSkillActivationResult(loaded.name, loaded.skillMdPath);

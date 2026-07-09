@@ -7,8 +7,14 @@ import { toolContext, withTempDir } from "./test-helpers.js";
 describe("Write tool definition", () => {
   it("matches Claude Code schema", () => {
     expect(writeToolDefinition.inputSchema.required).toEqual(["file_path", "content"]);
+    expect(writeToolDefinition.inputSchema.$schema).toBe(
+      "https://json-schema.org/draft/2020-12/schema",
+    );
     expect(writeToolDefinition.requiresConfirmation).toBe(true);
-    expect(writeToolDefinition.description).toContain("Read tool first");
+    expect(writeToolDefinition.description).toContain(
+      "Overwriting an existing file you haven't Read will fail",
+    );
+    expect(writeToolDefinition.description).toContain("For partial changes, use Edit instead");
   });
 });
 

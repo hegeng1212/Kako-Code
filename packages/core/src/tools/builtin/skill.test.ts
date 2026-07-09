@@ -26,19 +26,39 @@ async function seedSkill(cwd: string, name: string, body: string): Promise<void>
 
 describe("Skill tool definition", () => {
   it("matches Claude-compatible schema", () => {
-    expect(skillToolDefinition.inputSchema.required).toEqual(["command"]);
+    const props = skillToolDefinition.inputSchema.properties!;
+    expect(Object.keys(props).sort()).toEqual(["args", "skill"].sort());
+    expect(skillToolDefinition.inputSchema.required).toEqual(["skill"]);
     expect(skillToolDefinition.inputSchema.additionalProperties).toBe(false);
-    expect(skillToolDefinition.description).toContain("available skills");
+    expect(skillToolDefinition.description).toContain("slash command");
+    expect(skillToolDefinition.description).toContain("BLOCKING REQUIREMENT");
+    expect(skillToolDefinition.description).toContain("<command-name>");
+    expect(skillToolDefinition.description).not.toContain("available_skills");
+  });
+
+  it("uses Claude Code parameter descriptions", () => {
+    expect(skillToolDefinition.inputSchema.properties?.skill?.description).toContain(
+      "available-skills",
+    );
+    expect(skillToolDefinition.inputSchema.properties?.args?.description).toContain("Optional");
   });
 });
 
 describe("parseSkillInput", () => {
-  it("accepts command alias", () => {
+  it("accepts skill field", () => {
+    expect(parseSkillInput({ skill: "demo" }).skill).toBe("demo");
+  });
+
+  it("accepts legacy command alias", () => {
     expect(parseSkillInput({ command: "demo" }).skill).toBe("demo");
   });
 
+  it("parses optional args", () => {
+    expect(parseSkillInput({ skill: "demo", args: "extra" }).args).toBe("extra");
+  });
+
   it("rejects leading slash", () => {
-    expect(() => parseSkillInput({ command: "/brainstorming" })).toThrow(/leading slash/);
+    expect(() => parseSkillInput({ skill: "/brainstorming" })).toThrow(/leading slash/);
   });
 });
 

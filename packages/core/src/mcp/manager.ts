@@ -11,6 +11,7 @@ import type {
 } from "@kako/shared";
 import { mcpToolName } from "@kako/shared";
 import type { ToolDefinition, ToolHandler } from "@kako/shared";
+import { kakoFetch } from "../net/isolated-fetch.js";
 import { loadMcpRegistry } from "./config.js";
 import {
   getCachedToolsForServer,
@@ -236,10 +237,19 @@ export class McpManager {
       requestInit: {
         headers: config.headers,
       },
+      fetch: kakoFetch,
     };
     const transport =
       config.transport === "http"
-        ? new StreamableHTTPClientTransport(new URL(config.url!), remoteInit)
+        ? new StreamableHTTPClientTransport(new URL(config.url!), {
+            ...remoteInit,
+            reconnectionOptions: {
+              initialReconnectionDelay: 2_000,
+              maxReconnectionDelay: 30_000,
+              reconnectionDelayGrowFactor: 1.5,
+              maxRetries: 3,
+            },
+          })
         : config.transport === "sse"
           ? new SSEClientTransport(new URL(config.url!), remoteInit)
           : new StdioClientTransport({

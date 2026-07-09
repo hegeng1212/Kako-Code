@@ -116,9 +116,10 @@ export async function streamCompletion(
       throw new TurnAbortedError();
     }
     throw error;
+  } finally {
+    endReasoningIfOpen();
+    abortController.abort();
   }
-
-  endReasoningIfOpen();
 
   return [...toolCalls.values()];
 }
@@ -184,7 +185,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
     try {
       toolCalls = await streamCompletion(
         router,
-        { model, messages, tools: registry.toLLMTools(allowedTools) },
+        { model, messages, tools: registry.toLLMTools(allowedTools, { messages }) },
         {
           onText: (text) => {
             responseText += text;
@@ -220,16 +221,9 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
 
     if (skillPivot && loneSkillCall) {
       const toolCall = loneSkillCall;
-      callbacks?.onToolStart?.(toolCall.name, toolCall.input);
+      const streamedBeforePivot = responseText.length;
       const result = await registry.execute(toolCall);
       await toolLogger.log(result);
-      callbacks?.onToolEnd?.(
-        toolCall.name,
-        result.status,
-        result.error,
-        result.status === "success" ? String(result.output ?? "") : undefined,
-        toolCall.input,
-      );
 
       if (result.status === "success") {
         const pivoted = await onSkillActivate({
@@ -237,12 +231,24 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
           priorMessages: [...messages],
         });
         if (pivoted?.length) {
+          if (streamedBeforePivot > 0) {
+            callbacks?.onAnswerRollback?.(streamedBeforePivot);
+          }
           messages.length = 0;
           messages.push(...pivoted);
           responseText = "";
           continue;
         }
       }
+
+      callbacks?.onToolStart?.(toolCall.name, toolCall.input);
+      callbacks?.onToolEnd?.(
+        toolCall.name,
+        result.status,
+        result.error,
+        result.status === "success" ? String(result.output ?? "") : undefined,
+        toolCall.input,
+      );
 
       messages.push({ role: "assistant", content: responseText, toolCalls });
       await persistAssistantTurn(memory, responseText, toolCalls);

@@ -77,14 +77,16 @@ describe("assertSubAgentSpawnAllowed", () => {
     ).toBe("general-purpose");
   });
 
-  it("rejects unsupported execution modes early", () => {
-    expect(() =>
+  it("allows background execution mode", () => {
+    expect(
       assertSubAgentSpawnAllowed(
         { description: "x", prompt: "y", run_in_background: true },
         allowed,
       ),
-    ).toThrow(/Background sub-agents/);
+    ).toBe("general-purpose");
+  });
 
+  it("rejects unsupported isolation modes early", () => {
     expect(() =>
       assertSubAgentSpawnAllowed(
         { description: "x", prompt: "y", isolation: "worktree" },

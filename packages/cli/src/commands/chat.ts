@@ -1,4 +1,8 @@
+import { basename, resolve } from "node:path";
 import {
+  agentCompletedSummary,
+  buildAgentTaskNotificationMessage,
+  buildTaskNotificationMessage,
   checkProviderReadiness,
   createHarness,
   ensurePlanFile,
@@ -9,30 +13,45 @@ import {
   handleSlashCommand,
   initializeKakoHome,
   KAKO_CORE_VERSION,
+  listSlashInvokableSkills,
   loadAgent,
   loadGlobalUserContext,
   loadProjectContext,
   loadProviderRegistry,
+  loadSkill,
+  prepareWorkflowConfirm,
   planFilePathForSession,
   readPlanFile,
+  registerAgentCompleteHandler,
+  registerWorkflowCompleteHandler,
+  resolveSkillSlashLlmText,
   resolveUserTurnInput,
   sessionManager,
   TurnAbortedError,
+  unregisterAgentCompleteHandler,
+  unregisterWorkflowCompleteHandler,
+  workflowCompletedSummary,
+  type AgentTaskRecord,
+  type WorkflowRunRecord,
 } from "@kako/core";
 import type { PermissionMode, Session, SlashCommandContext, ToolConfirmResult } from "@kako/shared";
 import { getProviderModelLabel } from "@kako/shared";
-import { resolve } from "node:path";
 import { guideProviderSetup } from "../ui/setup-guide.js";
 import { createAskUserQuestionPrompt } from "../ui/ask-user-question.js";
 import { isPlanFileDetail } from "../ui/tool-call-phrases.js";
 import { ChatLayout, ExitRequestedError } from "../ui/terminal-layout.js";
+import {
+  loadCliUsage,
+  recordCliLaunch,
+  resolveChatHeaderMode,
+  type ChatHeaderMode,
+} from "../ui/cli-usage.js";
 import {
   renderError,
   renderFarewell,
   renderInfo,
   renderInitialInputFooter,
   renderSessionSwitch,
-  renderWelcomeScreen,
   type WelcomeScreenOptions,
 } from "../ui/welcome.js";
 
@@ -70,13 +89,99 @@ export async function runChat(cwdArg: string): Promise<void> {
 
   let layout!: ChatLayout;
   let syncSessionPermissionMode!: (mode: PermissionMode) => Promise<void>;
+  type PendingTaskNotification =
+    | { kind: "workflow"; record: WorkflowRunRecord }
+    | { kind: "agent"; record: AgentTaskRecord };
 
-  layout = new ChatLayout(() => renderWelcomeScreen(welcomeOpts()), footer);
+  let pendingTaskNotification: PendingTaskNotification | null = null;
+
+  const usage = await loadCliUsage();
+  const headerMode: ChatHeaderMode = resolveChatHeaderMode(usage);
+  await recordCliLaunch();
+
+  layout = new ChatLayout(welcomeOpts, footer, headerMode);
+  layout.setSlashInvokableSkills(await listSlashInvokableSkills(cwd));
   layout.start();
 
   const syncProviderFromDisk = async (): Promise<void> => {
     registry = await loadProviderRegistry();
     layout.refreshHeader();
+  };
+
+  const refreshWorkflowUi = (sessionId: string): void => {
+    void layout.refreshWorkflowFooter(sessionId);
+  };
+
+  const runTaskNotificationTurn = async (
+    llmText: string,
+    displayText: string,
+  ): Promise<void> => {
+    const userTurn = await resolveUserTurnInput(session.id, displayText, []);
+    userTurn.llmText = llmText;
+    layout.beginTurn(displayText);
+    try {
+      await harness.runtime.runTurn(session, userTurn);
+    } catch (err) {
+      if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) return;
+      throw err;
+    } finally {
+      layout.finishTurn();
+      await flushPendingTaskNotification();
+    }
+  };
+
+  const flushPendingTaskNotification = async (): Promise<void> => {
+    if (!pendingTaskNotification || layout.isTurnInProgress()) return;
+    const pending = pendingTaskNotification;
+    pendingTaskNotification = null;
+    if (pending.kind === "workflow") {
+      await runTaskNotificationTurn(
+        buildTaskNotificationMessage(pending.record, { sessionId: session.id, cwd }),
+        workflowCompletedSummary(pending.record),
+      );
+      return;
+    }
+    await runTaskNotificationTurn(
+      buildAgentTaskNotificationMessage(pending.record),
+      agentCompletedSummary(pending.record),
+    );
+  };
+
+  const handleWorkflowComplete = async (record: WorkflowRunRecord): Promise<void> => {
+    layout.appendWorkflowCompletedEvent(workflowCompletedSummary(record));
+    refreshWorkflowUi(session.id);
+    if (layout.isTurnInProgress()) {
+      pendingTaskNotification = { kind: "workflow", record };
+      return;
+    }
+    await runTaskNotificationTurn(
+      buildTaskNotificationMessage(record, { sessionId: session.id, cwd }),
+      workflowCompletedSummary(record),
+    );
+  };
+
+  const handleAgentComplete = async (record: AgentTaskRecord): Promise<void> => {
+    layout.appendWorkflowCompletedEvent(agentCompletedSummary(record));
+    if (layout.isTurnInProgress()) {
+      pendingTaskNotification = { kind: "agent", record };
+      return;
+    }
+    await runTaskNotificationTurn(
+      buildAgentTaskNotificationMessage(record),
+      agentCompletedSummary(record),
+    );
+  };
+
+  const bindWorkflowSession = (sessionId: string): void => {
+    unregisterWorkflowCompleteHandler(sessionId);
+    unregisterAgentCompleteHandler(sessionId);
+    registerWorkflowCompleteHandler(sessionId, (record) => {
+      void handleWorkflowComplete(record);
+    });
+    registerAgentCompleteHandler(sessionId, (record) => {
+      void handleAgentComplete(record);
+    });
+    layout.startWorkflowPolling(sessionId);
   };
 
   const harness = await createHarness({
@@ -102,8 +207,45 @@ export async function runChat(cwdArg: string): Promise<void> {
         void syncSessionPermissionMode("acceptEdits");
         return { allowed: true, permissionMode: "acceptEdits" };
       }
+      if (toolCall.name === "Workflow") {
+        try {
+          const preview = await prepareWorkflowConfirm({
+            sessionId: session.id,
+            cwd,
+            name: typeof toolCall.input.name === "string" ? toolCall.input.name : undefined,
+            script: typeof toolCall.input.script === "string" ? toolCall.input.script : undefined,
+            scriptPath:
+              typeof toolCall.input.scriptPath === "string" ? toolCall.input.scriptPath : undefined,
+          });
+          const decision = await layout.readWorkflowConfirm({
+            meta: preview.meta,
+            args: toolCall.input.args,
+            scriptSource: preview.source,
+            scriptPath: preview.previewScriptPath,
+          });
+          if (decision.action === "cancel") {
+            return {
+              allowed: false,
+              denialReason: "User declined to run the workflow.",
+            };
+          }
+          return {
+            allowed: true,
+            inputPatch: {
+              scriptPath: decision.scriptPath ?? preview.previewScriptPath,
+              script: undefined,
+            },
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            allowed: false,
+            denialReason: `Workflow could not be prepared: ${message}`,
+          };
+        }
+      }
       const allowed = await layout.readConfirm(
-        `Allow ${toolCall.name}(${summarizeInput(toolCall.input)})? [y/N] `,
+        `Allow ${toolCall.name}(${summarizeInput(toolCall.name, toolCall.input)})? [y/N] `,
       );
       return allowed;
     },
@@ -114,18 +256,21 @@ export async function runChat(cwdArg: string): Promise<void> {
     onAnswerRollback: (chars) => layout.rollbackAnswer(chars),
     onStreamUsage: (usage) => layout.setTurnTokens(usage.outputTokens),
     onToolStart: (name, toolInput) => {
-      if (name === "AskUserQuestion") return;
-      layout.beginToolCall(name, summarizeInput(toolInput));
+      if (name === "AskUserQuestion" || name === "Skill") return;
+      layout.beginToolCall(name, summarizeInput(name, toolInput));
+      if (name === "Workflow") {
+        refreshWorkflowUi(session.id);
+      }
     },
     onToolEnd: (name, status, error, output, input) => {
-      if (name === "AskUserQuestion") return;
+      if (name === "AskUserQuestion" || name === "Skill") return;
       let displayOutput = output;
       if (
         status === "success" &&
         (name === "Write" || name === "Edit") &&
         input
       ) {
-        const detail = summarizeInput(input);
+        const detail = summarizeInput(name, input);
         if (isPlanFileDetail(detail)) {
           if (name === "Write" && (typeof input.content === "string" || typeof input.contents === "string")) {
             displayOutput = String(input.content ?? input.contents);
@@ -138,6 +283,9 @@ export async function runChat(cwdArg: string): Promise<void> {
         }
       }
       layout.finishToolCall(name, status, error, displayOutput);
+      if (name === "Workflow") {
+        refreshWorkflowUi(session.id);
+      }
       if (status === "success" && name === "EnterPlanMode") {
         void syncSessionPermissionMode("plan");
       }
@@ -147,6 +295,7 @@ export async function runChat(cwdArg: string): Promise<void> {
 
   session = await harness.runtime.createSession();
   layout.setSessionId(session.id);
+  bindWorkflowSession(session.id);
 
   syncSessionPermissionMode = async (mode: PermissionMode): Promise<void> => {
     layout.setPermissionMode(mode);
@@ -191,6 +340,7 @@ export async function runChat(cwdArg: string): Promise<void> {
         throw err;
       }
       firstPrompt = false;
+      await flushPendingTaskNotification();
 
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -218,10 +368,51 @@ export async function runChat(cwdArg: string): Promise<void> {
           layout.appendContent(renderError(result.message));
           continue;
         case "switch":
+          unregisterWorkflowCompleteHandler(session.id);
+          unregisterAgentCompleteHandler(session.id);
           session = result.session;
           layout.setSessionId(session.id);
+          bindWorkflowSession(session.id);
           layout.appendContent(renderSessionSwitch(session.id));
           continue;
+        case "workflows-panel":
+          await layout.openWorkflowsPanel(session.id);
+          continue;
+        case "skill-slash": {
+          const llmText = await resolveSkillSlashLlmText(
+            result.name,
+            result.args,
+            result.handler,
+            cwd,
+          );
+          const userTurn = await resolveUserTurnInput(
+            session.id,
+            result.displayText,
+            layout.consumePendingAttachments(result.displayText),
+          );
+          userTurn.llmText = llmText;
+          layout.beginTurn(result.displayText);
+          let runOptions;
+          if (result.handler === "skill") {
+            const loaded = await loadSkill(result.name, cwd);
+            runOptions = {
+              preactivatedSkill: {
+                name: loaded.name,
+                instructions: loaded.instructions,
+              },
+            };
+          }
+          try {
+            await harness.runtime.runTurn(session, userTurn, runOptions);
+          } catch (err) {
+            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break;
+            throw err;
+          } finally {
+            layout.finishTurn();
+            await flushPendingTaskNotification();
+          }
+          continue;
+        }
         case "message": {
           const userTurn = await resolveUserTurnInput(
             session.id,
@@ -236,12 +427,15 @@ export async function runChat(cwdArg: string): Promise<void> {
             throw err;
           } finally {
             layout.finishTurn();
+            await flushPendingTaskNotification();
           }
           continue;
         }
       }
     }
   } finally {
+    unregisterWorkflowCompleteHandler(session.id);
+    unregisterAgentCompleteHandler(session.id);
     if (session.status !== "ended") {
       await harness.runtime.endSession(session);
     }
@@ -250,7 +444,19 @@ export async function runChat(cwdArg: string): Promise<void> {
   }
 }
 
-function summarizeInput(input: Record<string, unknown>): string {
+function summarizeInput(name: string, input: Record<string, unknown>): string {
+  if (name === "Workflow") {
+    if (typeof input.name === "string" && input.name.trim()) {
+      return `dynamic workflow: ${input.name.trim()}`;
+    }
+    if (typeof input.scriptPath === "string" && input.scriptPath.trim()) {
+      const base = basename(input.scriptPath.trim());
+      const fromSession = base.match(/^(.+?)-wf_[a-z0-9-]+\.js$/i);
+      if (fromSession?.[1]) return `dynamic workflow: ${fromSession[1]}`;
+      const fromTemplate = base.match(/^(.+)\.js$/i);
+      if (fromTemplate?.[1]) return `dynamic workflow: ${fromTemplate[1]}`;
+    }
+  }
   if (input.file_path) return String(input.file_path);
   if (input.path) return String(input.path);
   if (input.skill) return String(input.skill);

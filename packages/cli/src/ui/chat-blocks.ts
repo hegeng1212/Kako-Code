@@ -10,17 +10,20 @@ import {
   collectActivityStats,
   isPlanFileTool,
   isPlanToolToggleLine,
+  isWorkflowTool,
   renderActivitySummaryLine,
   renderPlanPreviewHint,
   renderToolCallErrorLines,
   renderToolCallStatusLine,
   renderToolInvocationLine,
   renderToolOutputLines,
+  renderWorkflowToolLines,
   type ToolCallTimelineEntry,
 } from "./tool-call-display.js";
 import { renderPlanBoxLines } from "./plan-box.js";
 import { wrapContentLines } from "./text-wrap.js";
 import { renderPulsingPrefix } from "./stream-pulse.js";
+import { extractDisplayFilePaths, formatFileBranchLabel } from "./file-path-display.js";
 import { extractImageLabelsInOrder } from "./image-markers.js";
 
 export interface RenderTurnOptions {
@@ -313,6 +316,7 @@ export function renderAnswerLines(
 
 export function renderUserMessage(userText: string): string[] {
   const imageLabels = extractImageLabelsInOrder(userText);
+  const filePaths = extractDisplayFilePaths(userText);
   const lines = [
     gap(),
     indent(
@@ -324,6 +328,14 @@ export function renderUserMessage(userText: string): string[] {
     lines.push(
       indent(
         `${ansi.muted}└ ${ansi.reset}${ansi.text}${label}${ansi.reset}`,
+        treeBranchIndent(LINE_INDENT),
+      ),
+    );
+  }
+  for (const filePath of filePaths) {
+    lines.push(
+      indent(
+        `${ansi.muted}└ ${ansi.planBorder}📄 ${formatFileBranchLabel(filePath)}${ansi.reset}`,
         treeBranchIndent(LINE_INDENT),
       ),
     );
@@ -418,6 +430,27 @@ function renderToolEntry(
   return out;
 }
 
+function renderWorkflowToolEntry(
+  turn: ChatTurn,
+  entry: ToolCallTimelineEntry,
+  thoughtSeconds?: number,
+): RenderLine[] {
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  if (thoughtSeconds != null) {
+    out.push({
+      text: indent(
+        `${ansi.muted}Thought for ${thoughtSeconds}s${ansi.reset}`,
+        LINE_INDENT,
+      ),
+    });
+  }
+  for (const line of renderWorkflowToolLines(entry)) {
+    out.push({ text: indent(line, BODY_START) });
+  }
+  out.push(...timelineBlockGaps());
+  return out;
+}
+
 function renderPlanToolEntry(
   turn: ChatTurn,
   entry: ToolCallTimelineEntry,
@@ -486,7 +519,7 @@ function renderToolRun(
   width: number,
   precedingThinking?: ThinkingEntry,
 ): RenderLine[] {
-  const thoughtSeconds = precedingThinking
+  let thoughtSeconds = precedingThinking
     ? thoughtEntrySeconds(precedingThinking)
     : undefined;
 
@@ -494,6 +527,13 @@ function renderToolRun(
   let k = 0;
   while (k < entries.length) {
     const entry = entries[k]!;
+    if (isWorkflowTool(entry)) {
+      out.push(...renderWorkflowToolEntry(turn, entry, thoughtSeconds));
+      thoughtSeconds = undefined;
+      k++;
+      continue;
+    }
+
     if (entry.status === "waiting" || entry.status === "error") {
       out.push(...renderToolEntry(turn, entry, width));
       k++;
@@ -509,7 +549,7 @@ function renderToolRun(
     let m = k;
     while (m < entries.length) {
       const next = entries[m]!;
-      if (next.status !== "success" || isPlanFileTool(next)) break;
+      if (next.status !== "success" || isPlanFileTool(next) || isWorkflowTool(next)) break;
       m++;
     }
     const activityBatch = entries.slice(k, m);

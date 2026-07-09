@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initializeKakoHome } from "./bootstrap.js";
-import { getAgentsDir, getConfigDir, getGlobalKakoMdPath, getSkillsDir } from "./paths.js";
+import { getAgentsDir, getConfigDir, getGlobalKakoMdPath, getSkillsDir, getWorkflowTemplatesDir } from "./paths.js";
 
 describe("initializeKakoHome", () => {
   let home: string;
@@ -27,5 +27,6 @@ describe("initializeKakoHome", () => {
     await access(join(getAgentsDir(), "main.yaml"));
     await access(getGlobalKakoMdPath());
     await access(join(getSkillsDir(), "brainstorming", "SKILL.md"));
+    await access(join(getWorkflowTemplatesDir(), "deep-research.js"));
   });
 });

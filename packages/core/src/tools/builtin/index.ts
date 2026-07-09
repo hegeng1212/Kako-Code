@@ -39,6 +39,11 @@ export {
   formatSkillToolResult,
 } from "./skill.js";
 export {
+  workflowToolDefinition,
+  workflowHandler,
+  WORKFLOW_DESCRIPTION,
+} from "./workflow.js";
+export {
   agentToolDefinition,
   assertSubAgentSpawnAllowed,
   createAgentHandler,

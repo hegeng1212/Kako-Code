@@ -8,8 +8,9 @@ import type {
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { getConfigDir, getGlobalKakoMdPath, getSkillsDir } from "../config/paths.js";
-import { findBundledAssetDir } from "../config/bundled-assets.js";
+import { getConfigDir } from "../config/paths.js";
+import { findSkillFile } from "../skills/loader.js";
+import { getSystemSkillHandler, isSlashInvokableSkill } from "../skills/system-skills.js";
 import { sessionManager } from "./manager.js";
 
 const BUILTIN_HELP = `
@@ -20,6 +21,7 @@ Slash commands:
   /sessions          List sessions for current project
   /resume <id>       Switch to an existing session
   /title <text>      Set session title
+  /workflows         Monitor dynamic workflows (alias: /workflow)
 `.trim();
 
 interface SlashConfig {
@@ -45,23 +47,7 @@ async function loadSlashConfig(cwd: string): Promise<Record<string, string>> {
 }
 
 async function findSkillPath(skillName: string, cwd: string): Promise<string | null> {
-  const candidates = [
-    join(resolve(cwd), ".kako", "skills", skillName, "SKILL.md"),
-    join(getSkillsDir(), skillName, "SKILL.md"),
-  ];
-  const bundledSkills = await findBundledAssetDir("skills");
-  if (bundledSkills) {
-    candidates.push(join(bundledSkills, skillName, "SKILL.md"));
-  }
-  for (const path of candidates) {
-    try {
-      await readFile(path, "utf-8");
-      return path;
-    } catch {
-      // try next
-    }
-  }
-  return null;
+  return findSkillFile(skillName, cwd);
 }
 
 async function expandSlashValue(value: string, cwd: string): Promise<string> {
@@ -142,9 +128,22 @@ export async function handleSlashCommand(
       await ctx.updateTitle(ctx.session.id, arg);
       return { type: "handled" };
     }
+    case "workflows":
+    case "workflow":
+      return { type: "workflows-panel" };
     default: {
       const yamlResult = await resolveYamlSlashCommand(cmd, arg, ctx.cwd);
       if (yamlResult) return yamlResult;
+      if (await isSlashInvokableSkill(cmd, ctx.cwd)) {
+        const handler = getSystemSkillHandler(cmd) ?? "skill";
+        return {
+          type: "skill-slash",
+          name: cmd,
+          args: arg,
+          handler,
+          displayText: trimmed,
+        };
+      }
       return { type: "error", message: `Unknown command: /${cmd}` };
     }
   }

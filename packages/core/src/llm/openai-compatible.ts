@@ -6,6 +6,7 @@ import type {
   ProviderProfile,
   ToolCall,
 } from "@kako/shared";
+import { kakoFetch } from "../net/isolated-fetch.js";
 import { getTextContent } from "./provider.js";
 import { toOpenAIUserContent } from "./content-blocks.js";
 
@@ -139,7 +140,7 @@ export async function openaiCompatibleComplete(
   request: LLMRequest,
   profile: ProviderProfile,
 ): Promise<LLMCompletion> {
-  const response = await fetch(chatCompletionsUrl(profile.baseUrl, profile.fullUrl), {
+  const response = await kakoFetch(chatCompletionsUrl(profile.baseUrl, profile.fullUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -298,7 +299,7 @@ export async function* openaiCompatibleStream(
   request: LLMRequest,
   profile: ProviderProfile,
 ): AsyncIterable<LLMStreamChunk> {
-  const response = await fetch(chatCompletionsUrl(profile.baseUrl, profile.fullUrl), {
+  const response = await kakoFetch(chatCompletionsUrl(profile.baseUrl, profile.fullUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",

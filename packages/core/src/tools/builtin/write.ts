@@ -12,16 +12,17 @@ export const writeToolDefinition: ToolDefinition = {
   description: WRITE_DESCRIPTION,
   requiresConfirmation: true,
   inputSchema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
     type: "object",
     additionalProperties: false,
     properties: {
-      file_path: {
-        type: "string",
-        description: "The absolute path to the file to write (must be absolute, not relative)",
-      },
       content: {
         type: "string",
         description: "The content to write to the file",
+      },
+      file_path: {
+        type: "string",
+        description: "The absolute path to the file to write (must be absolute, not relative)",
       },
     },
     required: ["file_path", "content"],

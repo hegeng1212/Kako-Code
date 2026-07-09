@@ -5,12 +5,13 @@ import type { ProviderRegistry } from "@kako/shared";
 import { loadProviderRegistry } from "./config/provider-store.js";
 import { mcpManager } from "./mcp/manager.js";
 
-export { getKakoHome, getAgentsDir, getSkillsDir } from "./config/paths.js";
+export { getKakoHome, getAgentsDir, getSkillsDir, getSessionReportsDir } from "./config/paths.js";
 export { initializeKakoHome } from "./config/bootstrap.js";
-export { AgentRuntime, type AgentRuntimeOptions, type TurnResult } from "./agent/runtime.js";
+export { AgentRuntime, type AgentRuntimeOptions, type TurnResult, type RunTurnOptions } from "./agent/runtime.js";
 export { TurnAbortedError } from "./agent/loop.js";
 export { loadAgent, loadProjectContext, loadGlobalUserContext, loadWorkspaceKakoMd } from "./agent/loader.js";
 export { createLLMRouter, resolveModel } from "./llm/router.js";
+export { fetchWithTimeout } from "./net/fetch-with-timeout.js";
 export { FileMemoryStore } from "./memory/store.js";
 export {
   SessionManager,
@@ -38,6 +39,18 @@ export {
   getEffectiveApiKey,
 } from "./config/provider-store.js";
 export { PROVIDER_PRESETS } from "./config/presets.js";
+export {
+  SEARCH_PROVIDER_PRESETS,
+  getSearchProviderPreset,
+} from "./config/search-presets.js";
+export {
+  loadSearchRegistry,
+  saveSearchRegistry,
+  updateSearchRegistry,
+  isSearchProviderReady,
+  searchProviderReadyError,
+} from "./config/search-store.js";
+export { testSearchProvider } from "./web/web-search.js";
 export { MCP_PRESETS } from "./config/mcp-presets.js";
 export {
   loadMcpRegistry,
@@ -68,8 +81,14 @@ export {
   resolveUserTurnInput,
   findLeadingAbsolutePath,
   parsePathReferences,
+  parsePastedFilePaths,
+  unescapePathCandidate,
   isImagePath,
   normalizeClipboardPath,
+  peekSpreadsheet,
+  formatPeekSpreadsheetBashCommand,
+  peekPresentation,
+  formatPeekPresentationBashCommand,
 } from "./media/index.js";
 export {
   ensurePlanFile,
@@ -78,6 +97,7 @@ export {
 } from "./tools/builtin/plan-mode-shared.js";
 export {
   discoverSkills,
+  discoverSkillsForAgent,
   filterSkillsForAgent,
   formatSkillsIndex,
   installSkillFromHub,
@@ -89,6 +109,7 @@ export {
   buildSkillToolCatalog,
   validateSkillDependencies,
   listInstalledSkills,
+  getInstalledSkillDetail,
   searchSkillHub,
   analyzeSkillHubRepo,
   analyzeGithubRepo,
@@ -97,6 +118,80 @@ export {
   setSkillEnabled,
   openPathInFileManager,
 } from "./skills/index.js";
+export { loadSkill } from "./skills/loader.js";
+export {
+  SYSTEM_SKILL_REGISTRY,
+  expandAllowedSkillNames,
+  isSlashInvokableSkill,
+  isSystemSkill,
+  listSlashInvokableSkills,
+  loadSystemSkills,
+  type SystemSkillEntry,
+  type SystemSkillHandler,
+  getSystemSkillHandler,
+} from "./skills/system-skills.js";
+export { resolveSkillSlashLlmText } from "./skills/slash-command-message.js";
+export {
+  loadWorkflowRuns,
+  saveWorkflowRun,
+  updateWorkflowRun,
+  countRunningWorkflows,
+  primaryRunningWorkflow,
+  type WorkflowRunRecord,
+  type WorkflowRunStatus,
+} from "./workflows/store.js";
+export {
+  aggregateWorkflowJournal,
+  readJournalEntries,
+  resolveCurrentPhaseFromJournal,
+  summarizeAgentOutput,
+  type PhaseView,
+  type AgentView,
+  type JournalEntry,
+  type WorkflowPhaseDef,
+} from "./workflows/journal.js";
+export { launchWorkflow, formatWorkflowToolResult } from "./workflows/runner.js";
+export { prepareWorkflowConfirm } from "./workflows/confirm-prep.js";
+export {
+  buildTaskNotificationMessage,
+  workflowCompletedSummary,
+  type WorkflowTaskNotification,
+} from "./workflows/task-notification.js";
+export {
+  registerWorkflowCompleteHandler,
+  unregisterWorkflowCompleteHandler,
+} from "./workflows/completion-registry.js";
+export {
+  loadWorkflowTemplate,
+  loadWorkflowMetaFromScriptPath,
+  type WorkflowMeta,
+} from "./workflows/registry.js";
+export {
+  stopWorkflowByTaskId,
+  stopWorkflowByRunId,
+} from "./workflows/control.js";
+export { saveWorkflowArtifact } from "./workflows/save.js";
+export {
+  beginTurnBudget,
+  clearTurnBudget,
+  createBudgetView,
+  getTurnBudget,
+  parseTurnTokenTarget,
+  TurnBudgetExhaustedError,
+  TurnBudgetPool,
+} from "./workflows/budget.js";
+export { resolveNestedWorkflowScript } from "./workflows/nested.js";
+export {
+  agentCompletedSummary,
+  buildAgentTaskNotificationMessage,
+  formatBackgroundAgentLaunchResult,
+  type AgentTaskRecord,
+  type AgentTaskStatus,
+} from "./background/agent-notification.js";
+export {
+  registerAgentCompleteHandler,
+  unregisterAgentCompleteHandler,
+} from "./background/agent-completion-registry.js";
 
 export {
   resolveKakoInstallRoot,

@@ -57,11 +57,15 @@ export interface SessionMeta {
   updatedAt: string;
 }
 
+export type SystemSkillHandler = "skill" | "dynamic-workflow";
+
 export type SlashResult =
   | { type: "handled" }
   | { type: "exit" }
   | { type: "switch"; session: Session }
   | { type: "message"; text: string }
+  | { type: "skill-slash"; name: string; args: string; handler: SystemSkillHandler; displayText: string }
+  | { type: "workflows-panel" }
   | { type: "error"; message: string };
 
 export interface SlashCommandContext {

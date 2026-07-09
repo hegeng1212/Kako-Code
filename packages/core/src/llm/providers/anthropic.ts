@@ -6,6 +6,7 @@ import type {
   LLMStreamChunk,
   ToolCall,
 } from "@kako/shared";
+import { kakoFetch } from "../../net/isolated-fetch.js";
 import type { LLMProviderAdapter } from "../provider.js";
 import { getTextContent } from "../provider.js";
 import {
@@ -267,7 +268,7 @@ export const anthropicProvider: LLMProviderAdapter = {
 
   async complete(request, model, config) {
     const baseUrl = config.baseUrl ?? "https://api.anthropic.com";
-    const response = await fetch(`${baseUrl}/v1/messages`, {
+    const response = await kakoFetch(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -289,7 +290,7 @@ export const anthropicProvider: LLMProviderAdapter = {
 
   async *stream(request, model, config) {
     const baseUrl = config.baseUrl ?? "https://api.anthropic.com";
-    const response = await fetch(`${baseUrl}/v1/messages`, {
+    const response = await kakoFetch(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

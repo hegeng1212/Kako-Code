@@ -11,7 +11,10 @@ export interface UserAttachment {
 
 /** User input for one agent turn (CLI / Web composer). */
 export interface UserTurnInput {
+  /** Shown in UI / stored as transcript content. */
   text: string;
+  /** When set, sent to the LLM instead of `text` (slash skill harness injection). */
+  llmText?: string;
   attachments?: UserAttachment[];
 }
 
@@ -23,6 +26,7 @@ export function normalizeUserTurnInput(value: string | UserTurnInput): UserTurnI
   if (isUserTurnInput(value)) {
     return {
       text: value.text ?? "",
+      llmText: value.llmText?.trim() || undefined,
       attachments: value.attachments?.length ? value.attachments : undefined,
     };
   }

@@ -1,5 +1,6 @@
 export {
   discoverSkills,
+  discoverSkillsForAgent,
   filterSkillsForAgent,
   findSkillByMdPath,
   findSkillFile,
@@ -11,10 +12,22 @@ export {
   toSkillIndex,
 } from "./loader.js";
 export {
+  SYSTEM_SKILL_REGISTRY,
+  expandAllowedSkillNames,
+  getSystemSkillEntry,
+  isSlashInvokableSkill,
+  isSystemSkill,
+  listSlashInvokableSkills,
+  loadSystemSkills,
+  mergeSkillsForAgent,
+  type SystemSkillEntry,
+} from "./system-skills.js";
+export {
   installSkillFromHub,
   installSkillsFromGithub,
   installSkillsFromHubImport,
   listInstalledSkills,
+  getInstalledSkillDetail,
   uninstallSkill,
   analyzeGithubRepo,
 } from "./install.js";
