@@ -3,8 +3,10 @@ import type {
   SkillHubImportResult,
   SkillHubSearchHit,
 } from "@kako/shared";
+import { fetchWithTimeout } from "../net/fetch-with-timeout.js";
 
 const DEFAULT_BASE = "https://agentskillhub.dev";
+const SKILLHUB_FETCH_TIMEOUT_MS = 8_000;
 
 export function getSkillHubBaseUrl(): string {
   return process.env.SKILLSHUB_API_URL ?? process.env.SKHUB_API_URL ?? DEFAULT_BASE;
@@ -80,11 +82,15 @@ export interface SkillHubSkillResponse {
   latestVersion: SkillHubSkillVersion;
 }
 
+async function skillHubFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetchWithTimeout(url, init, SKILLHUB_FETCH_TIMEOUT_MS);
+}
+
 export async function searchSkillHub(query: string, limit = 10): Promise<SkillHubSearchHit[]> {
   const q = query.trim();
   if (q.length < 2) return [];
   const url = apiUrl(`/api/v1/search?q=${encodeURIComponent(q)}&limit=${Math.min(limit, 10)}`);
-  const res = await fetch(url);
+  const res = await skillHubFetch(url);
   if (!res.ok) {
     throw new Error(`SkillHub search failed: ${res.status} ${await res.text()}`);
   }
@@ -92,22 +98,24 @@ export async function searchSkillHub(query: string, limit = 10): Promise<SkillHu
   return (body.skills ?? []).map(enrichSearchHit);
 }
 
-const POPULAR_SEARCH_SEEDS = ["sk", "co", "de", "pr", "te", "in", "bo", "re"];
+const POPULAR_SEARCH_SEEDS = ["ai", "sk", "co", "pr"];
 
 /** Aggregate search results and return top skills by install count. */
 export async function fetchPopularSkillHub(limit = 10): Promise<SkillHubSearchHit[]> {
   const capped = Math.min(Math.max(limit, 1), 20);
   const batches = await Promise.all(
-    POPULAR_SEARCH_SEEDS.map((seed) => searchSkillHub(seed, 10).catch(() => [] as SkillHubSearchHit[])),
+    POPULAR_SEARCH_SEEDS.map((seed) => searchSkillHub(seed, 10).catch(() => null)),
   );
+  const hits = batches.flatMap((batch) => batch ?? []);
+  if (hits.length === 0) {
+    throw new Error("无法连接 SkillHub，请检查网络后重试");
+  }
   const byKey = new Map<string, SkillHubSearchHit>();
-  for (const hits of batches) {
-    for (const hit of hits) {
-      const key = hit.installSlug ?? hit.slug;
-      const prev = byKey.get(key);
-      if (!prev || (hit.totalInstalls ?? 0) > (prev.totalInstalls ?? 0)) {
-        byKey.set(key, hit);
-      }
+  for (const hit of hits) {
+    const key = hit.installSlug ?? hit.slug;
+    const prev = byKey.get(key);
+    if (!prev || (hit.totalInstalls ?? 0) > (prev.totalInstalls ?? 0)) {
+      byKey.set(key, hit);
     }
   }
   return [...byKey.values()]
@@ -121,7 +129,7 @@ export async function fetchPopularSkillHub(limit = 10): Promise<SkillHubSearchHi
 export async function fetchSkillHubSkill(slug: string): Promise<SkillHubSkillResponse> {
   const { username, skillSlug } = parseSkillHubSlug(slug);
   const url = apiUrl(`/api/v1/u/${encodeURIComponent(username)}/skills/${encodeURIComponent(skillSlug)}`);
-  const res = await fetch(url);
+  const res = await skillHubFetch(url);
   if (!res.ok) {
     throw new Error(`SkillHub skill not found: ${slug} (${res.status})`);
   }
@@ -129,7 +137,7 @@ export async function fetchSkillHubSkill(slug: string): Promise<SkillHubSkillRes
 }
 
 export async function analyzeSkillHubRepo(url: string): Promise<SkillHubAnalyzeRepoResult> {
-  const res = await fetch(apiUrl("/api/v1/repos/analyze"), {
+  const res = await skillHubFetch(apiUrl("/api/v1/repos/analyze"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ url }),
@@ -144,7 +152,7 @@ export async function importSkillHubRepo(
   repoFullName: string,
   selectedPaths: string[],
 ): Promise<SkillHubImportResult> {
-  const res = await fetch(apiUrl("/api/v1/repos/import"), {
+  const res = await skillHubFetch(apiUrl("/api/v1/repos/import"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ repoFullName, selectedPaths }),
@@ -156,7 +164,7 @@ export async function importSkillHubRepo(
 }
 
 export async function recordSkillHubInstall(versionId: string): Promise<void> {
-  await fetch(apiUrl("/api/v1/installs"), {
+  await skillHubFetch(apiUrl("/api/v1/installs"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

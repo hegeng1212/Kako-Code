@@ -134,6 +134,8 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
   const [searchHits, setSearchHits] = useState<SkillHubSearchHit[]>([]);
   const [popularHits, setPopularHits] = useState<SkillHubSearchHit[]>([]);
   const [popularLoading, setPopularLoading] = useState(false);
+  const [popularError, setPopularError] = useState<string | null>(null);
+  const [popularReloadKey, setPopularReloadKey] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
 
   const [githubUrl, setGithubUrl] = useState("");
@@ -150,13 +152,17 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
     if (tab !== "hub") return;
     let cancelled = false;
     setPopularLoading(true);
+    setPopularError(null);
     void api
       .getPopularSkills(10)
       .then(({ skills }) => {
         if (!cancelled) setPopularHits(skills);
       })
-      .catch(() => {
-        if (!cancelled) setPopularHits([]);
+      .catch((e) => {
+        if (!cancelled) {
+          setPopularHits([]);
+          setPopularError(e instanceof Error ? e.message : String(e));
+        }
       })
       .finally(() => {
         if (!cancelled) setPopularLoading(false);
@@ -164,7 +170,7 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
     return () => {
       cancelled = true;
     };
-  }, [tab]);
+  }, [tab, popularReloadKey]);
 
   useEffect(() => {
     if (query.trim() === "") {
@@ -334,10 +340,26 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
             if (!hasSearched && popularLoading && displayHits.length === 0) {
               return <p className="skills-add-hint">加载热门技能…</p>;
             }
+            if (!hasSearched && popularError && displayHits.length === 0) {
+              return (
+                <div className="skills-add-popular-empty">
+                  <p className="skills-add-hint">{popularError}</p>
+                  <button
+                    type="button"
+                    className="btn btn--secondary btn--sm"
+                    onClick={() => setPopularReloadKey((n) => n + 1)}
+                  >
+                    重试
+                  </button>
+                </div>
+              );
+            }
             if (displayHits.length === 0) {
               return hasSearched ? (
                 <p className="skills-add-hint">换个关键词试试，或浏览热门技能（清空搜索框）。</p>
-              ) : null;
+              ) : (
+                <p className="skills-add-hint">暂无热门技能，请稍后再试或使用搜索。</p>
+              );
             }
             return (
               <>
@@ -347,7 +369,7 @@ export function SkillsAddPage({ installed, onBack, onInstalled }: SkillsAddPageP
                     const installSlug = hit.installSlug ?? hit.slug;
                     return (
                       <SkillHubHitRow
-                        key={installSlug}
+                        key={`${installSlug}:${hit.slug}`}
                         hit={hit}
                         installed={installed}
                         installing={installingKey === installSlug}

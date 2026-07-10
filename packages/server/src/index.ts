@@ -377,8 +377,13 @@ app.get("/api/skills/search", async (c) => {
 
 app.get("/api/skills/popular", async (c) => {
   const limit = Number(c.req.query("limit") ?? "10");
-  const skills = await fetchPopularSkillHub(Number.isFinite(limit) ? limit : 10);
-  return c.json({ skills });
+  try {
+    const skills = await fetchPopularSkillHub(Number.isFinite(limit) ? limit : 10);
+    return c.json({ skills });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return c.json({ error: message }, 502);
+  }
 });
 
 app.post("/api/skills/analyze-repo", async (c) => {
