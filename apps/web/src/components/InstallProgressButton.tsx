@@ -20,7 +20,10 @@ export function InstallProgressButton({
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
-    if (!installing) return;
+    if (!installing) {
+      setProgress(0);
+      return;
+    }
     setProgress(6);
     const start = Date.now();
     const timer = window.setInterval(() => {
@@ -29,13 +32,6 @@ export function InstallProgressButton({
     }, 40);
     return () => window.clearInterval(timer);
   }, [installing]);
-
-  useEffect(() => {
-    if (installing || progress === 0) return;
-    setProgress(100);
-    const timer = window.setTimeout(() => setProgress(0), 350);
-    return () => window.clearTimeout(timer);
-  }, [installing, progress]);
 
   return (
     <button
@@ -46,7 +42,7 @@ export function InstallProgressButton({
     >
       <span
         className="btn--install__fill"
-        style={{ width: installing || progress > 0 ? `${progress}%` : "0%" }}
+        style={{ width: installing ? `${progress}%` : "0%" }}
       />
       <span className="btn--install__label">{installing ? installingLabel : label}</span>
     </button>

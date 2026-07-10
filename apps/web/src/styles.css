@@ -483,7 +483,7 @@ input {
   white-space: nowrap;
 }
 
-.btn:hover:not(:disabled):not(.btn--primary):not(.btn--enable):not(.btn--disable):not(.btn--toolbar):not(.btn--ghost) {
+.btn:hover:not(:disabled):not(.btn--primary):not(.btn--enable):not(.btn--disable):not(.btn--toolbar):not(.btn--ghost):not(.btn--install):not(.btn--secondary):not(.btn--danger) {
   background: #f9fafb;
 }
 
@@ -1050,7 +1050,12 @@ input {
   color: #111827;
 }
 
-.btn--install:disabled {
+.btn--install:disabled:not(.btn--install--busy) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn--install--busy:disabled {
   cursor: wait;
   opacity: 1;
 }
