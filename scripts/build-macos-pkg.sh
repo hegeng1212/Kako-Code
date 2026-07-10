@@ -50,6 +50,7 @@ pnpm --filter @kako/cli deploy "$PAYLOAD" --prod --legacy
 echo "==> Bundling agents, skills, settings UI, and server"
 cp -R "$ROOT/agents" "$PAYLOAD/agents"
 cp -R "$ROOT/skills" "$PAYLOAD/skills"
+cp -R "$ROOT/workflows" "$PAYLOAD/workflows"
 cp -R "$ROOT/apps/web/dist" "$PAYLOAD/web"
 pnpm --filter @kako/server deploy "$PAYLOAD/server-app" --prod --legacy
 
