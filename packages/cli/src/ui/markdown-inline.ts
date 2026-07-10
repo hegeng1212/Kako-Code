@@ -130,7 +130,7 @@ export function parseInlineParts(input: string): InlinePart[] {
 
 export function renderInlinePart(part: InlinePart): string {
   if (part.style.code) {
-    return `${ansi.line}\x1b[48;5;236m${ansi.text} ${part.text} ${ansi.reset}`;
+    return `${ansi.line}${ansi.codeBg}${ansi.text} ${part.text} ${ansi.reset}`;
   }
   if (part.style.link) {
     return `${ansi.accent}${part.text}${ansi.reset}${ansi.muted} (${part.style.link})${ansi.reset}`;

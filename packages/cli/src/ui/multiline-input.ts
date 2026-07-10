@@ -7,7 +7,6 @@ export const INPUT_MAX_VISIBLE_LINES = 20;
 
 export const INPUT_PROMPT = "> ";
 export const INPUT_CONTINUATION = "  ";
-export const INPUT_SELECTION_BG = "\x1b[48;5;67m";
 
 export interface InputSelectionRange {
   start: number;
@@ -52,7 +51,7 @@ function renderPlainWithSelection(
   for (const char of text) {
     const charLen = char.length;
     const selected = offset < selection.end && offset + charLen > selection.start;
-    out += selected ? `${INPUT_SELECTION_BG}${ansi.text}${char}${ansi.reset}` : char;
+    out += selected ? `${ansi.selectionBg}${ansi.text}${char}${ansi.reset}` : char;
     offset += charLen;
   }
   return `${ansi.text}${out}${ansi.reset}`;

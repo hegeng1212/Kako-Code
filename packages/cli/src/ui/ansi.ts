@@ -1,4 +1,11 @@
-/** ANSI styling — Claude Code palette. */
+/** ANSI styling — Claude Code palette with light/dark terminal adaptation. */
+
+import {
+  applyThemePalette,
+  detectTerminalTheme,
+  getTerminalTheme,
+  type TerminalTheme,
+} from "./terminal-theme.js";
 
 export const ansi = {
   reset: "\x1b[0m",
@@ -31,9 +38,21 @@ export const ansi = {
   diffRemove: "\x1b[38;5;203m",
   blue: "\x1b[38;5;117m",
   magenta: "\x1b[38;5;176m",
-  /** User message bar in chat history — full-width dark strip. */
+  /** User message bar in chat history — full-width strip. */
   userMessageBg: "\x1b[48;5;235m",
+  /** Inline / block code background. */
+  codeBg: "\x1b[48;5;236m",
+  /** Selected text in the input box. */
+  selectionBg: "\x1b[48;5;67m",
 };
+
+export function initTerminalTheme(theme?: TerminalTheme): TerminalTheme {
+  const resolved = theme ?? detectTerminalTheme();
+  applyThemePalette(ansi, resolved);
+  return resolved;
+}
+
+export { getTerminalTheme, type TerminalTheme };
 
 export function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");

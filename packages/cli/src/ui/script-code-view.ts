@@ -73,7 +73,7 @@ export function renderScriptCodeBlock(source: string, cols: number): string[] {
     const clipped = raw.length > innerWidth ? raw.slice(0, innerWidth) : raw;
     const highlighted = highlightJsLine(clipped);
     out.push(
-      `${ansi.line}│${ansi.reset} ${ansi.muted}${lineNo}${ansi.reset} ${ansi.line}\x1b[48;5;236m${highlighted}${" ".repeat(Math.max(0, innerWidth - clipped.length))} ${ansi.reset}`,
+      `${ansi.line}│${ansi.reset} ${ansi.muted}${lineNo}${ansi.reset} ${ansi.line}${ansi.codeBg}${highlighted}${" ".repeat(Math.max(0, innerWidth - clipped.length))} ${ansi.reset}`,
     );
   }
 

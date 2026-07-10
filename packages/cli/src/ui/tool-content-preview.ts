@@ -110,7 +110,6 @@ export function isCodeFilePath(filePath: string): boolean {
 
 const BG_ADD = "\x1b[48;5;22m";
 const BG_REMOVE = "\x1b[48;5;52m";
-const BG_CODE = "\x1b[48;5;236m";
 
 const PY_LINE_PART =
   /(#.*$|"""(?:\\.|[^"\\])*"""|'''(?:\\.|[^'\\])*'''|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w]*\b|\s+|[^\s\w'".]+)/g;
@@ -252,7 +251,7 @@ type CodeRowKind = "add" | "remove" | "context" | "code";
 function rowBackground(kind: CodeRowKind): string {
   if (kind === "add") return BG_ADD;
   if (kind === "remove") return BG_REMOVE;
-  if (kind === "code") return BG_CODE;
+  if (kind === "code") return ansi.codeBg;
   return "";
 }
 

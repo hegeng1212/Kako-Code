@@ -236,6 +236,7 @@ pnpm build
 kako web           # 安装版 / link:global 后
 # 或开发模式：
 pnpm dev:web       # API :3721 + 开发 UI :5173
+./scripts/dev-services.sh restart   # 后台启动/重启 API + Web
 
 cd your-project
 kako

@@ -40,6 +40,7 @@ import {
 } from "@kako/core";
 import type { PermissionMode, Session, SlashCommandContext, ToolConfirmResult } from "@kako/shared";
 import { getProviderModelLabel } from "@kako/shared";
+import { initTerminalTheme } from "../ui/ansi.js";
 import { guideProviderSetup } from "../ui/setup-guide.js";
 import { createAskUserQuestionPrompt } from "../ui/ask-user-question.js";
 import { isPlanFileDetail } from "../ui/tool-call-phrases.js";
@@ -60,6 +61,7 @@ import {
 } from "../ui/welcome.js";
 
 export async function runChat(cwdArg: string): Promise<void> {
+  initTerminalTheme();
   const cwd = resolve(cwdArg);
   await initializeKakoHome();
   let registry = await loadProviderRegistry();

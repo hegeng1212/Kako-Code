@@ -28,7 +28,7 @@ function renderCodeBlock(lines: string[], width: number): string[] {
   for (const line of lines) {
     const content = line.length > innerWidth ? line.slice(0, innerWidth) : line;
     out.push(
-      `${ansi.line}│${ansi.reset} ${ansi.line}\x1b[48;5;236m${ansi.text} ${content.padEnd(innerWidth)} ${ansi.reset}`,
+      `${ansi.line}│${ansi.reset} ${ansi.line}${ansi.codeBg}${ansi.text} ${content.padEnd(innerWidth)} ${ansi.reset}`,
     );
   }
 
