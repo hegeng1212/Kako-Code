@@ -60,20 +60,20 @@ cd ~/your-project
 kako              # 在当前目录启动对话
 ```
 
-固定版本（生产环境更推荐，将 `0.2.0` 换成 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 中的版本号）：
+固定版本（生产环境更推荐，将 `0.2.1` 换成 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 中的版本号）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.0/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/install.sh | bash
 ```
 
 ### 方式二：macOS 安装包（GitHub Release）
 
 从 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 下载 `kako-x.y.z-macos.pkg`，双击安装。
 
-或使用命令行（将 `0.2.0` 换成实际版本号）：
+或使用命令行（将 `0.2.1` 换成实际版本号）：
 
 ```bash
-VERSION=0.2.0
+VERSION=0.2.1
 curl -LO "https://github.com/hegeng1212/Kako-Code/releases/download/v${VERSION}/kako-${VERSION}-macos.pkg"
 sudo installer -pkg "kako-${VERSION}-macos.pkg" -target /
 ```
@@ -86,6 +86,62 @@ cd kako
 pnpm install
 pnpm build
 pnpm link:global   # 或 node packages/cli/dist/index.js
+```
+
+## 升级
+
+升级**不会删除**用户数据（`~/.kako/config`、会话记忆、Skills 等）。请在新版本发布后再执行下列命令。
+
+### 从 curl | bash 安装升级（macOS / Linux）
+
+推荐固定版本，与 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 一致：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/upgrade.sh | bash
+```
+
+或指定任意版本：
+
+```bash
+KAKO_VERSION=v0.2.1 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/upgrade.sh | bash
+```
+
+脚本会 checkout 对应 tag、重新构建并覆盖 `~/.kako/app`，`~/.local/bin/kako` 路径不变。
+
+### 从 macOS .pkg 安装升级
+
+下载新版本 `.pkg` 后直接安装即可覆盖 `/opt/kako`：
+
+```bash
+VERSION=0.2.1
+curl -LO "https://github.com/hegeng1212/Kako-Code/releases/download/v${VERSION}/kako-${VERSION}-macos.pkg"
+sudo installer -pkg "kako-${VERSION}-macos.pkg" -target /
+```
+
+### 从源码开发环境升级
+
+```bash
+cd kako
+git fetch origin
+git checkout v0.2.1
+pnpm install
+pnpm build
+```
+
+若使用 `pnpm link:global`，重新 build 后 CLI 即指向新版本。
+
+### 版本对照
+
+| 已安装方式 | 升级命令 | 用户数据 |
+|-----------|---------|---------|
+| curl \| bash | `upgrade.sh` 或重新执行 `install.sh`（指定 tag） | 保留 |
+| macOS .pkg | 安装新版 `.pkg` | 保留 |
+| 源码 + link | `git checkout` + `pnpm build` | 保留 |
+
+验证：
+
+```bash
+kako --version   # 应显示 0.2.1
 ```
 
 ## 卸载

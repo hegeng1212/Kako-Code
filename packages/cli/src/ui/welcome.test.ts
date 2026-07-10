@@ -13,7 +13,7 @@ import {
 import { ansi } from "./ansi.js";
 
 const SAMPLE_OPTS = {
-  version: "0.2.0",
+  version: "0.2.1",
   agentName: "main",
   modelLabel: "GPT-4o",
   cwd: "/Users/me/myproject",
@@ -28,7 +28,7 @@ describe("renderWelcomeScreen", () => {
     const screen = renderWelcomeScreen(SAMPLE_OPTS);
 
     const plain = stripAnsi(screen);
-    expect(plain).toContain("Kako v0.2.0");
+    expect(plain).toContain("Kako v0.2.1");
     expect(plain).toContain("Welcome back!");
     expect(plain).toContain("◉");
     expect(plain).toContain("GPT-4o");
@@ -61,7 +61,7 @@ describe("renderMiniHeader", () => {
     const screen = renderMiniHeader(SAMPLE_OPTS, 100);
     const plain = stripAnsi(screen);
     expect(plain).toContain("Kako");
-    expect(plain).toContain("v0.2.0");
+    expect(plain).toContain("v0.2.1");
     expect(plain).toContain("GPT-4o");
     expect(plain).toContain("main agent");
     expect(plain).toContain("myproject");
@@ -74,7 +74,7 @@ describe("renderMiniHeader", () => {
   it("uses bold title and muted version like Claude Code", () => {
     const screen = renderMiniHeader(SAMPLE_OPTS, 100);
     expect(screen).toContain(`${ansi.text}${ansi.bold}Kako${ansi.reset}`);
-    expect(screen).toContain(`${ansi.muted}v0.2.0${ansi.reset}`);
+    expect(screen).toContain(`${ansi.muted}v0.2.1${ansi.reset}`);
     expect(screen).toContain(`${ansi.muted}GPT-4o · main agent${ansi.reset}`);
   });
 
