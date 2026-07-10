@@ -2235,17 +2235,29 @@ export class ChatLayout {
 
   /** Chronological inline events — thinking, AskUserQuestion, etc. */
   appendTurnTimeline(text: string): void {
-    if (!this.activeTurn) {
-      this.appendContent(text);
+    const lines = text.trim().split("\n").filter((line) => line.length > 0);
+    const event = { type: "event" as const, lines };
+
+    if (this.activeTurn) {
+      this.finalizeOpenThinking();
+      this.activeTurn.timeline.push(event);
+      this.activeTurn.answerText = "";
+      this.maybeScrollToBottom();
+      this.invalidateContentCache();
+      this.redrawContent();
       return;
     }
-    this.finalizeOpenThinking();
-    const lines = text.trim().split("\n").filter((line) => line.length > 0);
-    this.activeTurn.timeline.push({ type: "event", lines });
-    this.activeTurn.answerText = "";
-    this.maybeScrollToBottom();
-    this.invalidateContentCache();
-    this.redrawContent();
+
+    const lastTurn = this.turns[this.turns.length - 1];
+    if (lastTurn) {
+      lastTurn.timeline.push(event);
+      this.maybeScrollToBottom();
+      this.invalidateContentCache();
+      this.redrawContent();
+      return;
+    }
+
+    this.appendContent(text);
   }
 
   beginToolCall(name: string, detail: string, toolInput?: Record<string, unknown>): void {

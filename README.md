@@ -100,6 +100,12 @@ pnpm link:global   # 或 node packages/cli/dist/index.js
 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/upgrade.sh | bash
 ```
 
+若 `upgrade.sh` 报错（如 `BASH_SOURCE[0]: unbound variable`），可直接执行同版本的 `install.sh`（效果相同）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/install.sh | bash
+```
+
 或指定任意版本：
 
 ```bash

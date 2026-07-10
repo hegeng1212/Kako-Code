@@ -241,4 +241,94 @@ describe("renderWorkflowsFullScreen", () => {
     expect(text).toContain("✔");
     expect(text).not.toMatch(/Search.*✘/);
   });
+
+  it("scrolls the phase list in detail view so the cursor stays visible", () => {
+    const phases = Array.from({ length: 20 }, (_, i) => ({
+      title: `Phase-${i}`,
+      entered: true,
+      done: 1,
+      total: 1,
+      failed: 0,
+      logs: [],
+      agents: [],
+    }));
+    const state = baseState({
+      view: "detail",
+      detailFocus: "phase",
+      selectedPhaseIndex: 19,
+      phases,
+    });
+    const screen = renderWorkflowsFullScreen(state, 120, 14).map((l) => stripAnsi(l));
+    const text = screen.join("\n");
+    expect(text).toMatch(/>\s*20 Phase-19/);
+    expect(text).not.toMatch(/>\s*1 Phase-0/);
+  });
+
+  it("keeps the selected phase visible on the left while browsing agents", () => {
+    const phases = Array.from({ length: 20 }, (_, i) => ({
+      title: `Phase-${i}`,
+      entered: true,
+      done: 1,
+      total: 1,
+      failed: 0,
+      logs: [],
+      agents:
+        i === 19
+          ? Array.from({ length: 40 }, (_, j) => ({
+              label: `agent-${j}`,
+              status: "success" as const,
+            }))
+          : [],
+    }));
+    const state = baseState({
+      view: "detail",
+      detailFocus: "agent",
+      selectedPhaseIndex: 19,
+      selectedAgentIndex: 0,
+      phases,
+    });
+    const screen = renderWorkflowsFullScreen(state, 120, 14).map((l) => stripAnsi(l));
+    const text = screen.join("\n");
+    expect(text).toContain("20 Phase-19");
+    expect(text).not.toContain("1 Phase-0");
+  });
+
+  it("scrolls the agent list in detail view so the cursor stays visible", () => {
+    const agents = Array.from({ length: 40 }, (_, i) => ({
+      label: `agent-${i}`,
+      status: "success" as const,
+      model: "ep-test",
+      tokens: 0,
+      durationMs: 1000,
+    }));
+    const state = baseState({
+      view: "detail",
+      detailFocus: "agent",
+      selectedPhaseIndex: 0,
+      selectedAgentIndex: 39,
+      phases: [{ title: "Verify", entered: true, done: 40, total: 40, failed: 0, logs: [], agents }],
+    });
+    const screen = renderWorkflowsFullScreen(state, 120, 30).map((l) => stripAnsi(l));
+    const text = screen.join("\n");
+    expect(text).toMatch(/>\s*✔\s*agent-39/);
+    expect(text).not.toMatch(/>\s*✔\s*agent-0/);
+  });
+
+  it("scrolls the agent list in agent view so the cursor stays visible", () => {
+    const agents = Array.from({ length: 40 }, (_, i) => ({
+      label: `agent-${i}`,
+      status: "success" as const,
+      output: `result-${i}`,
+    }));
+    const state = baseState({
+      view: "agent",
+      selectedPhaseIndex: 0,
+      selectedAgentIndex: 39,
+      phases: [{ title: "Verify", entered: true, done: 40, total: 40, failed: 0, logs: [], agents }],
+    });
+    const screen = renderWorkflowsFullScreen(state, 120, 30).map((l) => stripAnsi(l));
+    const text = screen.join("\n");
+    expect(text).toMatch(/>\s*✔\s*agent-39/);
+    expect(text).not.toMatch(/>\s*✔\s*agent-0/);
+  });
 });

@@ -256,6 +256,31 @@ describe("chat-blocks", () => {
     expect(followIdx).toBeGreaterThan(toolIdx);
   });
 
+  it("renders event lines inside the turn timeline", () => {
+    const summary =
+      'Dynamic workflow "Deep research harness" completed · 17m 48s';
+    const turn = baseTurn({
+      phase: "done",
+      finishedAt: Date.now(),
+      timeline: [
+        {
+          type: "tool",
+          id: "tool-wf",
+          name: "Workflow",
+          detail: "deep-research",
+          status: "success",
+          dotFrame: 0,
+        },
+        { type: "event", lines: [summary] },
+      ],
+    });
+    const plain = renderTurnToLines(turn, 120).map((l) => stripAnsi(l.text));
+    const toolIdx = plain.findIndex((l) => l.includes("deep-research"));
+    const eventIdx = plain.findIndex((l) => l.includes(summary));
+    expect(toolIdx).toBeGreaterThanOrEqual(0);
+    expect(eventIdx).toBeGreaterThan(toolIdx);
+  });
+
   it("interleaves answer, tool, and follow-up answer", () => {
     const turn = baseTurn({
       userText: "查一下宝宝信息",

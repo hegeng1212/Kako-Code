@@ -336,6 +336,17 @@ function renderListBody(state: WorkflowsPanelState, cols: number): string[] {
   return lines.map((line) => padRow(line, cols));
 }
 
+function listScrollForSelection(
+  selectedIndex: number,
+  total: number,
+  viewportRows: number,
+): number {
+  if (total <= viewportRows) return 0;
+  if (selectedIndex < viewportRows) return 0;
+  if (selectedIndex >= total - viewportRows) return total - viewportRows;
+  return selectedIndex - viewportRows + 1;
+}
+
 function renderDetailBody(state: WorkflowsPanelState, cols: number, bodyRows: number): string[] {
   const phase = state.phases[state.selectedPhaseIndex];
   const { leftWidth, rightWidth } = splitColumnWidths(cols);
@@ -358,16 +369,28 @@ function renderDetailBody(state: WorkflowsPanelState, cols: number, bodyRows: nu
       )
     : [""];
 
-  const contentRows = Math.max(leftLines.length, rightLines.length, 1);
-  const innerRows = Math.max(1, Math.min(bodyRows - 2, contentRows));
+  const viewportRows = Math.max(1, bodyRows - 2);
+  const leftScroll = listScrollForSelection(
+    state.selectedPhaseIndex,
+    leftLines.length,
+    viewportRows,
+  );
+  const rightScroll = phaseFocus
+    ? 0
+    : listScrollForSelection(state.selectedAgentIndex, rightLines.length, viewportRows);
 
   const rows: string[] = [];
   rows.push(padRow(splitTopRow(leftHeader, rightHeader, leftWidth, rightWidth), cols));
 
-  for (let i = 0; i < innerRows; i++) {
+  for (let i = 0; i < viewportRows; i++) {
     rows.push(
       padRow(
-        splitDataRow(leftLines[i] ?? "", rightLines[i] ?? "", leftWidth, rightWidth),
+        splitDataRow(
+          leftLines[leftScroll + i] ?? "",
+          rightLines[rightScroll + i] ?? "",
+          leftWidth,
+          rightWidth,
+        ),
         cols,
       ),
     );
@@ -391,22 +414,25 @@ function renderAgentBody(state: WorkflowsPanelState, cols: number, bodyRows: num
   );
 
   const detailLines = buildAgentDetailLines(agent, rightWidth);
-  const innerRows = Math.max(1, bodyRows - 2);
-  const maxScroll = Math.max(0, detailLines.length - innerRows);
-  const scroll = Math.min(state.agentDetailScroll, maxScroll);
-  const rightLines = detailLines.slice(scroll, scroll + innerRows);
-  while (rightLines.length < innerRows) rightLines.push("");
+  const viewportRows = Math.max(1, bodyRows - 2);
+  const maxDetailScroll = Math.max(0, detailLines.length - viewportRows);
+  const detailScroll = Math.min(state.agentDetailScroll, maxDetailScroll);
+  const rightLines = detailLines.slice(detailScroll, detailScroll + viewportRows);
+  while (rightLines.length < viewportRows) rightLines.push("");
 
-  const contentRows = Math.max(leftLines.length, innerRows, 1);
-  const visibleRows = Math.max(1, Math.min(bodyRows - 2, contentRows));
+  const listScroll = listScrollForSelection(
+    state.selectedAgentIndex,
+    leftLines.length,
+    viewportRows,
+  );
 
   const rows: string[] = [];
   rows.push(padRow(splitTopRow(leftHeader, rightHeader, leftWidth, rightWidth), cols));
 
-  for (let i = 0; i < visibleRows; i++) {
+  for (let i = 0; i < viewportRows; i++) {
     rows.push(
       padRow(
-        splitDataRow(leftLines[i] ?? "", rightLines[i] ?? "", leftWidth, rightWidth),
+        splitDataRow(leftLines[listScroll + i] ?? "", rightLines[i] ?? "", leftWidth, rightWidth),
         cols,
       ),
     );
@@ -427,12 +453,12 @@ export function agentDetailScrollHint(
   if (!phase || !agent) return undefined;
   const { rightWidth } = agentSplitColumnWidths(cols);
   const detailLines = buildAgentDetailLines(agent, rightWidth);
-  const innerRows = Math.max(1, bodyRows - 2);
-  const maxScroll = Math.max(0, detailLines.length - innerRows);
+  const viewportRows = Math.max(1, bodyRows - 2);
+  const maxScroll = Math.max(0, detailLines.length - viewportRows);
   if (maxScroll <= 0) return undefined;
   const scroll = Math.min(state.agentDetailScroll, maxScroll);
   const from = scroll + 1;
-  const to = Math.min(scroll + innerRows, detailLines.length);
+  const to = Math.min(scroll + viewportRows, detailLines.length);
   const arrow = scroll < maxScroll ? " ↓" : scroll > 0 ? " ↑" : "";
   return `${from}-${to} of ${detailLines.length}${arrow}`;
 }

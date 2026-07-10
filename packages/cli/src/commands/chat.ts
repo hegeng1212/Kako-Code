@@ -157,9 +157,9 @@ export async function runChat(cwdArg: string): Promise<void> {
   };
 
   const handleWorkflowComplete = async (record: WorkflowRunRecord): Promise<void> => {
-    layout.appendWorkflowCompletedEvent(workflowCompletedSummary(record));
     refreshWorkflowUi(session.id);
     if (layout.isTurnInProgress()) {
+      layout.appendWorkflowCompletedEvent(workflowCompletedSummary(record));
       pendingTaskNotification = { kind: "workflow", record };
       return;
     }
@@ -170,8 +170,8 @@ export async function runChat(cwdArg: string): Promise<void> {
   };
 
   const handleAgentComplete = async (record: AgentTaskRecord): Promise<void> => {
-    layout.appendWorkflowCompletedEvent(agentCompletedSummary(record));
     if (layout.isTurnInProgress()) {
+      layout.appendWorkflowCompletedEvent(agentCompletedSummary(record));
       pendingTaskNotification = { kind: "agent", record };
       return;
     }

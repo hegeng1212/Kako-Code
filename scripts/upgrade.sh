@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Upgrade an existing Kako install to a pinned release.
 #
-# curl | bash install:
+# curl | bash (works when piped — does not rely on BASH_SOURCE):
 #   curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/upgrade.sh | bash
 #
 # Or override target version:
@@ -9,7 +9,9 @@
 set -euo pipefail
 
 KAKO_VERSION="${KAKO_VERSION:-v0.2.1}"
+KAKO_RAW="${KAKO_RAW:-https://raw.githubusercontent.com/hegeng1212/Kako-Code}"
+
 export KAKO_BRANCH="$KAKO_VERSION"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bash "$SCRIPT_DIR/install.sh"
+echo "==> Kako upgrade to ${KAKO_VERSION}"
+curl -fsSL "${KAKO_RAW}/${KAKO_VERSION}/scripts/install.sh" | bash
