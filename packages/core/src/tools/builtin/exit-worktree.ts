@@ -8,7 +8,6 @@ export const EXIT_WORKTREE_DESCRIPTION = adaptClaudeCodeToolText(CLAUDE_EXIT_WOR
 export const exitWorktreeToolDefinition: ToolDefinition = {
   name: "ExitWorktree",
   description: EXIT_WORKTREE_DESCRIPTION,
-  requiresConfirmation: true,
   inputSchema: {
     type: "object",
     additionalProperties: false,

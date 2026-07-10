@@ -22,7 +22,6 @@ export const ENTER_WORKTREE_DESCRIPTION = adaptClaudeCodeToolText(CLAUDE_ENTER_W
 export const enterWorktreeToolDefinition: ToolDefinition = {
   name: "EnterWorktree",
   description: ENTER_WORKTREE_DESCRIPTION,
-  requiresConfirmation: true,
   inputSchema: {
     type: "object",
     additionalProperties: false,

@@ -1,11 +1,147 @@
 import { describe, expect, it } from "vitest";
-import { displayWidth } from "./ansi.js";
-import { CHAT_FOOTER_HEIGHT, coalescePasteActions, getTerminalSize, parseInputActions, wrapContentLines } from "./terminal-layout.js";
+import { displayWidth, stripAnsi } from "./ansi.js";
+import { renderTurnToLines, type ChatTurn } from "./chat-blocks.js";
+import {
+  CHAT_FOOTER_HEIGHT,
+  coalescePasteActions,
+  contentClickMousePhase,
+  contentLineIndexFromScreen,
+  getTerminalSize,
+  parseInputActions,
+  resolveContentClickAction,
+  resolveContentClickTarget,
+  wrapContentLines,
+} from "./terminal-layout.js";
 
 describe("displayWidth", () => {
   it("counts CJK characters as width 2", () => {
     expect(displayWidth("你好")).toBe(4);
     expect(displayWidth("> 你好")).toBe(6);
+  });
+
+  it("counts dingbat status marks as width 1", () => {
+    expect(displayWidth("✔")).toBe(1);
+    expect(displayWidth("✘")).toBe(1);
+  });
+});
+
+function baseTurn(overrides: Partial<ChatTurn> = {}): ChatTurn {
+  return {
+    id: "turn-1",
+    userText: "hello",
+    answerText: "",
+    thinkingExpanded: false,
+    thinkingStartedAt: Date.now() - 5000,
+    thinkingEndedAt: Date.now() - 2000,
+    finishedAt: Date.now() - 1000,
+    doneVerb: "Done",
+    generatingVerb: "Working",
+    outputTokens: 0,
+    phase: "done",
+    timeline: [
+      {
+        type: "thinking",
+        text: "Let me check the files.",
+        startedAt: Date.now() - 5000,
+        lastChunkAt: Date.now() - 3000,
+        endedAt: Date.now() - 3000,
+      },
+      {
+        type: "tool",
+        id: "tool-1",
+        name: "Read",
+        detail: "/tmp/a.md",
+        status: "success",
+        dotFrame: 0,
+      },
+      {
+        type: "tool",
+        id: "tool-2",
+        name: "Bash",
+        detail: "ls -la",
+        status: "success",
+        dotFrame: 0,
+      },
+    ],
+    expandedToolGroups: new Set(),
+    expandedChoices: new Set(),
+    pulseFrame: 0,
+    ...overrides,
+  };
+}
+
+describe("content click resolution", () => {
+  it("clicks on mouseUp when drag tracking is enabled", () => {
+    expect(contentClickMousePhase(true, "mouseDown")).toBe("ignore");
+    expect(contentClickMousePhase(true, "mouseUp")).toBe("click");
+  });
+
+  it("clicks on mouseDown when drag tracking is disabled", () => {
+    expect(contentClickMousePhase(false, "mouseDown")).toBe("click");
+    expect(contentClickMousePhase(false, "mouseUp")).toBe("ignore");
+  });
+
+  it("maps screen rows into scrollable content indices", () => {
+    expect(contentLineIndexFromScreen(13, 12, 20)).toBe(0);
+    expect(contentLineIndexFromScreen(12, 12, 20)).toBeNull();
+    expect(contentLineIndexFromScreen(33, 12, 20)).toBeNull();
+  });
+
+  it("resolves standalone thought summary toggles", () => {
+    const lines = renderTurnToLines(
+      baseTurn({
+        timeline: [
+          {
+            type: "thinking",
+            text: "planning",
+            startedAt: Date.now() - 3000,
+            lastChunkAt: Date.now() - 1000,
+            endedAt: Date.now() - 1000,
+          },
+          { type: "answer", text: "done" },
+        ],
+      }),
+      100,
+      Date.now(),
+    );
+    const thought = lines.find((line) => line.meta?.kind === "thought-summary");
+    expect(resolveContentClickAction(thought)).toEqual({
+      type: "toggleThought",
+      turnId: "turn-1",
+    });
+  });
+
+  it("resolves thought-prefixed activity summaries as tool-group toggles", () => {
+    const lines = renderTurnToLines(baseTurn(), 100, Date.now());
+    const toolGroup = lines.find((line) => line.meta?.kind === "tool-group-toggle");
+    expect(toolGroup).toBeDefined();
+    expect(stripAnsi(toolGroup!.text)).toContain("Thought for");
+    expect(resolveContentClickAction(toolGroup)).toEqual({
+      type: "toggleToolGroup",
+      turnId: "turn-1",
+      groupId: "turn-1:tools:1",
+    });
+  });
+
+  it("resolves clicks against the scrolled viewport", () => {
+    const lines = renderTurnToLines(baseTurn(), 100, Date.now());
+    const toolGroupIndex = lines.findIndex((line) => line.meta?.kind === "tool-group-toggle");
+    expect(toolGroupIndex).toBeGreaterThanOrEqual(0);
+    const headerHeight = 12;
+    const scrollHeight = 8;
+    const visibleIndex = 3;
+    const action = resolveContentClickTarget({
+      allLines: lines,
+      scrollOffset: toolGroupIndex - visibleIndex,
+      scrollHeight,
+      screenRow: headerHeight + 1 + visibleIndex,
+      headerHeight,
+    });
+    expect(action).toEqual({
+      type: "toggleToolGroup",
+      turnId: "turn-1",
+      groupId: "turn-1:tools:1",
+    });
   });
 });
 
@@ -37,7 +173,21 @@ describe("parseInputActions", () => {
 
   it("parses SGR left click without modifier", () => {
     const { actions } = parseInputActions("\x1b[<0;12;8M");
-    expect(actions).toEqual([{ type: "click", col: 12, row: 8 }]);
+    expect(actions).toEqual([{ type: "mouseDown", col: 12, row: 8 }]);
+  });
+
+  it("parses SGR mouse drag and release", () => {
+    const down = parseInputActions("\x1b[<0;12;8M").actions;
+    const drag = parseInputActions("\x1b[<32;14;8M").actions;
+    const up = parseInputActions("\x1b[<0;14;8m").actions;
+    expect(down).toEqual([{ type: "mouseDown", col: 12, row: 8 }]);
+    expect(drag).toEqual([{ type: "mouseDrag", col: 14, row: 8 }]);
+    expect(up).toEqual([{ type: "mouseUp", col: 14, row: 8 }]);
+  });
+
+  it("parses SGR mouse release for content clicks", () => {
+    const { actions } = parseInputActions("\x1b[<0;20;15m");
+    expect(actions).toEqual([{ type: "mouseUp", col: 20, row: 15 }]);
   });
 
   it("parses arrow keys as input history navigation", () => {
@@ -90,6 +240,12 @@ describe("parseInputActions", () => {
     const { actions } = parseInputActions("hello world");
     const coalesced = await coalescePasteActions(actions);
     expect(coalesced).toEqual([{ type: "pasteText", text: "hello world" }]);
+  });
+
+  it("coalesces carriage-return separated paste into multiline pasteText", async () => {
+    const { actions } = parseInputActions("[1] first\r[2] second");
+    const coalesced = await coalescePasteActions(actions);
+    expect(coalesced).toEqual([{ type: "pasteText", text: "[1] first\n[2] second" }]);
   });
 });
 

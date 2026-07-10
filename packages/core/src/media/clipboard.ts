@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,16 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+function spawnWithStdin(command: string, args: readonly string[], input: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    child.stdin.write(input);
+    child.stdin.end();
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
+}
 
 const MAC_CLIPBOARD_SCRIPT = `
 try
@@ -57,6 +67,26 @@ export async function readClipboardText(): Promise<string | null> {
     }
   }
   return null;
+}
+
+/** Write plain text to the system clipboard. */
+export async function writeClipboardText(text: string): Promise<boolean> {
+  if (!text) return false;
+  if (process.platform === "darwin") {
+    try {
+      return await spawnWithStdin("pbcopy", [], text);
+    } catch {
+      return false;
+    }
+  }
+  if (process.platform === "linux") {
+    try {
+      return await spawnWithStdin("xclip", ["-selection", "clipboard"], text);
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /** Read an image from the system clipboard. Returns null when unavailable. */

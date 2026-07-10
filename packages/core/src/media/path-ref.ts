@@ -8,7 +8,7 @@ export function unescapePathCandidate(text: string): string {
 
 /** Normalize clipboard text (file URLs, trailing newlines). */
 export function normalizeClipboardPath(text: string): string {
-  let trimmed = text.replace(/\r\n/g, "\n").trim();
+  let trimmed = text.replace(/\r\n?/g, "\n").trim();
   if (trimmed.startsWith("file://")) {
     try {
       trimmed = decodeURIComponent(new URL(trimmed).pathname);

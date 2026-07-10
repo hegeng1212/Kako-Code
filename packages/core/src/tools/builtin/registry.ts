@@ -1,5 +1,8 @@
-import type { ToolDefinition, ToolHandler } from "@kako/shared";
+import type { SessionCapability, ToolDefinition, ToolHandler } from "@kako/shared";
 import type { ToolRegistry } from "../registry.js";
+import { isToolAllowedForCapability } from "../../security/capability.js";
+import { BUILTIN_SECURITY_METADATA } from "../../security/tool-metadata.js";
+import { applySecurityMetadata } from "../../security/tool-metadata.js";
 import { bashHandler, bashToolDefinition } from "./bash.js";
 import { monitorHandler, monitorToolDefinition } from "./monitor.js";
 import { taskStopHandler, taskStopToolDefinition } from "./task-stop.js";
@@ -89,7 +92,7 @@ const builtinNameSet = () => new Set(DEFAULT_BUILTIN_TOOL_NAMES);
 /** Register every built-in tool implementation on the registry. */
 export function registerBuiltinTools(registry: ToolRegistry): void {
   for (const tool of BUILTIN_TOOLS) {
-    registry.register(tool.definition, tool.handler);
+    registry.register(applySecurityMetadata(tool.definition), tool.handler);
   }
 }
 
@@ -101,6 +104,23 @@ export function resolveAllToolNames(registry: ToolRegistry): string[] {
   return registry.getDefinitions().map((d) => d.name);
 }
 
+/** Built-in names allowed for a session capability (default: WorkspaceWrite). */
+export function defaultBuiltinToolNamesForCapability(
+  capability: SessionCapability = "WorkspaceWrite",
+): string[] {
+  return DEFAULT_BUILTIN_TOOL_NAMES.filter((name) =>
+    isToolAllowedForCapability(
+      {
+        name,
+        description: "",
+        inputSchema: { type: "object" },
+        security: BUILTIN_SECURITY_METADATA[name],
+      },
+      capability,
+    ),
+  );
+}
+
 /**
  * Resolve which tool names to pass to the model for a sub-agent.
  * `tools: ["*"]` means all registered tools minus `disallowedTools`.
@@ -108,9 +128,13 @@ export function resolveAllToolNames(registry: ToolRegistry): string[] {
 export function resolveAllowedToolNames(
   agentTools: string[] | undefined,
   registry: ToolRegistry,
-  options?: { disallowedTools?: string[]; excludeAgent?: boolean },
+  options?: { disallowedTools?: string[]; excludeAgent?: boolean; capability?: SessionCapability },
 ): string[] {
-  const available = registry.getDefinitions().map((d) => d.name);
+  const capability = options?.capability ?? registry.getCapability();
+  const available = registry
+    .getDefinitions()
+    .filter((d) => isToolAllowedForCapability(d, capability))
+    .map((d) => d.name);
   const disallowed = new Set(options?.disallowedTools ?? []);
 
   if (agentTools?.includes("*")) {

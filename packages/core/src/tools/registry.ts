@@ -5,7 +5,10 @@ import type {
   AskUserQuestionPrompt,
   LLMMessage,
   PermissionMode,
+  SessionAllowKind,
+  SessionCapability,
   SessionId,
+  ToolAuditMetadata,
   ToolCall,
   ToolConfirmResult,
   ToolDefinition,
@@ -15,7 +18,15 @@ import type {
   WorktreeSessionInfo,
 } from "@kako/shared";
 import { normalizeToolConfirmResult } from "@kako/shared";
+import type { NetworkPolicy } from "../config/network-store.js";
+import { addHostsToUserAllowlist, loadNetworkPolicy } from "../config/network-store.js";
+import { loadMcpRegistry } from "../mcp/config.js";
+import { resolveMcpExceptionHosts } from "../mcp/network-access.js";
+import { runWithFetchSecurityScope } from "../net/isolated-fetch.js";
 import { collectUserTextFromMessages } from "../locale/user-timezone.js";
+import { defaultSessionCapability, loadSecurityPolicy, type SecurityPolicy } from "../security/policy-store.js";
+import { runSecurityGate, type SecurityContext } from "../security/pipeline.js";
+import { redactSecretsInValue } from "../security/secret-guard.js";
 import { resolvePath } from "./builtin/path.js";
 import { buildWebSearchDescription } from "./builtin/web-search.js";
 import { findSkillByMdPath } from "../skills/loader.js";
@@ -27,6 +38,7 @@ export interface ToolRegistryOptions {
   sessionId: SessionId;
   agentId: AgentId;
   permissionMode?: PermissionMode;
+  capability?: SessionCapability;
   confirm?: (toolCall: ToolCall) => Promise<ToolConfirmResult>;
   askUserQuestion?: AskUserQuestionPrompt;
   allowedSkills?: string[];
@@ -53,6 +65,11 @@ export class ToolRegistry {
   private sessionWritesAllowed = false;
   /** Session-wide auto-allow for identical bash commands after user approval. */
   private sessionAllowedBashCommands = new Set<string>();
+  private sessionAllowedHosts = new Set<string>();
+  private sessionAllowedMcpTools = new Set<string>();
+  private sessionAllowedWorkspacePaths = new Set<string>();
+  private securityPolicy?: SecurityPolicy;
+  private networkPolicy?: NetworkPolicy;
 
   constructor(options: ToolRegistryOptions) {
     this.options = options;
@@ -63,6 +80,33 @@ export class ToolRegistry {
 
   activateSkill(name: string): void {
     this.activatedSkills.add(name.trim());
+  }
+
+  private async ensurePolicies(): Promise<{ security: SecurityPolicy; network: NetworkPolicy }> {
+    if (!this.securityPolicy) {
+      this.securityPolicy = await loadSecurityPolicy(this.options.cwd);
+    }
+    if (!this.networkPolicy) {
+      this.networkPolicy = await loadNetworkPolicy();
+    }
+    return { security: this.securityPolicy, network: this.networkPolicy };
+  }
+
+  private securityContext(policies: {
+    security: SecurityPolicy;
+    network: NetworkPolicy;
+  }): SecurityContext {
+    return {
+      cwd: this.options.cwd,
+      capability:
+        this.options.capability ?? defaultSessionCapability(policies.security),
+      policy: policies.security,
+      networkPolicy: policies.network,
+      permissionMode: this.options.permissionMode ?? "default",
+      sessionAllowedHosts: this.sessionAllowedHosts,
+      sessionAllowedMcpTools: this.sessionAllowedMcpTools,
+      sessionAllowedWorkspacePaths: this.sessionAllowedWorkspacePaths,
+    };
   }
 
   private normalizePath(path: string): string {
@@ -94,10 +138,21 @@ export class ToolRegistry {
         return true;
       }
     }
+    if (toolCall.name.startsWith("mcp/") && this.sessionAllowedMcpTools.has(toolCall.name)) {
+      return true;
+    }
     return false;
   }
 
-  private applySessionAllow(toolCall: ToolCall, sessionAllow?: "writes" | "bash-command"): void {
+  private applySessionAllow(
+    toolCall: ToolCall,
+    sessionAllow?: SessionAllowKind,
+    extras?: {
+      networkHost?: string;
+      mcpTool?: string;
+      workspacePath?: string;
+    },
+  ): void {
     if (sessionAllow === "writes") {
       this.sessionWritesAllowed = true;
       return;
@@ -105,6 +160,15 @@ export class ToolRegistry {
     if (sessionAllow === "bash-command" && toolCall.name === "Bash") {
       const command = String(toolCall.input.command ?? "").trim();
       if (command) this.sessionAllowedBashCommands.add(command);
+    }
+    if (sessionAllow === "network-host" && extras?.networkHost) {
+      this.sessionAllowedHosts.add(extras.networkHost.toLowerCase());
+    }
+    if (sessionAllow === "mcp-tool" && extras?.mcpTool) {
+      this.sessionAllowedMcpTools.add(extras.mcpTool);
+    }
+    if (sessionAllow === "workspace-path" && extras?.workspacePath) {
+      this.sessionAllowedWorkspacePaths.add(resolve(extras.workspacePath));
     }
   }
 
@@ -118,6 +182,14 @@ export class ToolRegistry {
 
   setPermissionMode(mode: PermissionMode): void {
     this.options.permissionMode = mode;
+  }
+
+  getCapability(): SessionCapability {
+    return this.options.capability ?? "WorkspaceWrite";
+  }
+
+  setCapability(capability: SessionCapability): void {
+    this.options.capability = capability;
   }
 
   getPlanFilePath(): string | undefined {
@@ -134,6 +206,7 @@ export class ToolRegistry {
 
   setCwd(cwd: string): void {
     this.options.cwd = resolve(cwd);
+    this.securityPolicy = undefined;
   }
 
   getWorktreeSession(): WorktreeSessionInfo | undefined {
@@ -178,57 +251,128 @@ export class ToolRegistry {
       return this.result(toolCall, start, "error", undefined, inputError);
     }
 
+    const policies = await this.ensurePolicies();
+    const mcpRegistry = await loadMcpRegistry();
+    const networkDisabled = !policies.network.enabled;
+    const mcpExceptionHosts = networkDisabled
+      ? resolveMcpExceptionHosts(mcpRegistry.servers, policies.network)
+      : undefined;
+    const gate = await runSecurityGate(toolCall, definition, this.securityContext(policies));
+
+    if (!gate.allowed) {
+      return this.result(
+        toolCall,
+        start,
+        "error",
+        undefined,
+        gate.error ?? "Denied by security policy",
+        gate.audit,
+      );
+    }
+
     const mode = this.options.permissionMode ?? "default";
+    const skipTrustedWorkspaceWrite =
+      gate.trustedWorkspaceWrite &&
+      (toolCall.name === "Write" ||
+        toolCall.name === "Edit" ||
+        toolCall.name === "NotebookEdit");
     const needsConfirm =
+      !skipTrustedWorkspaceWrite &&
       !this.isSessionAllowed(toolCall) &&
-      toolCallNeedsUserConfirm(toolCall, definition, mode);
+      (gate.needsConfirm ||
+        (!gate.allowlistedNetwork &&
+          toolCallNeedsUserConfirm(
+            toolCall,
+            definition,
+            mode,
+            policies.security,
+            gate.mcpApproval,
+          )));
 
     let approvedPermissionMode: PermissionMode | undefined;
+    let audit: ToolAuditMetadata = { ...gate.audit };
 
     if (needsConfirm && this.options.confirm) {
+      audit.approvalRequired = true;
       const confirmResult = normalizeToolConfirmResult(await this.options.confirm(toolCall));
       if (!confirmResult.allowed) {
+        audit.approvalResult = "denied";
         return this.result(
           toolCall,
           start,
           "denied",
           undefined,
           confirmResult.denialReason ?? "User denied tool execution",
+          audit,
         );
       }
-      this.applySessionAllow(toolCall, confirmResult.sessionAllow);
+      audit.approvalResult = "allowed";
+      this.applySessionAllow(toolCall, confirmResult.sessionAllow, {
+        networkHost: confirmResult.networkHost,
+        mcpTool: confirmResult.mcpTool,
+        workspacePath: confirmResult.workspacePath,
+      });
+      if (confirmResult.networkAllowlistHosts?.length) {
+        policies.network = await addHostsToUserAllowlist(
+          confirmResult.networkAllowlistHosts,
+          policies.network,
+        );
+        this.networkPolicy = policies.network;
+      }
       approvedPermissionMode = confirmResult.permissionMode;
       if (confirmResult.inputPatch) {
         Object.assign(toolCall.input, confirmResult.inputPatch);
       }
+    } else if (needsConfirm && !this.options.confirm) {
+      audit.approvalResult = "skipped";
+    } else {
+      audit.approvalResult = gate.audit.approvalResult ?? "skipped";
     }
 
     if (mode === "plan" && isWriteTool(toolCall.name)) {
       if (!this.isPlanFileWrite(toolCall)) {
-        return this.result(toolCall, start, "denied", undefined, "Plan mode: write tools disabled");
+        return this.result(
+          toolCall,
+          start,
+          "denied",
+          undefined,
+          "Plan mode: write tools disabled",
+          audit,
+        );
       }
     }
 
     try {
-      const output = await handler(toolCall.input, {
-        agentId: this.options.agentId,
-        sessionId: this.options.sessionId,
-        toolUseId: toolCall.id,
-        cwd: this.options.cwd,
-        askUserQuestion: this.options.askUserQuestion,
-        markFileRead: (path) => this.markFileRead(path),
-        hasReadFile: (path) => this.hasReadFile(path),
-        allowedSkills: this.options.allowedSkills,
-        isSkillActive: (name) => this.isSkillActive(name),
-        getPermissionMode: () => this.getPermissionMode(),
-        setPermissionMode: (mode) => this.setPermissionMode(mode),
-        getPlanFilePath: () => this.getPlanFilePath(),
-        setPlanFilePath: (path) => this.setPlanFilePath(path),
-        getApprovedPermissionMode: () => approvedPermissionMode,
-        setCwd: (cwd) => this.setCwd(cwd),
-        getWorktreeSession: () => this.getWorktreeSession(),
-        setWorktreeSession: (session) => this.setWorktreeSession(session),
-      });
+      const output = await runWithFetchSecurityScope(
+        {
+          enforceNetworkPolicy: true,
+          networkPolicy: policies.network,
+          sessionAllowedHosts: this.sessionAllowedHosts,
+          mcpContext: networkDisabled && toolCall.name.startsWith("mcp/"),
+          mcpExceptionHosts,
+        },
+        () =>
+          handler(toolCall.input, {
+            agentId: this.options.agentId,
+            sessionId: this.options.sessionId,
+            toolUseId: toolCall.id,
+            cwd: this.options.cwd,
+            askUserQuestion: this.options.askUserQuestion,
+            markFileRead: (path) => this.markFileRead(path),
+            hasReadFile: (path) => this.hasReadFile(path),
+            allowedSkills: this.options.allowedSkills,
+            isSkillActive: (name) => this.isSkillActive(name),
+            getPermissionMode: () => this.getPermissionMode(),
+            setPermissionMode: (m) => this.setPermissionMode(m),
+            getCapability: () => this.getCapability(),
+            getPlanFilePath: () => this.getPlanFilePath(),
+            setPlanFilePath: (path) => this.setPlanFilePath(path),
+            getApprovedPermissionMode: () => approvedPermissionMode,
+            setCwd: (cwd) => this.setCwd(cwd),
+            getWorktreeSession: () => this.getWorktreeSession(),
+            setWorktreeSession: (session) => this.setWorktreeSession(session),
+          }),
+      );
       if (toolCall.name === "Read") {
         const readPath = toolCall.input.file_path ?? toolCall.input.path;
         if (typeof readPath === "string") {
@@ -239,7 +383,14 @@ export class ToolRegistry {
           }
         }
       }
-      const result = this.result(toolCall, start, "success", output);
+      if (toolCall.name === "Write") {
+        const writtenPath = filePathFromToolInput(toolCall.input, this.options.cwd);
+        if (writtenPath) {
+          this.markFileRead(writtenPath);
+        }
+      }
+      const redacted = redactSecretsInValue(output, policies.security);
+      const result = this.result(toolCall, start, "success", redacted, undefined, audit);
       if (toolCall.name === "Skill") {
         const skillName = toolCall.input.skill ?? toolCall.input.command;
         if (typeof skillName === "string") {
@@ -250,7 +401,7 @@ export class ToolRegistry {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const status = message.includes("TIMEOUT") ? "timeout" : "error";
-      return this.result(toolCall, start, status, undefined, message);
+      return this.result(toolCall, start, status, undefined, message, audit);
     }
   }
 
@@ -275,6 +426,7 @@ export class ToolRegistry {
     status: ToolResult["status"],
     output?: unknown,
     error?: string,
+    audit?: ToolAuditMetadata,
   ): ToolResult {
     return {
       toolUseId: toolCall.id,
@@ -286,6 +438,7 @@ export class ToolRegistry {
       durationMs: Date.now() - start,
       agentId: this.options.agentId,
       sessionId: this.options.sessionId,
+      audit,
     };
   }
 }

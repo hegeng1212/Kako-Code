@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { McpRegistry, McpServerConfig } from "@kako/shared";
 import { getConfigDir } from "../config/paths.js";
 
+const mcpApprovalModeSchema = z.enum(["never", "onRequest", "deny"]);
+
 const serverSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -15,6 +17,8 @@ const serverSchema = z.object({
   url: z.string().optional(),
   headers: z.record(z.string()).optional(),
   preset: z.string().optional(),
+  approvalMode: mcpApprovalModeSchema.optional(),
+  toolApproval: z.record(mcpApprovalModeSchema).optional(),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
 });
@@ -51,9 +55,23 @@ export async function upsertMcpServer(server: McpServerConfig): Promise<McpRegis
   const now = new Date().toISOString();
   const next = { ...server, updatedAt: now };
   if (index >= 0) {
-    registry.servers[index] = { ...registry.servers[index], ...next };
+    const merged: McpServerConfig = { ...registry.servers[index], ...next };
+    if ("toolApproval" in server) {
+      if (!server.toolApproval || Object.keys(server.toolApproval).length === 0) {
+        delete merged.toolApproval;
+      }
+    }
+    registry.servers[index] = merged;
   } else {
-    registry.servers.push({ ...next, createdAt: now });
+    const created: McpServerConfig = {
+      ...next,
+      createdAt: now,
+      approvalMode: next.approvalMode ?? "onRequest",
+    };
+    if (created.toolApproval && Object.keys(created.toolApproval).length === 0) {
+      delete created.toolApproval;
+    }
+    registry.servers.push(created);
   }
   await saveMcpRegistry(registry);
   return registry;

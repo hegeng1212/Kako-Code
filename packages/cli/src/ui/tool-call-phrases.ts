@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { isLowRiskBashCommand } from "@kako/core";
 
 function trimDetail(detail: string, max = 80): string {
   const t = detail.trim();
@@ -30,6 +31,17 @@ export function isPlanFileDetail(detail: string): boolean {
 
 export function isWorkflowDetail(detail: string): boolean {
   return /^dynamic workflow:/i.test(detail.trim());
+}
+
+/** True for Bash invocations that run programs / have side effects (not read-only inspection). */
+export function isExecutionBashCommand(command: string): boolean {
+  const cmd = command.trim();
+  if (!cmd) return false;
+  return !isLowRiskBashCommand(cmd);
+}
+
+export function shellCommandStat(count: number): string {
+  return count === 1 ? "ran 1 shell command" : `ran ${count} shell commands`;
 }
 
 export function workflowNameFromDetail(detail: string): string {
@@ -111,6 +123,9 @@ export function toolCallStatPhrase(
       if (/\bfind\b/.test(cmd) && output?.trim()) {
         const count = output.trim().split("\n").filter(Boolean).length;
         return `found ${count} ${count === 1 ? "path" : "paths"}`;
+      }
+      if (isExecutionBashCommand(target)) {
+        return shellCommandStat(1);
       }
       return target ? `ran ${trimDetail(target, 48)}` : "ran command";
     }

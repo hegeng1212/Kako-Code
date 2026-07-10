@@ -11,8 +11,11 @@ import type {
 } from "@kako/shared";
 import { mcpToolName } from "@kako/shared";
 import type { ToolDefinition, ToolHandler } from "@kako/shared";
-import { kakoFetch } from "../net/isolated-fetch.js";
+import { mcpSecurityMetadata } from "../security/tool-metadata.js";
+import { kakoFetch, runWithFetchSecurityScope } from "../net/isolated-fetch.js";
+import { loadNetworkPolicy } from "../config/network-store.js";
 import { loadMcpRegistry } from "./config.js";
+import { resolveMcpExceptionHosts } from "./network-access.js";
 import {
   getCachedToolsForServer,
   listAllCachedTools,
@@ -258,7 +261,25 @@ export class McpManager {
               env: { ...process.env, ...config.env } as Record<string, string>,
             });
 
-    await client.connect(transport);
+    const networkPolicy = await loadNetworkPolicy();
+    const mcpRegistry = await loadMcpRegistry();
+    const networkDisabled = !networkPolicy.enabled;
+    const mcpExceptionHosts = networkDisabled
+      ? resolveMcpExceptionHosts(mcpRegistry.servers, networkPolicy)
+      : undefined;
+
+    await runWithFetchSecurityScope(
+      {
+        enforceNetworkPolicy: true,
+        networkPolicy,
+        sessionAllowedHosts: new Set(),
+        mcpContext: networkDisabled,
+        mcpExceptionHosts,
+      },
+      async () => {
+        await client.connect(transport);
+      },
+    );
     this.servers.set(config.id, { config, client });
   }
 
@@ -420,10 +441,14 @@ export class McpManager {
     for (const { config, client } of this.servers.values()) {
       const tools = await this.fetchToolsLive(config, client);
       for (const info of tools) {
+        const transport = config.transport ?? "stdio";
+        const security = mcpSecurityMetadata(transport);
         const definition: ToolDefinition = {
           name: mcpToolName(info.serverId, info.name),
           description: `[MCP:${info.serverName}] ${info.description}`,
           inputSchema: info.inputSchema,
+          security,
+          requiresConfirmation: security.sideEffect || security.requiresNetwork,
         };
         register(definition, this.createHandler(info.serverId, info.name));
       }

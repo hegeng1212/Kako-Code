@@ -1,5 +1,6 @@
 import type { ToolCall } from "@kako/shared";
 import { parseEditInput } from "./builtin/edit.js";
+import { parseNotebookEditInput } from "./builtin/notebook-edit.js";
 import { parseWriteInput } from "./builtin/write.js";
 
 const WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
@@ -24,12 +25,21 @@ export function validateToolCallInput(toolCall: ToolCall): string | null {
     }
   }
 
-  if (toolCall.name === "Edit" || toolCall.name === "NotebookEdit") {
+  if (toolCall.name === "Edit") {
     try {
       parseEditInput(toolCall.input);
       return null;
     } catch (err) {
-      return err instanceof Error ? err.message : `Invalid ${toolCall.name} input`;
+      return err instanceof Error ? err.message : "Invalid Edit input";
+    }
+  }
+
+  if (toolCall.name === "NotebookEdit") {
+    try {
+      parseNotebookEditInput(toolCall.input);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Invalid NotebookEdit input";
     }
   }
 

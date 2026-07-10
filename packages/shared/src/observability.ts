@@ -1,6 +1,12 @@
 import type { AgentId, RunId, SessionId, ToolUseId } from "./agent.js";
 import type { LLMTokenUsage } from "./llm.js";
 import type { ToolResultStatus } from "./tool.js";
+import type {
+  ApprovalMode,
+  RiskLevel,
+  SessionCapability,
+  ToolAuditMetadata,
+} from "./security.js";
 
 /** Log entry for a tool invocation. */
 export interface ToolLogEntry {
@@ -16,6 +22,15 @@ export interface ToolLogEntry {
   /** Set when toolName is mcp/{serverId}/{toolName} */
   mcpServerId?: string;
   mcpToolName?: string;
+  /** Security audit fields */
+  riskLevel?: RiskLevel;
+  approvalRequired?: boolean;
+  approvalResult?: ToolAuditMetadata["approvalResult"];
+  approvalMode?: ApprovalMode;
+  capability?: SessionCapability;
+  workspaceViolation?: string;
+  networkTarget?: string;
+  networkDecision?: string;
 }
 
 /** Aggregated MCP / tool call metrics. */

@@ -1,5 +1,5 @@
 import type { AskUserQuestionItem, AskUserQuestionOption } from "@kako/shared";
-import { ansi, visibleLength } from "./ansi.js";
+import { ansi, displayWidth, visibleLength } from "./ansi.js";
 import { wrapContentLines } from "./text-wrap.js";
 
 export const CHOICE_HINT = `${ansi.muted}Enter to select · ↑/↓ navigate · ←/→ switch topic · Esc to cancel${ansi.reset}`;
@@ -65,27 +65,43 @@ function truncateToWidth(text: string, maxWidth: number): string {
   return out;
 }
 
-function renderOptionLine(
+function renderOptionLines(
   row: ChoiceRow,
   index: number,
   selected: boolean,
   cols: number,
   multiSelect?: boolean,
   checked?: boolean,
-): string {
+): string[] {
   const prefix = selected ? `${ansi.accent}>${ansi.reset}` : " ";
   const num = `${index + 1}.`;
-  const label = `${ansi.text}${row.label}${ansi.reset}`;
-  const desc =
-    row.description && row.kind === "option"
-      ? ` ${ansi.muted}${truncateToWidth(row.description, Math.max(20, cols - 8 - row.label.length))}${ansi.reset}`
-      : "";
   const check =
     multiSelect && row.kind === "option"
       ? `${checked ? "[✔]" : "[ ]"} `
       : "";
-  const body = `${prefix} ${check}${num} ${label}${desc}`;
-  return body.length > cols + 100 ? truncateToWidth(body, cols) : body;
+  const head = `${prefix} ${check}${num} `;
+  const desc =
+    row.description && row.kind === "option"
+      ? ` ${ansi.muted}${truncateToWidth(row.description, Math.max(20, cols - 8 - row.label.length))}${ansi.reset}`
+      : "";
+  const labelWidth = Math.max(12, cols - displayWidth(head) - displayWidth(desc));
+  const wrapped = wrapContentLines(row.label, labelWidth);
+  if (wrapped.length <= 1) {
+    const label = `${ansi.text}${row.label}${ansi.reset}`;
+    const body = `${head}${label}${desc}`;
+    return [body.length > cols + 100 ? truncateToWidth(body, cols) : body];
+  }
+  const lines: string[] = [];
+  const indent = " ".repeat(displayWidth(head));
+  wrapped.forEach((part, i) => {
+    const label = `${ansi.text}${part}${ansi.reset}`;
+    if (i === 0) {
+      lines.push(`${head}${label}${desc}`);
+    } else {
+      lines.push(`${indent}${label}`);
+    }
+  });
+  return lines;
 }
 
 export interface RenderChoicePanelOptions {
@@ -144,7 +160,7 @@ export function renderChoicePanelLines(opts: RenderChoicePanelOptions): string[]
         ? checkedOptionIndexes?.has(row.optionIndex)
         : false;
     lines.push(
-      renderOptionLine(row, i, i === selectedIndex, cols, multiSelect, checked),
+      ...renderOptionLines(row, i, i === selectedIndex, cols, multiSelect, checked),
     );
   });
 
@@ -239,7 +255,7 @@ export function renderQuestionWizardPanelLines(opts: RenderQuestionWizardPanelOp
       lines.push(...renderWizardReviewSummary(questions, answers, cols));
       lines.push("");
       rows.forEach((row, i) => {
-        lines.push(renderOptionLine(row, i, i === selectedIndex, cols));
+        lines.push(...renderOptionLines(row, i, i === selectedIndex, cols));
       });
     } else {
       const pending = unanswered.map((q) => q.header).join(", ");
@@ -256,7 +272,7 @@ export function renderQuestionWizardPanelLines(opts: RenderQuestionWizardPanelOp
   }
   lines.push("");
   rows.forEach((row, i) => {
-    lines.push(renderOptionLine(row, i, i === selectedIndex, cols));
+    lines.push(...renderOptionLines(row, i, i === selectedIndex, cols));
   });
   return lines;
 }

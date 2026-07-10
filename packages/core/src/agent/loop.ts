@@ -75,11 +75,21 @@ export async function streamCompletion(
     throw new TurnAbortedError();
   };
 
+  const throwIfAborted = (): void => {
+    if (shouldAbort?.()) {
+      abortTurn();
+    }
+  };
+
   try {
-    for await (const chunk of router.stream({ ...request, signal: abortController.signal })) {
-      if (shouldAbort?.()) {
-        abortTurn();
-      }
+    throwIfAborted();
+    const iterator = router.stream({ ...request, signal: abortController.signal })[Symbol.asyncIterator]();
+
+    while (true) {
+      const next = await nextStreamChunk(iterator, shouldAbort, abortController);
+      if (next.done) break;
+      const chunk = next.value;
+      throwIfAborted();
       if (chunk.type === "reasoning_delta" && chunk.text) {
         reasoningOpen = true;
         handlers.onReasoning?.(chunk.text);
@@ -123,6 +133,36 @@ export async function streamCompletion(
   }
 
   return [...toolCalls.values()];
+}
+
+const ABORT_POLL_MS = 25;
+
+async function nextStreamChunk<T>(
+  iterator: AsyncIterator<T>,
+  shouldAbort?: () => boolean,
+  abortController?: AbortController,
+): Promise<IteratorResult<T>> {
+  if (!shouldAbort) {
+    return iterator.next();
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      fn();
+    };
+    const poll = setInterval(() => {
+      if (!shouldAbort()) return;
+      abortController?.abort();
+      finish(() => reject(new TurnAbortedError()));
+    }, ABORT_POLL_MS);
+    iterator.next().then(
+      (result) => finish(() => resolve(result)),
+      (err) => finish(() => reject(err)),
+    );
+  });
 }
 
 function askUserQuestionOutputDeclined(output: string): boolean {
@@ -281,6 +321,9 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
     let choiceDeclined = false;
 
     for (const toolCall of toolCalls) {
+      if (shouldAbort?.()) {
+        return rollbackResponse(responseText, callbacks);
+      }
       if (blockAgentTool && toolCall.name === "Agent") {
         const output = "Error: Sub-agents cannot spawn nested Agent tools";
         messages.push({

@@ -12,7 +12,14 @@ export { TurnAbortedError } from "./agent/loop.js";
 export { loadAgent, loadProjectContext, loadGlobalUserContext, loadWorkspaceKakoMd } from "./agent/loader.js";
 export { createLLMRouter, resolveModel } from "./llm/router.js";
 export { fetchWithTimeout } from "./net/fetch-with-timeout.js";
-export { FileMemoryStore, createMessage, sessionInputHistory, transcriptPreviewText } from "./memory/store.js";
+export {
+  FileMemoryStore,
+  createMessage,
+  getTranscriptLength,
+  sessionInputHistory,
+  truncateSessionTranscript,
+  transcriptPreviewText,
+} from "./memory/store.js";
 export {
   SessionManager,
   sessionManager,
@@ -50,6 +57,20 @@ export {
   isSearchProviderReady,
   searchProviderReadyError,
 } from "./config/search-store.js";
+export {
+  loadSecurityPolicy,
+  saveSecurityPolicy,
+  toSecuritySettingsFile,
+  applySecuritySettingsPatch,
+  type SecurityPolicy,
+} from "./security/policy-store.js";
+export {
+  loadNetworkPolicy,
+  saveNetworkPolicy,
+  parseNetworkPolicy,
+  addHostsToUserAllowlist,
+  type NetworkPolicy,
+} from "./config/network-store.js";
 export { testSearchProvider } from "./web/web-search.js";
 export { MCP_PRESETS } from "./config/mcp-presets.js";
 export {
@@ -59,6 +80,7 @@ export {
   removeMcpServer,
 } from "./mcp/config.js";
 export { mcpManager, McpManager } from "./mcp/manager.js";
+export { listAllCachedTools } from "./mcp/tool-cache.js";
 export {
   getMcpObservabilitySummary,
   queryMcpCallLogs,
@@ -73,9 +95,11 @@ export {
   resolveAllowedToolNames,
 } from "./tools/builtin/index.js";
 export { ToolRegistry } from "./tools/registry.js";
+export { isLowRiskBashCommand } from "./tools/bash-risk.js";
 export {
   readClipboardImage,
   readClipboardText,
+  writeClipboardText,
   storeClipboardImage,
   storeUserAttachment,
   resolveUserTurnInput,

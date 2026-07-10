@@ -12,6 +12,8 @@ export type PermissionMode =
   | "acceptEdits"
   | "bypassPermissions";
 
+export type { SessionCapability, ApprovalMode } from "./security.js";
+
 /** Agent definition loaded from YAML/Markdown frontmatter. */
 export interface AgentDefinition {
   name: string;

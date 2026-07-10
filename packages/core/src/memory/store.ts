@@ -33,6 +33,21 @@ export class FileMemoryStore implements MemorySystem {
     }
   }
 
+  async rewriteTranscript(messages: TranscriptMessage[]): Promise<void> {
+    await mkdir(getSessionMemoryDir(this.sessionId), { recursive: true });
+    const body = messages.length
+      ? `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`
+      : "";
+    await writeFile(this.transcriptPath, body, "utf-8");
+  }
+
+  async truncateTranscript(length: number): Promise<void> {
+    const keep = Math.max(0, length);
+    const transcript = await this.loadTranscript();
+    if (transcript.length <= keep) return;
+    await this.rewriteTranscript(transcript.slice(0, keep));
+  }
+
   async recall(options: RecallOptions): Promise<RecallResult[]> {
     const results: RecallResult[] = [];
     if (options.layers.includes("L0")) {
@@ -109,6 +124,19 @@ export function transcriptPreviewText(message: TranscriptMessage): string {
 export function isCliInputHistoryMessage(msg: TranscriptMessage): boolean {
   if (msg.role !== "user") return false;
   return msg.metadata?.cliInput === true;
+}
+
+export async function getTranscriptLength(sessionId: SessionId): Promise<number> {
+  const store = new FileMemoryStore(sessionId);
+  return (await store.loadTranscript()).length;
+}
+
+export async function truncateSessionTranscript(
+  sessionId: SessionId,
+  length: number,
+): Promise<void> {
+  const store = new FileMemoryStore(sessionId);
+  await store.truncateTranscript(length);
 }
 
 /** User prompts from L0 transcript for CLI input history (↑/↓). */

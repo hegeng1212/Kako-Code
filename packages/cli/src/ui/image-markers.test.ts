@@ -28,7 +28,7 @@ describe("image-markers", () => {
 
 describe("renderUserMessage", () => {
   it("renders branch lines for pasted images aligned with parent text", () => {
-    const lines = renderUserMessage("[Image #1] 这是什么图片").map((line) => stripAnsi(line));
+    const lines = renderUserMessage("[Image #1] 这是什么图片", 100).map((line) => stripAnsi(line));
     expect(lines.some((line) => line.includes("> [Image #1] 这是什么图片"))).toBe(true);
     expect(lines.some((line) => line === "    └ [Image #1]")).toBe(true);
   });

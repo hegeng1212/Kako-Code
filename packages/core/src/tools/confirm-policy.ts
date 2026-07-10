@@ -1,5 +1,8 @@
 import type { PermissionMode, ToolCall, ToolDefinition } from "@kako/shared";
-import { isLowRiskBashCommand } from "./bash-risk.js";
+import type { McpApprovalMode } from "@kako/shared";
+import { classifyBashCommand } from "../security/bash-policy.js";
+import type { SecurityPolicy } from "../security/policy-store.js";
+import { bashApprovalMode } from "../security/risk-evaluator.js";
 
 const WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
@@ -7,21 +10,34 @@ export function toolCallNeedsUserConfirm(
   toolCall: ToolCall,
   definition: ToolDefinition,
   mode: PermissionMode,
+  policy?: SecurityPolicy,
+  mcpApproval?: McpApprovalMode,
 ): boolean {
-  if (!definition.requiresConfirmation) return false;
+  if (mcpApproval === "never") return false;
+  if (mcpApproval === "deny") return false;
+  if (!definition.requiresConfirmation && !definition.security?.sideEffect) {
+    if (!(toolCall.name.startsWith("mcp/") && mcpApproval === "onRequest")) {
+      return false;
+    }
+  }
   if (mode === "bypassPermissions") return false;
 
-  if (
-    mode === "acceptEdits" &&
-    WRITE_TOOLS.has(toolCall.name)
-  ) {
+  if (mode === "acceptEdits" && WRITE_TOOLS.has(toolCall.name)) {
     return false;
   }
 
-  if (toolCall.name === "Bash") {
-    const command = String(toolCall.input.command ?? "");
-    return !isLowRiskBashCommand(command);
+  if (toolCall.name === "Bash" && policy) {
+    const tier = classifyBashCommand(String(toolCall.input.command ?? ""));
+    const approval = bashApprovalMode(policy, tier);
+    return approval !== "never";
   }
 
-  return true;
+  if (toolCall.name === "Bash") {
+    const tier = classifyBashCommand(String(toolCall.input.command ?? ""));
+    return tier !== "safe";
+  }
+
+  if (definition.security?.sideEffect) return true;
+
+  return Boolean(definition.requiresConfirmation);
 }

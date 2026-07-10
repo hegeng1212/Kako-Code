@@ -10,6 +10,20 @@ const SLASH_CMD_UNSELECTED = ansi.muted;
 const SLASH_DESC_SELECTED = ansi.text;
 const SLASH_DESC_UNSELECTED = ansi.muted;
 
+/** Input line: slash command token uses the same cyan as the suggest menu. */
+export function renderSlashInputText(value: string): string {
+  if (!value.startsWith("/")) {
+    return `${ansi.text}${value}${ansi.reset}`;
+  }
+  const spaceIdx = value.indexOf(" ");
+  if (spaceIdx === -1) {
+    return `${SLASH_CMD_SELECTED}${value}${ansi.reset}`;
+  }
+  const command = value.slice(0, spaceIdx);
+  const args = value.slice(spaceIdx);
+  return `${SLASH_CMD_SELECTED}${command}${ansi.reset}${ansi.text}${args}${ansi.reset}`;
+}
+
 function padPlain(text: string, width: number): string {
   const len = displayWidth(text);
   if (len >= width) return text;

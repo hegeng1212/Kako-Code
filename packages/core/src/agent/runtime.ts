@@ -7,6 +7,7 @@ import type {
   LLMTokenUsage,
   PermissionMode,
   Session,
+  SessionCapability,
   SessionId,
   SkillDefinition,
   ToolCall,
@@ -35,6 +36,9 @@ import { attachmentIncludesDocument, formatAttachmentSystemPromptAddendum } from
 import { ToolLogger } from "../observability/tool-logger.js";
 import { createLLMRouter, resolveModel } from "../llm/router.js";
 import { loadProviderRegistry } from "../config/provider-store.js";
+import { loadNetworkPolicy } from "../config/network-store.js";
+import { defaultSessionCapability, loadSecurityPolicy } from "../security/policy-store.js";
+import { formatSecurityPolicySection } from "../security/prompt.js";
 import type { ProviderRegistry } from "@kako/shared";
 import { mcpManager } from "../mcp/manager.js";
 import { sessionManager } from "../session/manager.js";
@@ -196,6 +200,15 @@ export class AgentRuntime {
     this.currentTurnModel = model;
 
     const meta = await sessionManager.getSessionMeta(session.id);
+    const securityPolicy = await loadSecurityPolicy(session.cwd);
+    const networkPolicy = await loadNetworkPolicy();
+    const capability = defaultSessionCapability(securityPolicy);
+    const securityPolicySection = formatSecurityPolicySection(
+      securityPolicy,
+      networkPolicy,
+      capability,
+    );
+
     if (meta?.title === DEFAULT_TITLE && turn.text.trim()) {
       void generateSessionTitle(router, model, turn.text)
         .then(async (title) => {
@@ -228,6 +241,7 @@ export class AgentRuntime {
       definition,
       options,
       discoveredSkills,
+      capability,
     );
     // Top-level agent: expose every registered tool (built-ins, MCP, Agent, etc.) on each LLM call.
     const allowedTools = resolveAllToolNames(toolRegistry);
@@ -241,6 +255,8 @@ export class AgentRuntime {
       availableSkills: skillIndex,
       environment,
       subagentDefinitions,
+      securityPolicySection,
+      capability,
     });
 
     if (attachmentIncludesDocument(turn.attachments) && typeof messages[0]?.content === "string") {
@@ -329,6 +345,7 @@ export class AgentRuntime {
     definition: AgentDefinition,
     options?: RunTurnOptions,
     agentSkills: SkillDefinition[] = [],
+    capability?: SessionCapability,
   ): Promise<ToolRegistry> {
     const agentId = `agent-${definition.name}`;
     const registry = new ToolRegistry({
@@ -336,6 +353,7 @@ export class AgentRuntime {
       sessionId: session.id,
       agentId,
       permissionMode: this.sessionPermissionMode ?? definition.permissionMode,
+      capability,
       confirm: this.callbacks.confirm,
       askUserQuestion: this.askUserQuestion,
       allowedSkills: skillNamesForToolAllowlist(agentSkills),

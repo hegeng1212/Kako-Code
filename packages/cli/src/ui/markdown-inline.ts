@@ -35,6 +35,47 @@ function styleKey(style: InlineStyle): string {
   return `${style.bold ? "b" : ""}${style.italic ? "i" : ""}${style.code ? "c" : ""}${style.link ?? ""}`;
 }
 
+/** Absolute paths and shell commands rendered as inline pills (Claude Code-style). */
+const INLINE_PATH_RE =
+  /(?:~\/|\/(?:Users|tmp|home|var|opt|etc|usr|private)(?:\/[\w.\-+~]+)+|\/[\w.\-+~]+(?:\/[\w.\-+~]+)+\.\w{1,8})/g;
+const INLINE_COMMAND_RE =
+  /\b(?:python3?|node|npm|pnpm|npx|bash|sh|cargo|rustc|go run)\s+[^\s,;。，)）]+/g;
+const INLINE_EXPR_RE =
+  /\b\d+(?:\.\d+)?\s*\+\s*\d+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\s*=\s*\d+(?:\.\d+)?\b/g;
+
+function splitPlainTextTokens(text: string): InlinePart[] {
+  if (!text) return [];
+  const matches: Array<{ start: number; end: number; value: string }> = [];
+  const patterns = [INLINE_PATH_RE, INLINE_COMMAND_RE, INLINE_EXPR_RE];
+
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const value = match[0];
+      if (!value) continue;
+      const start = match.index ?? 0;
+      const end = start + value.length;
+      const overlaps = matches.some((m) => start < m.end && end > m.start);
+      if (!overlaps) matches.push({ start, end, value });
+    }
+  }
+
+  matches.sort((a, b) => a.start - b.start);
+  const parts: InlinePart[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start > cursor) {
+      parts.push({ text: text.slice(cursor, match.start), style: {} });
+    }
+    parts.push({ text: match.value, style: { code: true } });
+    cursor = match.end;
+  }
+  if (cursor < text.length) {
+    parts.push({ text: text.slice(cursor), style: {} });
+  }
+  return parts.length ? parts : [{ text, style: {} }];
+}
+
 /** Parse inline markdown into styled text segments. */
 export function parseInlineParts(input: string): InlinePart[] {
   const parts: InlinePart[] = [];
@@ -80,7 +121,7 @@ export function parseInlineParts(input: string): InlinePart[] {
 
     const nextSpecial = rest.slice(1).search(/[`[*_]/);
     const end = nextSpecial === -1 ? rest.length : nextSpecial + 1;
-    parts.push({ text: rest.slice(0, end), style: {} });
+    parts.push(...splitPlainTextTokens(rest.slice(0, end)));
     index += end;
   }
 

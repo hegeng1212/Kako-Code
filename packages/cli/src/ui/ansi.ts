@@ -23,10 +23,16 @@ export const ansi = {
   /** Plan box border (cyan, Claude Code plan mode). */
   planBorder: "\x1b[38;5;117m",
   green: "\x1b[38;5;114m",
+  /** Diff add gutter on green background — softer than neon, still above bg. */
+  diffAdd: "\x1b[38;5;77m",
   yellow: "\x1b[38;5;221m",
   red: "\x1b[38;5;203m",
+  /** Diff remove gutter on red background — softer than neon, still above bg. */
+  diffRemove: "\x1b[38;5;203m",
   blue: "\x1b[38;5;117m",
   magenta: "\x1b[38;5;176m",
+  /** User message bar in chat history — full-width dark strip. */
+  userMessageBg: "\x1b[48;5;235m",
 };
 
 export function stripAnsi(text: string): string {
@@ -64,6 +70,8 @@ export function isEmojiWideCodePoint(code: number): boolean {
 
 export function charDisplayWidth(code: number): number {
   if (code === 0xfe0f || code === 0x200d) return 0;
+  // Dingbat status marks — single column in common terminals (iTerm, VS Code, etc.)
+  if (code === 0x2713 || code === 0x2714 || code === 0x2717 || code === 0x2718) return 1;
   if (isWideCodePoint(code) || isEmojiWideCodePoint(code)) return 2;
   return 1;
 }

@@ -1,7 +1,8 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseWriteInput, writeHandler, writeToolDefinition } from "./write.js";
+import { ToolRegistry } from "../registry.js";
+import { parseWriteInput, writeHandler, writeToolDefinition, formatWriteResult, FILE_STATE_CURRENT_HINT } from "./write.js";
 import { toolContext, withTempDir } from "./test-helpers.js";
 
 describe("Write tool definition", () => {
@@ -31,12 +32,23 @@ describe("parseWriteInput", () => {
   });
 });
 
+describe("formatWriteResult", () => {
+  it("announces create vs update and hints no Read needed", () => {
+    expect(formatWriteResult("/tmp/a.py", true)).toBe(
+      `File created successfully at: /tmp/a.py ${FILE_STATE_CURRENT_HINT}`,
+    );
+    expect(formatWriteResult("/tmp/a.py", false)).toBe(
+      `File updated successfully at: /tmp/a.py ${FILE_STATE_CURRENT_HINT}`,
+    );
+  });
+});
+
 describe("writeHandler", () => {
   it("creates nested directories and writes file", async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, "nested", "out.txt");
       const msg = await writeHandler({ file_path: path, content: "hello\nworld" }, toolContext(dir));
-      expect(msg).toContain("2 lines");
+      expect(msg).toBe(formatWriteResult(path, true));
       expect(await readFile(path, "utf-8")).toBe("hello\nworld");
     });
   });
@@ -83,11 +95,39 @@ describe("writeHandler adversarial", () => {
     });
   });
 
-  it("rejects relative file_path", async () => {
+  it("allows Edit immediately after Write without separate Read", async () => {
     await withTempDir(async (dir) => {
-      await expect(
-        writeHandler({ file_path: "rel.txt", content: "ok" }, toolContext(dir)),
-      ).rejects.toThrow(/absolute/);
+      const path = join(dir, "add.py");
+      const registry = new ToolRegistry({
+        cwd: dir,
+        sessionId: "sess-write-edit",
+        agentId: "agent-1",
+      });
+      const { registerBuiltinTools } = await import("./registry.js");
+      registerBuiltinTools(registry);
+
+      const write = await registry.execute({
+        id: "tu-w",
+        name: "Write",
+        input: {
+          file_path: path,
+          content: "print(1)\n",
+        },
+      });
+      expect(write.status).toBe("success");
+      expect(String(write.output)).toContain(FILE_STATE_CURRENT_HINT);
+
+      const edit = await registry.execute({
+        id: "tu-e",
+        name: "Edit",
+        input: {
+          file_path: path,
+          old_string: "print(1)",
+          new_string: "print(2)",
+        },
+      });
+      expect(edit.status).toBe("success");
+      expect(await readFile(path, "utf-8")).toBe("print(2)\n");
     });
   });
 });

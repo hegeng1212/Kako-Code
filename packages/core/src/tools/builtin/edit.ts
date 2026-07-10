@@ -2,7 +2,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_EDIT_DESCRIPTION } from "../claude-tool-text.js";
-import { resolvePath } from "./path.js";
+import { resolvePath, resolveWorkspacePath } from "./path.js";
+import { loadSecurityPolicy } from "../../security/policy-store.js";
 
 export const EDIT_DESCRIPTION = adaptClaudeCodeToolText(CLAUDE_EDIT_DESCRIPTION);
 
@@ -104,6 +105,13 @@ export function formatEditResult(filePath: string, replacements: number): string
 
 export const editHandler: ToolHandler = async (input, context) => {
   const parsed = parseEditInput(input);
+  const policy = await loadSecurityPolicy(context.cwd);
+  await resolveWorkspacePath(
+    parsed.filePath,
+    context.cwd,
+    policy,
+    context.getCapability?.() ?? "WorkspaceWrite",
+  );
   const filePath = resolvePath(parsed.filePath, context.cwd);
 
   if (!context.hasReadFile || !context.hasReadFile(filePath)) {

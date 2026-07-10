@@ -32,20 +32,20 @@ describe("bashToolDefinition", () => {
 });
 
 describe("resolveBashTimeoutMs", () => {
-  it("defaults to 120s", () => {
-    expect(resolveBashTimeoutMs({})).toBe(BASH_DEFAULT_TIMEOUT_MS);
+  it("defaults to 120s", async () => {
+    expect(await resolveBashTimeoutMs({})).toBe(BASH_DEFAULT_TIMEOUT_MS);
   });
 
-  it("reads timeout field", () => {
-    expect(resolveBashTimeoutMs({ timeout: 60_000 })).toBe(60_000);
+  it("reads timeout field", async () => {
+    expect(await resolveBashTimeoutMs({ timeout: 60_000 })).toBe(60_000);
   });
 
-  it("falls back to legacy timeout_ms", () => {
-    expect(resolveBashTimeoutMs({ timeout_ms: 45_000 })).toBe(45_000);
+  it("falls back to legacy timeout_ms", async () => {
+    expect(await resolveBashTimeoutMs({ timeout_ms: 45_000 })).toBe(45_000);
   });
 
-  it("caps at max", () => {
-    expect(resolveBashTimeoutMs({ timeout: 999_999 })).toBe(BASH_MAX_TIMEOUT_MS);
+  it("caps at max", async () => {
+    expect(await resolveBashTimeoutMs({ timeout: 999_999 })).toBe(BASH_MAX_TIMEOUT_MS);
   });
 });
 
@@ -105,11 +105,11 @@ describe("bashHandler adversarial", () => {
   });
 
   it("uses legacy timeout_ms when timeout omitted", async () => {
-    expect(resolveBashTimeoutMs({ timeout_ms: 5_000 })).toBe(5_000);
+    expect(await resolveBashTimeoutMs({ timeout_ms: 5_000 })).toBe(5_000);
   });
 
-  it("ignores invalid timeout and falls back to default", () => {
-    expect(resolveBashTimeoutMs({ timeout: -1 })).toBe(BASH_DEFAULT_TIMEOUT_MS);
-    expect(resolveBashTimeoutMs({ timeout: NaN })).toBe(BASH_DEFAULT_TIMEOUT_MS);
+  it("ignores invalid timeout and falls back to default", async () => {
+    expect(await resolveBashTimeoutMs({ timeout: -1 })).toBe(BASH_DEFAULT_TIMEOUT_MS);
+    expect(await resolveBashTimeoutMs({ timeout: NaN })).toBe(BASH_DEFAULT_TIMEOUT_MS);
   });
 });

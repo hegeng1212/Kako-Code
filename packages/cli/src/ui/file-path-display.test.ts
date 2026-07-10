@@ -18,7 +18,7 @@ describe("file path display", () => {
 describe("renderUserMessage with file paths", () => {
   it("renders file branch lines distinct from image markers", () => {
     const path = "/Users/hegeng/Documents/report.xlsx";
-    const lines = renderUserMessage(`${path}  这是什么内容`).map((line) => stripAnsi(line));
+    const lines = renderUserMessage(`${path}  这是什么内容`, 100).map((line) => stripAnsi(line));
     expect(lines.some((line) => line.includes(`> ${path}  这是什么内容`))).toBe(true);
     expect(lines.some((line) => line.includes("└ 📄 report.xlsx"))).toBe(true);
   });

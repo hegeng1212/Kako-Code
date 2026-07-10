@@ -1,5 +1,6 @@
 import type { AgentId, PermissionMode, SessionId, ToolUseId } from "./agent.js";
 import type { AskUserQuestionPrompt } from "./ask-user-question.js";
+import type { ToolAuditMetadata, ToolSecurityMetadata, SessionCapability } from "./security.js";
 
 /** JSON Schema subset for tool input/output definitions. */
 export interface JsonSchema {
@@ -32,6 +33,8 @@ export interface ToolDefinition {
   requiresConfirmation?: boolean;
   /** Sandbox constraints for file/shell operations. */
   sandbox?: ToolSandbox;
+  /** Declarative security metadata for policy engine. */
+  security?: ToolSecurityMetadata;
 }
 
 export interface ToolSandbox {
@@ -60,6 +63,8 @@ export interface ToolResult {
   durationMs: number;
   agentId: AgentId;
   sessionId: SessionId;
+  /** Security audit metadata for observability. */
+  audit?: ToolAuditMetadata;
 }
 
 export type ToolResultStatus = "success" | "error" | "denied" | "timeout";
@@ -90,6 +95,8 @@ export interface ToolExecutionContext {
   getPermissionMode?: () => PermissionMode;
   /** Switch permission mode mid-turn (e.g. EnterPlanMode / ExitPlanMode). */
   setPermissionMode?: (mode: PermissionMode) => void;
+  /** Current session capability (FullAccess may write/read outside trusted roots). */
+  getCapability?: () => SessionCapability;
   /** Plan file path for the active plan mode session. */
   getPlanFilePath?: () => string | undefined;
   setPlanFilePath?: (path: string | undefined) => void;

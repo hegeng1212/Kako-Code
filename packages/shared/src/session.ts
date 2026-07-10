@@ -1,4 +1,5 @@
 import type { AgentId, SessionId } from "./agent.js";
+import type { SessionCapability } from "./security.js";
 import type { TranscriptMessage } from "./memory.js";
 
 /** Session lifecycle states. */
@@ -55,6 +56,8 @@ export interface SessionMeta {
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;
+  /** Session capability level for security policy. */
+  capability?: SessionCapability;
 }
 
 export type SystemSkillHandler = "skill" | "dynamic-workflow";

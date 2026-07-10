@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { findLeadingAbsolutePath, parsePathReferences, unescapePathCandidate } from "./path-ref.js";
+import { findLeadingAbsolutePath, normalizeClipboardPath, parsePathReferences, unescapePathCandidate } from "./path-ref.js";
 
 async function withTempFile(name: string, run: (path: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "kako-path-ref-"));
@@ -14,6 +14,14 @@ async function withTempFile(name: string, run: (path: string) => Promise<void>):
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+describe("normalizeClipboardPath", () => {
+  it("normalizes carriage returns to newlines", () => {
+    expect(normalizeClipboardPath("[1] first\r[2] second\r\n[3] third")).toBe(
+      "[1] first\n[2] second\n[3] third",
+    );
+  });
+});
 
 describe("unescapePathCandidate", () => {
   it("unescapes shell-style special characters in pasted paths", () => {

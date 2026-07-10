@@ -218,6 +218,21 @@ export function IconChevronDown({ className }: IconProps) {
   );
 }
 
+export function IconAlertCircle({ className }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" fill="none" />
+      <path
+        d="M12 8v4M12 16h.01"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
 export function IconSettings({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true">

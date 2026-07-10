@@ -4,7 +4,7 @@ import {
   registerBuiltinTools,
   resolveAllToolNames,
   resolveAllowedToolNames,
-  DEFAULT_BUILTIN_TOOL_NAMES,
+  defaultBuiltinToolNamesForCapability,
 } from "../tools/builtin/registry.js";
 
 const baseContext = {
@@ -56,6 +56,8 @@ describe("tool exposure policy", () => {
   it("sub-agent with omitted tools falls back to default built-ins", () => {
     const registry = new ToolRegistry(baseContext);
     registerBuiltinTools(registry);
-    expect(resolveAllowedToolNames(undefined, registry)).toEqual(DEFAULT_BUILTIN_TOOL_NAMES);
+    expect(resolveAllowedToolNames(undefined, registry)).toEqual(
+      defaultBuiltinToolNamesForCapability("WorkspaceWrite"),
+    );
   });
 });

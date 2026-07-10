@@ -53,6 +53,16 @@ const scopePhase = (): PhaseView => ({
   ],
 });
 
+function borderDisplayCol(line: string, marker: string, occurrence = 0): number {
+  let seen = 0;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== marker) continue;
+    if (seen === occurrence) return displayWidth(line.slice(0, i));
+    seen++;
+  }
+  return -1;
+}
+
 describe("renderWorkflowsFullScreen", () => {
   it("renders list view with runId and hints", () => {
     const state = baseState({ view: "list", runs: [sampleRun(), sampleRun({ taskId: "w2", runId: "wf_2" })] });
@@ -135,6 +145,70 @@ describe("renderWorkflowsFullScreen", () => {
         expect(displayWidth(line)).toBe(cols);
       }
     }
+  });
+
+  it("keeps left, middle, and right border columns aligned across box rows", () => {
+    const state = baseState({
+      view: "detail",
+      detailFocus: "phase",
+      runs: [sampleRun({ status: "running", agentsDone: 34, agentsTotal: 54 })],
+      phases: [
+        {
+          title: "Scope",
+          detail:
+            "Decompose question (from args) into 5 search angles with independent coverage across market, policy, and consumer trends",
+          entered: true,
+          done: 1,
+          total: 1,
+          plannedTotal: 1,
+          failed: 0,
+          logs: ["Q: 中国母婴行业"],
+          agents: [
+            {
+              label: "scope",
+              status: "success",
+              model: "doubao-seed-2-0-pro-260215",
+              tokens: 100,
+              durationMs: 30_000,
+              outputSummary: "Decomposed into 5 angles",
+            },
+          ],
+        },
+        { title: "Search", entered: false, done: 0, total: 5, plannedTotal: 5, failed: 0, logs: [], agents: [] },
+      ],
+    });
+    const cols = 120;
+    const screen = renderWorkflowsFullScreen(state, cols, 30);
+    const boxLines = screen
+      .map((line) => stripAnsi(line))
+      .filter((line) => /[│┌└┬┴┐┘]/.test(line));
+
+    const leftCols = new Set<number>();
+    const midCols = new Set<number>();
+    const rightCols = new Set<number>();
+
+    for (const line of boxLines) {
+      const left = borderDisplayCol(line, "│", 0);
+      const leftCorner = borderDisplayCol(line, "┌", 0);
+      const leftEdge = left >= 0 ? left : leftCorner;
+      if (leftEdge >= 0) leftCols.add(leftEdge);
+
+      const mid = borderDisplayCol(line, "┬", 0);
+      const midBar = borderDisplayCol(line, "│", 1);
+      if (mid >= 0) midCols.add(mid);
+      else if (midBar > leftEdge) midCols.add(midBar);
+
+      const rightCorner = borderDisplayCol(line, "┐", 0);
+      const rightBar = borderDisplayCol(line, "│", 2);
+      const rightEnd = borderDisplayCol(line, "┘", 0);
+      if (rightBar > leftEdge) rightCols.add(rightBar);
+      if (rightCorner >= 0) rightCols.add(rightCorner);
+      if (rightEnd >= 0) rightCols.add(rightEnd);
+    }
+
+    expect(leftCols.size, `left border cols: ${[...leftCols]}`).toBe(1);
+    expect(midCols.size, `mid border cols: ${[...midCols]}`).toBe(1);
+    expect(rightCols.size, `right border cols: ${[...rightCols]}`).toBe(1);
   });
 
   it("shows check when a phase had failures but workflow continued", () => {

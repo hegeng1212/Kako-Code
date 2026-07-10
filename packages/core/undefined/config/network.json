@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "enabled": true,
+  "allowlist": [
+    "trusted.com"
+  ],
+  "blacklist": [],
+  "userAllowlist": [
+    "saved.com",
+    "new.com"
+  ],
+  "mcpNetworkDenials": []
+}

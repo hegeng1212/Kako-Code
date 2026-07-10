@@ -77,13 +77,14 @@ describe("ToolRegistry trusted scope", () => {
     if (kakoHome) await rm(kakoHome, { recursive: true, force: true });
   });
 
-  it("requires confirm for Write inside session cwd", async () => {
+  it("skips confirm for Write inside session cwd with FullAccess", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "kako-scope-cwd-"));
     const confirm = vi.fn(async () => false);
     const registry = new ToolRegistry({
       cwd: tempDir,
       sessionId: "sess",
       agentId: "agent",
+      capability: "FullAccess",
       confirm,
     });
     registry.register(writeToolDefinition, writeHandler);
@@ -94,8 +95,8 @@ describe("ToolRegistry trusted scope", () => {
       input: { file_path: join(tempDir, "notes.txt"), content: "hello" },
     });
 
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(result.status).toBe("denied");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(result.status).toBe("success");
   });
 
   it("skips confirm for low-risk Bash inside session cwd", async () => {
@@ -120,13 +121,37 @@ describe("ToolRegistry trusted scope", () => {
     expect(result.status).toBe("success");
   });
 
-  it("still confirms Write outside trusted roots", async () => {
+  it("still confirms high-risk Bash with FullAccess", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "kako-scope-bash-full-"));
+    const confirm = vi.fn(async () => false);
+    const registry = new ToolRegistry({
+      cwd: tempDir,
+      sessionId: "sess",
+      agentId: "agent",
+      capability: "FullAccess",
+      confirm,
+    });
+    const { bashHandler, bashToolDefinition } = await import("./builtin/bash.js");
+    registry.register(bashToolDefinition, bashHandler);
+
+    const result = await registry.execute({
+      id: "tu-bash-risky",
+      name: "Bash",
+      input: { command: "python add.py" },
+    });
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("denied");
+  });
+
+  it("still confirms Write outside trusted roots with WorkspaceWrite", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "kako-scope-out-"));
     const confirm = vi.fn(async () => false);
     const registry = new ToolRegistry({
       cwd: tempDir,
       sessionId: "sess",
       agentId: "agent",
+      capability: "WorkspaceWrite",
       confirm,
     });
     registry.register(writeToolDefinition, writeHandler);
@@ -142,7 +167,30 @@ describe("ToolRegistry trusted scope", () => {
     expect(result.status).toBe("denied");
   });
 
-  it("requires confirm for Write under KAKO_HOME", async () => {
+  it("skips confirm for Write outside trusted roots with FullAccess", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "kako-scope-out-full-"));
+    const confirm = vi.fn(async () => false);
+    const registry = new ToolRegistry({
+      cwd: tempDir,
+      sessionId: "sess",
+      agentId: "agent",
+      capability: "FullAccess",
+      confirm,
+    });
+    registry.register(writeToolDefinition, writeHandler);
+
+    const outside = join(tmpdir(), `kako-outside-full-${Date.now()}.txt`);
+    const result = await registry.execute({
+      id: "tu-write-out-full",
+      name: "Write",
+      input: { file_path: outside, content: "ok" },
+    });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(result.status).toBe("success");
+  });
+
+  it("skips confirm for Write under KAKO_HOME with FullAccess", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "kako-scope-session-"));
     kakoHome = await mkdtemp(join(tmpdir(), "kako-home-"));
     process.env.KAKO_HOME = kakoHome;
@@ -156,6 +204,7 @@ describe("ToolRegistry trusted scope", () => {
       cwd: tempDir,
       sessionId: "sess",
       agentId: "agent",
+      capability: "FullAccess",
       confirm,
     });
     registry.register(writeToolDefinition, writeHandler);
@@ -166,8 +215,8 @@ describe("ToolRegistry trusted scope", () => {
       input: { file_path: target, content: "skill note" },
     });
 
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(result.status).toBe("denied");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(result.status).toBe("success");
   });
 
   it("errors on Write with empty input without opening confirm", async () => {
@@ -192,13 +241,14 @@ describe("ToolRegistry trusted scope", () => {
     expect(result.error).toContain("incomplete");
   });
 
-  it("skips confirm for subsequent writes after session allow", async () => {
+  it("skips confirm for all writes in trusted workspace with FullAccess", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "kako-scope-session-writes-"));
     const confirm = vi.fn(async () => ({ allowed: true, sessionAllow: "writes" as const }));
     const registry = new ToolRegistry({
       cwd: tempDir,
       sessionId: "sess",
       agentId: "agent",
+      capability: "FullAccess",
       confirm,
     });
     registry.register(writeToolDefinition, writeHandler);
@@ -214,7 +264,7 @@ describe("ToolRegistry trusted scope", () => {
       input: { file_path: join(tempDir, "b.txt"), content: "two" },
     });
 
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
     expect(first.status).toBe("success");
     expect(second.status).toBe("success");
   });

@@ -10,7 +10,7 @@ import {
   renderUserMessage,
   type ChatTurn,
 } from "./chat-blocks.js";
-import { stripAnsi } from "./ansi.js";
+import { stripAnsi, ansi, displayWidth } from "./ansi.js";
 
 function baseTurn(overrides: Partial<ChatTurn> = {}): ChatTurn {
   return {
@@ -34,12 +34,45 @@ function baseTurn(overrides: Partial<ChatTurn> = {}): ChatTurn {
 }
 
 describe("chat-blocks", () => {
-  it("renders user message with spacing and indent", () => {
-    const lines = renderUserMessage("你好");
+  it("renders user message with full-width dark background", () => {
+    const cols = 80;
+    const lines = renderUserMessage("你好", cols);
     expect(lines[0]).toBe("");
+    expect(lines[1]).toContain(ansi.userMessageBg);
+    expect(lines[1]!.endsWith(ansi.reset)).toBe(true);
+    expect(displayWidth(lines[1]!.slice(0, lines[1]!.lastIndexOf(ansi.reset)))).toBe(cols);
+    expect(lines[1]!.startsWith("  ")).toBe(false);
     expect(stripAnsi(lines[1]!)).toContain("> 你好");
-    expect(lines[1]!.startsWith("  ")).toBe(true);
     expect(lines[2]).toBe("");
+  });
+
+  it("renders multiline user messages with continuation indent", () => {
+    const cols = 100;
+    const text = "[1] first line\n[2] second line";
+    const lines = renderUserMessage(text, cols);
+    expect(stripAnsi(lines[1]!)).toContain("> [1] first line");
+    expect(stripAnsi(lines[2]!)).toContain("  [2] second line");
+    expect(lines[1]).toContain(ansi.userMessageBg);
+    expect(lines[2]).toContain(ansi.userMessageBg);
+  });
+
+  it("keeps user message background through nested foreground resets", () => {
+    const cols = 120;
+    const lines = renderUserMessage("写到一个 md 文件里面", cols);
+    const line = lines[1]!;
+    const resetCount = line.split(ansi.reset).length - 1;
+    expect(resetCount).toBeGreaterThan(1);
+    expect(displayWidth(line.slice(0, line.lastIndexOf(ansi.reset)))).toBe(cols);
+  });
+
+  it("colors slash commands in user messages like the input box", () => {
+    const lines = renderUserMessage("/deep-research quarterly report", 100);
+    expect(lines[1]).toContain(ansi.planBorder);
+    expect(lines[1]).toContain(ansi.bold);
+    expect(stripAnsi(lines[1]!)).toContain("> /deep-research quarterly report");
+    const argsOnly = renderUserMessage("/deep-research", 100);
+    expect(argsOnly[1]).toContain(ansi.planBorder);
+    expect(stripAnsi(argsOnly[1]!).trimEnd()).toBe(`> /deep-research`);
   });
 
   it("renders smooshing line with hms duration", () => {
@@ -324,8 +357,34 @@ describe("chat-blocks", () => {
     expect(plain.some((l) => l.includes("read 1 file") && l.includes("click to collapse"))).toBe(
       true,
     );
-    expect(plain.some((l) => l.includes("⏺ Bash(ls -la)"))).toBe(true);
-    expect(plain.some((l) => l.includes("⏺ Read(/path/a.md)"))).toBe(true);
+    expect(plain.some((l) => l.includes("Bash(ls -la)"))).toBe(true);
+    expect(plain.some((l) => l.includes("Read(/path/a.md)"))).toBe(true);
+    expect(plain.some((l) => /⏺\s*Bash/.test(l))).toBe(false);
+  });
+
+  it("summarizes execution bash as ran 1 shell command with expanded output", () => {
+    const turn = baseTurn({
+      id: "t-bash-exec",
+      phase: "done",
+      finishedAt: Date.now(),
+      timeline: [
+        {
+          type: "tool",
+          id: "tool-1",
+          name: "Bash",
+          detail: "python3 add.py 15.6 28.3",
+          status: "success",
+          dotFrame: 0,
+          toolInput: { command: "python3 add.py 15.6 28.3" },
+          output: "计算结果: 15.6 + 28.3 = 43.9",
+        },
+      ],
+    });
+    turn.expandedToolGroups.add("t-bash-exec:tools:0");
+    const plain = renderTurnToLines(turn, 120).map((l) => stripAnsi(l.text));
+    expect(plain.some((l) => l.includes("ran 1 shell command"))).toBe(true);
+    expect(plain.some((l) => l.includes("Bash(python3 add.py 15.6 28.3)"))).toBe(true);
+    expect(plain.some((l) => l.includes("计算结果: 15.6 + 28.3 = 43.9"))).toBe(true);
   });
 
   it("keeps waiting tools visible outside collapsed groups", () => {

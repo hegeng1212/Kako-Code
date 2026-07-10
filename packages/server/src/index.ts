@@ -43,8 +43,23 @@ import {
   updateSearchRegistry,
   SEARCH_PROVIDER_PRESETS,
   testSearchProvider,
+  loadSecurityPolicy,
+  saveSecurityPolicy,
+  toSecuritySettingsFile,
+  applySecuritySettingsPatch,
+  loadNetworkPolicy,
+  saveNetworkPolicy,
+  parseNetworkPolicy,
 } from "@kako/core";
-import type { ProviderProfile, ProviderTestConfig, McpServerConfig, SearchProviderProfile } from "@kako/shared";
+import type {
+  NetworkConfigFile,
+  ProviderProfile,
+  ProviderTestConfig,
+  SecurityConfigFile,
+  McpServerConfig,
+  SearchProviderProfile,
+  SecurityConfigFile,
+} from "@kako/shared";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -201,6 +216,35 @@ app.post("/api/search/test", async (c) => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+// --- Security settings ---
+app.get("/api/security", async (c) => {
+  const cwd = process.cwd();
+  const policy = await loadSecurityPolicy(cwd);
+  return c.json(toSecuritySettingsFile(policy, cwd));
+});
+
+app.put("/api/security", async (c) => {
+  const body = await c.req.json<SecurityConfigFile>();
+  const cwd = process.cwd();
+  const existing = await loadSecurityPolicy(cwd);
+  const next = applySecuritySettingsPatch(existing, body, cwd);
+  await saveSecurityPolicy(next);
+  return c.json(toSecuritySettingsFile(await loadSecurityPolicy(cwd), cwd));
+});
+
+// --- Network settings ---
+app.get("/api/network", async (c) => {
+  const policy = await loadNetworkPolicy();
+  return c.json(policy);
+});
+
+app.put("/api/network", async (c) => {
+  const body = await c.req.json();
+  const policy = parseNetworkPolicy(body);
+  await saveNetworkPolicy(policy);
+  return c.json(policy);
 });
 
 // --- MCP servers ---

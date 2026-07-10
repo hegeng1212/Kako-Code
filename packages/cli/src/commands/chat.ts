@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import {
   agentCompletedSummary,
@@ -28,6 +30,8 @@ import {
   resolveUserTurnInput,
   sessionManager,
   TurnAbortedError,
+  getTranscriptLength,
+  truncateSessionTranscript,
   unregisterAgentCompleteHandler,
   unregisterWorkflowCompleteHandler,
   workflowCompletedSummary,
@@ -104,7 +108,7 @@ export async function runChat(cwdArg: string): Promise<void> {
   layout.start();
 
   const refreshInputHistory = async (): Promise<void> => {
-    await layout.syncInputHistoryFromSession(session.id);
+    await layout.syncInputHistoryFromSession(session.id, { merge: true });
   };
 
   const syncProviderFromDisk = async (): Promise<void> => {
@@ -259,7 +263,17 @@ export async function runChat(cwdArg: string): Promise<void> {
     onStreamUsage: (usage) => layout.setTurnTokens(usage.outputTokens),
     onToolStart: (name, toolInput) => {
       if (name === "AskUserQuestion" || name === "Skill") return;
-      layout.beginToolCall(name, summarizeInput(name, toolInput));
+      layout.beginToolCall(name, summarizeInput(name, toolInput), toolInput);
+      if (name === "Write" && toolInput) {
+        const writePath = String(toolInput.file_path ?? toolInput.path ?? "").trim();
+        if (writePath) {
+          try {
+            layout.updateLastWaitingToolPriorContent(readFileSync(writePath, "utf8"));
+          } catch {
+            // New file — no prior content to diff against.
+          }
+        }
+      }
       if (name === "Workflow") {
         refreshWorkflowUi(session.id);
       }
@@ -267,21 +281,20 @@ export async function runChat(cwdArg: string): Promise<void> {
     onToolEnd: (name, status, error, output, input) => {
       if (name === "AskUserQuestion" || name === "Skill") return;
       let displayOutput = output;
-      if (
-        status === "success" &&
-        (name === "Write" || name === "Edit") &&
-        input
-      ) {
+      if (status === "success" && (name === "Write" || name === "Edit") && input) {
         const detail = summarizeInput(name, input);
-        if (isPlanFileDetail(detail)) {
-          if (name === "Write" && (typeof input.content === "string" || typeof input.contents === "string")) {
-            displayOutput = String(input.content ?? input.contents);
-          } else {
-            const planPath = String(input.file_path ?? input.path ?? detail);
-            void readPlanFile(planPath).then((text) => {
-              if (text) layout.updateLastToolOutput(text);
-            });
-          }
+        if (name === "Write" && (typeof input.content === "string" || typeof input.contents === "string")) {
+          displayOutput = String(input.content ?? input.contents);
+        } else if (name === "Edit") {
+          const editPath = String(input.file_path ?? input.path ?? detail);
+          void readFile(editPath, "utf8").then((text) => {
+            if (text) layout.updateLastToolOutput(text);
+          });
+        } else if (isPlanFileDetail(detail)) {
+          const planPath = String(input.file_path ?? input.path ?? detail);
+          void readPlanFile(planPath).then((text) => {
+            if (text) layout.updateLastToolOutput(text);
+          });
         }
       }
       layout.finishToolCall(name, status, error, displayOutput);
@@ -292,7 +305,7 @@ export async function runChat(cwdArg: string): Promise<void> {
         void syncSessionPermissionMode("plan");
       }
     },
-    shouldAbort: () => layout.consumeTurnExitRequested(),
+    shouldAbort: () => layout.isTurnExitRequested(),
   });
 
   session = await harness.runtime.createSession();
@@ -328,38 +341,66 @@ export async function runChat(cwdArg: string): Promise<void> {
   });
 
   let firstPrompt = true;
+  let restoreInput: string | undefined;
+
+  const finalizeActiveTurn = async (
+    transcriptCountBefore: number,
+  ): Promise<"continue" | "exit"> => {
+    await flushPendingTaskNotification();
+    if (layout.consumeAppExitRequested()) {
+      await truncateSessionTranscript(session.id, transcriptCountBefore);
+      layout.discardActiveTurn();
+      await refreshInputHistory();
+      return "exit";
+    }
+    const restore = layout.consumeTurnRestoreInput();
+    if (layout.consumeTurnDiscardOnAbort()) {
+      await truncateSessionTranscript(session.id, transcriptCountBefore);
+      layout.discardActiveTurn();
+      if (restore) restoreInput = restore;
+    } else {
+      layout.finishTurn();
+    }
+    await refreshInputHistory();
+    return "continue";
+  };
 
   try {
-    while (true) {
+    chatLoop: while (true) {
       await syncProviderFromDisk();
       let line: string;
       try {
         line = await layout.readLine({
           placeholder: firstPrompt ? 'Try "explain this codebase"' : undefined,
           plain: !firstPrompt,
+          initialValue: restoreInput,
         });
       } catch (err) {
-        if (err instanceof ExitRequestedError) break;
+        if (err instanceof ExitRequestedError) break chatLoop;
         throw err;
       }
+      restoreInput = undefined;
       firstPrompt = false;
       await flushPendingTaskNotification();
 
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      const result = await handleSlashCommand(trimmed, slashCtx());
+      const submitLine = line.trimEnd();
+      const slashLine = line.split("\n")[0]?.trim() ?? "";
+
+      const result = await handleSlashCommand(slashLine, slashCtx());
 
       switch (result.type) {
         case "exit":
           break;
         case "handled": {
-          if (trimmed === "/help" || trimmed.startsWith("/help ")) {
+          if (slashLine === "/help" || slashLine.startsWith("/help ")) {
             layout.appendContent(formatSlashHelp());
-          } else if (trimmed === "/sessions" || trimmed.startsWith("/sessions ")) {
+          } else if (slashLine === "/sessions" || slashLine.startsWith("/sessions ")) {
             const sessions = await sessionManager.listSessions({ cwd });
             layout.appendContent(await formatSessionList(sessions));
-          } else if (trimmed.startsWith("/title")) {
+          } else if (slashLine.startsWith("/title")) {
             const meta = await sessionManager.getSessionMeta(session.id);
             layout.appendContent(
               renderInfo(`Session title: ${meta?.title ?? session.id}`),
@@ -396,6 +437,7 @@ export async function runChat(cwdArg: string): Promise<void> {
           );
           userTurn.llmText = llmText;
           userTurn.cliInput = true;
+          const transcriptCountBefore = await getTranscriptLength(session.id);
           layout.beginTurn(result.displayText);
           let runOptions;
           if (result.handler === "skill") {
@@ -410,32 +452,29 @@ export async function runChat(cwdArg: string): Promise<void> {
           try {
             await harness.runtime.runTurn(session, userTurn, runOptions);
           } catch (err) {
-            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break;
+            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break chatLoop;
             throw err;
           } finally {
-            layout.finishTurn();
-            await refreshInputHistory();
-            await flushPendingTaskNotification();
+            if ((await finalizeActiveTurn(transcriptCountBefore)) === "exit") break chatLoop;
           }
           continue;
         }
         case "message": {
           const userTurn = await resolveUserTurnInput(
             session.id,
-            trimmed,
-            layout.consumePendingAttachments(trimmed),
+            submitLine,
+            layout.consumePendingAttachments(submitLine),
           );
           userTurn.cliInput = true;
-          layout.beginTurn(userTurn.text.trim() || trimmed);
+          const transcriptCountBefore = await getTranscriptLength(session.id);
+          layout.beginTurn(userTurn.text.trim() || submitLine);
           try {
             await harness.runtime.runTurn(session, userTurn);
           } catch (err) {
-            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break;
+            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break chatLoop;
             throw err;
           } finally {
-            layout.finishTurn();
-            await refreshInputHistory();
-            await flushPendingTaskNotification();
+            if ((await finalizeActiveTurn(transcriptCountBefore)) === "exit") break chatLoop;
           }
           continue;
         }

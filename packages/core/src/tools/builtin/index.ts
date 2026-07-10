@@ -12,6 +12,7 @@ export {
   type BuiltinTool,
   BUILTIN_TOOLS,
   DEFAULT_BUILTIN_TOOL_NAMES,
+  defaultBuiltinToolNamesForCapability,
   registerBuiltinTools,
   resolveAllToolNames,
   resolveAllowedToolNames,

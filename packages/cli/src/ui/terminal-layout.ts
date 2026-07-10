@@ -9,6 +9,7 @@ import {
   primaryRunningWorkflow,
   readClipboardImage,
   readClipboardText,
+  writeClipboardText,
   readJournalEntries,
   saveWorkflowArtifact,
   stopWorkflowByRunId,
@@ -23,7 +24,6 @@ import {
 import type { AskUserQuestionItem, AskUserQuestionResult, UserAttachment } from "@kako/shared";
 import { extractImageLabelsInOrder, formatImageMarker, nextImageIndexFromText } from "./image-markers.js";
 import type { ClaudeFooterParts } from "./box.js";
-import { renderClaudeInputLine } from "./box.js";
 import {
   CHAT_TIPS,
   isThoughtSummaryLine,
@@ -42,9 +42,26 @@ import {
   type ToolCallTimelineEntry,
   type TurnTimelineEntry,
 } from "./chat-blocks.js";
-import { isToolErrorToggleLine, isToolGroupToggleLine, isPlanToolToggleLine } from "./tool-call-display.js";
+import { isToolErrorToggleLine, isToolGroupToggleLine, isPlanToolToggleLine, isWriteToolToggleLine, isEditToolToggleLine } from "./tool-call-display.js";
 import { isChoiceToggleLine } from "./ask-user-question-display.js";
-import { wrapContentLines } from "./text-wrap.js";
+import {
+  INPUT_MAX_VISIBLE_LINES,
+  clampInputScrollRow,
+  cursorLogicalLine,
+  insertNewlineAtCursor,
+  moveCursorDown,
+  moveCursorUp,
+  renderMultilineInput,
+  shouldBrowseHistoryOnDown,
+  shouldBrowseHistoryOnUp,
+  inputBlockRowCount,
+  inputOffsetFromScreen,
+  lineEndOffset,
+  lineStartOffset,
+  normalizeSelectionRange,
+  selectedText,
+  type InputSelectionRange,
+} from "./multiline-input.js";
 import { renderRichContentLines } from "./markdown-render.js";
 import {
   CHOICE_HINT,
@@ -70,7 +87,7 @@ import {
   type PlanReviewDecision,
 } from "./plan-review.js";
 import { openFileInEditor, openPlanInEditor, readPlanFileText } from "./open-editor.js";
-import { renderHistorySeparator, renderPlanModeFooterHint } from "./input-footer.js";
+import { renderHistorySeparator, renderInputCopyHint, renderPlanModeFooterHint } from "./input-footer.js";
 import {
   completeSlashSuggestion,
   filterSlashSuggestions,
@@ -145,7 +162,48 @@ const BRACKETED_PASTE_END = "\x1b[201~";
 /** Disable all mouse tracking including motion (preserves drag-to-select). */
 const DISABLE_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1006l\x1b[?1000l";
 
+function restoreStdinCookedMode(): void {
+  if (process.stdin.isTTY && process.stdin.isRaw) {
+    try {
+      process.stdin.setRawMode(false);
+    } catch {
+      // ignore — stdin may already be closed
+    }
+  }
+}
+
+function resetTerminalInputModes(): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write(DISABLE_MOUSE);
+  process.stdout.write(DISABLE_BRACKETED_PASTE);
+  process.stdout.write(DISABLE_FOCUS_REPORTING);
+  process.stdout.write(SHOW_CURSOR);
+}
+
+let activeChatLayout: ChatLayout | null = null;
+let terminalExitHooksInstalled = false;
+
+function installTerminalExitHooks(): void {
+  if (terminalExitHooksInstalled) return;
+  terminalExitHooksInstalled = true;
+  const restore = (): void => {
+    activeChatLayout?.restoreTerminalOnExit();
+  };
+  process.on("exit", restore);
+  process.on("uncaughtException", (err) => {
+    restore();
+    throw err;
+  });
+  process.on("unhandledRejection", () => {
+    restore();
+  });
+}
+
+/** Enable button-drag reporting for input text selection. */
+const ENABLE_MOUSE_DRAG = "\x1b[?1002h";
+const DISABLE_MOUSE_DRAG = "\x1b[?1002l";
 const CTRL_C_EXIT_MS = 2000;
+const COPY_HINT_MS = 2000;
 const EXIT_HINT_MS = 1000;
 const EXIT_HINT = "Press Ctrl+C again to exit";
 const HISTORY_CLEAR_HINT_MS = 2000;
@@ -197,6 +255,14 @@ function clearLine(): string {
 }
 
 function padToWidth(line: string, width: number): string {
+  if (line.startsWith(ansi.userMessageBg)) {
+    const resetAt = line.lastIndexOf(ansi.reset);
+    const inner = resetAt >= 0 ? line.slice(0, resetAt) : line;
+    const w = displayWidth(inner);
+    if (w >= width) return line;
+    const pad = " ".repeat(width - w);
+    return resetAt >= 0 ? `${inner}${pad}${line.slice(resetAt)}` : `${inner}${pad}`;
+  }
   const len = visibleLength(line);
   if (len >= width) return line;
   return line + " ".repeat(width - len);
@@ -208,6 +274,7 @@ export { wrapContentLines } from "./text-wrap.js";
 type InputAction =
   | { type: "char"; char: string }
   | { type: "enter" }
+  | { type: "newline" }
   | { type: "backspace" }
   | { type: "cursorLeft" }
   | { type: "cursorRight" }
@@ -220,6 +287,9 @@ type InputAction =
   | { type: "paste" }
   | { type: "pasteText"; text: string }
   | { type: "scroll"; delta: number }
+  | { type: "mouseDown"; row: number; col: number }
+  | { type: "mouseDrag"; row: number; col: number }
+  | { type: "mouseUp"; row: number; col: number }
   | { type: "click"; row: number; col: number }
   | { type: "focusIn" }
   | { type: "interrupt" }
@@ -288,6 +358,26 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
         i += 3;
         continue;
       }
+      if (rest.startsWith("\x1b\r") || rest.startsWith("\x1b\n")) {
+        actions.push({ type: "newline" });
+        i += 2;
+        continue;
+      }
+
+      const csiu = rest.match(/^\x1b\[(\d+)(?:;(\d+))?u/);
+      if (csiu) {
+        const key = Number(csiu[1]);
+        const mod = Number(csiu[2] ?? 1);
+        if (key === 13) {
+          if (mod & 2) {
+            actions.push({ type: "newline" });
+          } else {
+            actions.push({ type: "enter" });
+          }
+          i += csiu[0].length;
+          continue;
+        }
+      }
 
       const x10 = rest.match(/^\x1b\[M([\x20-\x7e])([\x21-\x7e])([\x21-\x7e])/);
       if (x10) {
@@ -298,7 +388,7 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
           actions.push({ type: "scroll", delta: 3 });
         } else if (btn !== 3) {
           actions.push({
-            type: "click",
+            type: "mouseDown",
             col: x10[2]!.charCodeAt(0) - 32,
             row: x10[3]!.charCodeAt(0) - 32,
           });
@@ -320,10 +410,14 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
         } else if (!release) {
           const modifiers = btn & (4 | 8 | 16);
           const button = btn & 3;
-          // Ignore shift/alt/ctrl clicks so the terminal can select text.
-          if (modifiers === 0 && button === 0) {
-            actions.push({ type: "click", col, row });
+          const motion = (btn & 32) !== 0;
+          if (modifiers === 0 && motion && button === 0) {
+            actions.push({ type: "mouseDrag", col, row });
+          } else if (modifiers === 0 && button === 0) {
+            actions.push({ type: "mouseDown", col, row });
           }
+        } else if (release && (btn & (4 | 8 | 16)) === 0 && (btn & 3) === 0) {
+          actions.push({ type: "mouseUp", col, row });
         }
         i += sgr[0].length;
         continue;
@@ -394,7 +488,7 @@ export function parseInputActions(data: string): { actions: InputAction[]; rest:
 }
 
 /** Coalesce char/enter bursts that look like unbracketed terminal paste. */
-export async function coalescePasteActions(actions: InputAction[]): Promise<InputAction[]> {
+export function coalescePasteActions(actions: InputAction[]): InputAction[] {
   if (actions.length >= 2 && actions.every((action) => action.type === "char")) {
     const text = actions.map((action) => (action.type === "char" ? action.char : "")).join("");
     return [{ type: "pasteText", text }];
@@ -414,6 +508,83 @@ export async function coalescePasteActions(actions: InputAction[]): Promise<Inpu
     }
   }
   return actions;
+}
+
+export type ContentClickAction =
+  | { type: "toggleThought"; turnId: string }
+  | { type: "toggleToolGroup"; turnId: string; groupId: string }
+  | { type: "toggleChoice"; turnId: string; choiceId: string }
+  | { type: "toggleToolError"; turnId: string; toolId: string }
+  | { type: "togglePlanTool"; turnId: string; toolId: string }
+  | { type: "toggleWriteTool"; turnId: string; toolId: string }
+  | { type: "toggleEditTool"; turnId: string; toolId: string };
+
+/** Map a screen row to a scrollable content line index, or null when out of range. */
+export function contentLineIndexFromScreen(
+  screenRow: number,
+  headerHeight: number,
+  scrollHeight: number,
+): number | null {
+  const index = screenRow - (headerHeight + 1);
+  if (index < 0 || index >= scrollHeight) return null;
+  return index;
+}
+
+export function visibleRenderLinesAtScroll(
+  allLines: RenderLine[],
+  scrollOffset: number,
+  scrollHeight: number,
+): RenderLine[] {
+  const maxOffset = Math.max(0, allLines.length - scrollHeight);
+  const offset = Math.min(scrollOffset, maxOffset);
+  return allLines.slice(offset, offset + scrollHeight);
+}
+
+export function resolveContentClickAction(line: RenderLine | undefined): ContentClickAction | null {
+  if (!line?.meta) return null;
+  if (isThoughtSummaryLine(line) && line.meta.turnId) {
+    return { type: "toggleThought", turnId: line.meta.turnId };
+  }
+  if (isToolGroupToggleLine(line.meta) && line.meta.groupId) {
+    return { type: "toggleToolGroup", turnId: line.meta.turnId, groupId: line.meta.groupId };
+  }
+  if (isChoiceToggleLine(line.meta) && line.meta.choiceId) {
+    return { type: "toggleChoice", turnId: line.meta.turnId, choiceId: line.meta.choiceId };
+  }
+  if (isToolErrorToggleLine(line.meta) && line.meta.toolId) {
+    return { type: "toggleToolError", turnId: line.meta.turnId, toolId: line.meta.toolId };
+  }
+  if (isPlanToolToggleLine(line.meta) && line.meta.toolId) {
+    return { type: "togglePlanTool", turnId: line.meta.turnId, toolId: line.meta.toolId };
+  }
+  if (isWriteToolToggleLine(line.meta) && line.meta.toolId) {
+    return { type: "toggleWriteTool", turnId: line.meta.turnId, toolId: line.meta.toolId };
+  }
+  if (isEditToolToggleLine(line.meta) && line.meta.toolId) {
+    return { type: "toggleEditTool", turnId: line.meta.turnId, toolId: line.meta.toolId };
+  }
+  return null;
+}
+
+export function contentClickMousePhase(
+  mouseDragTracking: boolean,
+  phase: "mouseDown" | "mouseUp",
+): "click" | "ignore" {
+  if (mouseDragTracking) return phase === "mouseUp" ? "click" : "ignore";
+  return phase === "mouseDown" ? "click" : "ignore";
+}
+
+export function resolveContentClickTarget(opts: {
+  allLines: RenderLine[];
+  scrollOffset: number;
+  scrollHeight: number;
+  screenRow: number;
+  headerHeight: number;
+}): ContentClickAction | null {
+  const index = contentLineIndexFromScreen(opts.screenRow, opts.headerHeight, opts.scrollHeight);
+  if (index === null) return null;
+  const visible = visibleRenderLinesAtScroll(opts.allLines, opts.scrollOffset, opts.scrollHeight);
+  return resolveContentClickAction(visible[index]);
 }
 
 function footerSeparator(cols: number): string {
@@ -456,6 +627,16 @@ export class ChatLayout {
   private inputReject: ((reason: ExitRequestedError) => void) | null = null;
   private inputBuffer = "";
   private inputCursor = 0;
+  private inputScrollRow = 0;
+  private inputRowsScreenStart = 0;
+  private inputRowsScreenCount = 0;
+  private inputSelectAnchor: number | null = null;
+  private inputSelectEnd: number | null = null;
+  private inputMouseSelecting = false;
+  /** True while ?1002 is on — clicks resolve on mouseUp; otherwise on mouseDown (X10). */
+  private mouseDragTracking = false;
+  private copyHintText: string | null = null;
+  private copyHintTimer: ReturnType<typeof setTimeout> | null = null;
   private stdinRest = "";
   private inputRow = 0;
   private readingLine = false;
@@ -468,6 +649,12 @@ export class ChatLayout {
   private lastCtrlCAt = 0;
   /** Set when user presses Ctrl+C during an active turn (streaming, not in a picker). */
   private turnExitRequested = false;
+  /** Drop the in-flight turn instead of committing it to chat history. */
+  private turnDiscardOnAbort = false;
+  /** Restore this prompt to the input box after Esc cancels a turn. */
+  private turnRestoreInput: string | null = null;
+  /** Second Ctrl+C during an active turn — exit the chat session. */
+  private appExitRequested = false;
   private activeFooterHeight = CHAT_FOOTER_HEIGHT;
   private choiceResolve: ((row: ChoiceRow) => void) | null = null;
   private choiceReject: ((reason: Error) => void) | null = null;
@@ -533,6 +720,7 @@ export class ChatLayout {
   private toolApprovalSelected = 0;
   private toolApprovalResolve: ((result: ToolConfirmResult) => void) | null = null;
   private pendingToolApprovalCall: ToolCall | null = null;
+  private pendingToolApprovalCwd: string | undefined;
 
   private inputHistory = new InputHistory();
   private permissionMode: PermissionMode = "default";
@@ -545,8 +733,8 @@ export class ChatLayout {
 
   setPermissionMode(mode: PermissionMode): void {
     this.permissionMode = mode;
-    if (this.readingLine && this.active) {
-      this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
+    if (this.active) {
+      this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
     }
   }
 
@@ -634,10 +822,18 @@ export class ChatLayout {
     this.pendingImages = [];
   }
 
-  async syncInputHistoryFromSession(sessionId: string): Promise<void> {
+  async syncInputHistoryFromSession(
+    sessionId: string,
+    options?: { merge?: boolean },
+  ): Promise<void> {
     const memory = new FileMemoryStore(sessionId);
     const transcript = await memory.loadTranscript();
-    this.inputHistory.loadEntries(sessionInputHistory(transcript));
+    const fromTranscript = sessionInputHistory(transcript);
+    if (options?.merge) {
+      this.inputHistory.mergeFromTranscript(fromTranscript);
+    } else {
+      this.inputHistory.loadEntries(fromTranscript);
+    }
   }
 
   setSlashInvokableSkills(skills: SystemSkillEntry[]): void {
@@ -646,6 +842,63 @@ export class ChatLayout {
 
   isTurnInProgress(): boolean {
     return Boolean(this.activeTurn && this.activeTurn.phase !== "done");
+  }
+
+  private canInterruptActiveTurn(): boolean {
+    return (
+      this.isTurnInProgress() &&
+      !this.readingChoice &&
+      !this.readingConfirm &&
+      !this.planReviewMode &&
+      !this.workflowConfirmMode &&
+      !this.toolApprovalMode &&
+      !this.readingWorkflowsPanel
+    );
+  }
+
+  /** Esc during generation — abort, discard UI turn, restore prompt for editing. */
+  requestTurnCancelForEdit(): void {
+    if (!this.canInterruptActiveTurn() || !this.activeTurn) return;
+    this.turnRestoreInput = this.activeTurn.userText;
+    this.turnDiscardOnAbort = true;
+    this.turnExitRequested = true;
+  }
+
+  consumeTurnDiscardOnAbort(): boolean {
+    const discard = this.turnDiscardOnAbort;
+    this.turnDiscardOnAbort = false;
+    return discard;
+  }
+
+  consumeTurnRestoreInput(): string | undefined {
+    const text = this.turnRestoreInput;
+    this.turnRestoreInput = null;
+    return text ?? undefined;
+  }
+
+  consumeAppExitRequested(): boolean {
+    const requested = this.appExitRequested;
+    this.appExitRequested = false;
+    return requested;
+  }
+
+  discardActiveTurn(): void {
+    if (!this.activeTurn) return;
+    this.activeTurn = null;
+    this.turnExitRequested = false;
+    this.turnDiscardOnAbort = false;
+    this.turnRestoreInput = null;
+    this.tipText = null;
+    this.stopTurnTick();
+    this.clearExitHint();
+    this.shortcutsOverride = null;
+    this.followBottom = true;
+    this.invalidateContentCache();
+    this.redrawContent();
+  }
+
+  hasActiveTurn(): boolean {
+    return this.activeTurn !== null;
   }
 
   appendWorkflowCompletedEvent(text: string): void {
@@ -705,8 +958,13 @@ export class ChatLayout {
         this.drawWorkflowsPanel();
         return;
       }
+      if (this.isFooterOverlayActive()) {
+        this.invalidateContentCache();
+        this.redrawContent();
+        return;
+      }
       if (this.readingLine && !this.inputBuffer.length) {
-        this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
+        this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
       } else {
         this.invalidateContentCache();
         this.redrawContent();
@@ -768,6 +1026,8 @@ export class ChatLayout {
   }
 
   start(): void {
+    installTerminalExitHooks();
+    activeChatLayout = this;
     this.active = true;
     process.stdout.write(ENTER_ALT_SCREEN);
     process.stdout.write(HIDE_CURSOR);
@@ -800,8 +1060,19 @@ export class ChatLayout {
       this.redrawDebounceTimer = null;
     }
     process.stdout.write(LEAVE_ALT_SCREEN);
-    process.stdout.write(SHOW_CURSOR);
     this.active = false;
+    if (activeChatLayout === this) activeChatLayout = null;
+  }
+
+  /** Best-effort terminal restore when the process exits or crashes mid-session. */
+  restoreTerminalOnExit(): void {
+    restoreStdinCookedMode();
+    resetTerminalInputModes();
+    if (this.active) {
+      process.stdout.write(LEAVE_ALT_SCREEN);
+      this.active = false;
+    }
+    if (activeChatLayout === this) activeChatLayout = null;
   }
 
   private scheduleFullRedraw(): void {
@@ -834,14 +1105,8 @@ export class ChatLayout {
       this.inputListener = null;
     }
     this.teardownInput();
-    if (process.stdin.isTTY && process.stdin.isRaw) {
-      process.stdin.setRawMode(false);
-    }
-    if (process.stdout.isTTY) {
-      process.stdout.write(DISABLE_MOUSE);
-      process.stdout.write(DISABLE_BRACKETED_PASTE);
-      process.stdout.write(DISABLE_FOCUS_REPORTING);
-    }
+    restoreStdinCookedMode();
+    resetTerminalInputModes();
   }
 
   private onInput(chunk: string): void {
@@ -879,9 +1144,29 @@ export class ChatLayout {
   }
 
   private async dispatchInputActions(actions: InputAction[]): Promise<void> {
-    const expanded = await this.coalesceCharPasteActions(actions);
+    try {
+      const expanded = await this.expandPasteActions(actions);
 
-    for (const action of expanded) {
+      for (const action of expanded) {
+      if (action.type === "mouseDown" || action.type === "mouseDrag" || action.type === "mouseUp") {
+        const inInput = this.isInputMouseRow(action.row);
+        if (inInput) {
+          this.handleInputMouse(action);
+          continue;
+        }
+        if (action.type === "mouseDown" && this.readingLine) {
+          this.clearInputSelection();
+          this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
+        } else if (action.type === "mouseDown" || action.type === "mouseUp") {
+          if (this.inputMouseSelecting && action.type === "mouseUp") {
+            this.clearInputSelection();
+            this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
+          } else if (!this.inputMouseSelecting) {
+            this.handleContentMouseClick(action.type, action.row, action.col);
+          }
+        }
+        continue;
+      }
       if (action.type === "click") {
         this.handleClick(action.row, action.col);
         continue;
@@ -900,8 +1185,29 @@ export class ChatLayout {
           this.handleReadLineAction(action);
           continue;
         }
-        if (this.activeTurn) {
+        if (this.canInterruptActiveTurn()) {
+          const now = Date.now();
+          if (this.lastCtrlCAt && now - this.lastCtrlCAt < CTRL_C_EXIT_MS) {
+            this.appExitRequested = true;
+            this.turnExitRequested = true;
+            this.lastCtrlCAt = 0;
+            continue;
+          }
+          this.lastCtrlCAt = now;
           this.turnExitRequested = true;
+          this.showExitHint();
+          this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
+          continue;
+        }
+        continue;
+      }
+      if (action.type === "escape") {
+        if (this.readingLine) {
+          this.handleReadLineAction(action);
+          continue;
+        }
+        if (this.canInterruptActiveTurn()) {
+          this.requestTurnCancelForEdit();
           continue;
         }
         continue;
@@ -909,13 +1215,21 @@ export class ChatLayout {
       if (this.readingLine) {
         this.handleReadLineAction(action);
       }
+      }
+    } catch (err) {
+      console.error("[kako] input dispatch failed:", err);
     }
+  }
+
+  /** Merge char/enter bursts from unbracketed paste, then absolute-path paste chunks. */
+  private async expandPasteActions(actions: InputAction[]): Promise<InputAction[]> {
+    return this.coalesceCharPasteActions(coalescePasteActions(actions));
   }
 
   /** Terminals without bracketed paste may deliver a file path as one chunk of char actions. */
   private async coalesceCharPasteActions(actions: InputAction[]): Promise<InputAction[]> {
-    if (actions.length < 2 || !actions.every((action) => action.type === "char")) {
-      return actions;
+    if (!Array.isArray(actions) || actions.length < 2 || !actions.every((action) => action.type === "char")) {
+      return Array.isArray(actions) ? actions : [];
     }
     const text = actions.map((action) => (action.type === "char" ? action.char : "")).join("");
     if (!text.startsWith("/")) {
@@ -1378,9 +1692,7 @@ export class ChatLayout {
       return;
     }
     if (action.type === "escape") {
-      if (this.inputHistory.isBrowsing()) {
-        this.handleHistoryBrowseEscape(plain, placeholder);
-      }
+      this.handleInputEscape(plain, placeholder);
       return;
     }
     if (action.type === "enter") {
@@ -1398,6 +1710,20 @@ export class ChatLayout {
       process.stdout.write(HIDE_CURSOR);
       this.drawFooter("", plain ? undefined : placeholder);
       resolve?.(value);
+      return;
+    }
+    if (action.type === "newline") {
+      this.clearInputClearHint();
+      this.clearCopyHint();
+      this.clearInputSelection();
+      if (this.inputHistory.isBrowsing()) {
+        this.inputHistory.resetBrowse();
+      }
+      const next = insertNewlineAtCursor(this.inputBuffer, this.inputCursor);
+      this.inputBuffer = next.text;
+      this.inputCursor = next.cursor;
+      this.syncInputScrollRow();
+      this.refreshInputFooter(plain, placeholder);
       return;
     }
     if (slashOpen && action.type === "historyUp") {
@@ -1422,24 +1748,39 @@ export class ChatLayout {
       return;
     }
     if (action.type === "historyUp") {
-      this.clearHistoryClearHint();
-      const next = this.inputHistory.browseUp(this.inputBuffer);
-      if (next !== null) {
-        this.inputBuffer = next;
-        this.inputCursor = next.length;
+      if (!shouldBrowseHistoryOnUp(this.inputBuffer, this.inputCursor)) {
+        this.inputCursor = moveCursorUp(this.inputBuffer, this.inputCursor);
+        this.syncInputScrollRow();
+      } else {
+        this.clearInputClearHint();
+        const next = this.inputHistory.browseUp(this.inputBuffer);
+        if (next !== null) {
+          this.inputBuffer = next;
+          this.inputCursor = next.length;
+          this.inputScrollRow = 0;
+        }
       }
     } else if (action.type === "historyDown") {
-      this.clearHistoryClearHint();
-      const next = this.inputHistory.browseDown();
-      if (next !== null) {
-        this.inputBuffer = next;
-        this.inputCursor = next.length;
+      if (!shouldBrowseHistoryOnDown(this.inputBuffer, this.inputCursor)) {
+        this.inputCursor = moveCursorDown(this.inputBuffer, this.inputCursor);
+        this.syncInputScrollRow();
+      } else {
+        this.clearInputClearHint();
+        const next = this.inputHistory.browseDown();
+        if (next !== null) {
+          this.inputBuffer = next;
+          const restoredDraft = !this.inputHistory.isBrowsing();
+          this.inputCursor = restoredDraft ? 0 : next.length;
+          this.inputScrollRow = 0;
+        }
       }
     } else if (action.type === "shiftTab") {
       this.cyclePermissionMode();
       return;
     } else if (action.type === "backspace") {
-      this.clearHistoryClearHint();
+      this.clearInputClearHint();
+      this.clearCopyHint();
+      this.clearInputSelection();
       if (this.inputHistory.isBrowsing()) {
         this.inputHistory.resetBrowse();
       }
@@ -1449,6 +1790,7 @@ export class ChatLayout {
           this.inputBuffer.slice(0, prev) + this.inputBuffer.slice(this.inputCursor);
         this.inputCursor = prev;
       }
+      this.syncInputScrollRow();
       if (this.inputBuffer.length === 0 && !this.exitHintTimer) {
         this.shortcutsOverride = null;
       }
@@ -1457,9 +1799,9 @@ export class ChatLayout {
     } else if (action.type === "cursorRight") {
       this.inputCursor = nextCodePointIndex(this.inputBuffer, this.inputCursor);
     } else if (action.type === "cursorHome") {
-      this.inputCursor = 0;
+      this.inputCursor = this.lineStartOffsetForInput(this.inputBuffer, this.inputCursor);
     } else if (action.type === "cursorEnd") {
-      this.inputCursor = this.inputBuffer.length;
+      this.inputCursor = this.lineEndOffsetForInput(this.inputBuffer, this.inputCursor);
     } else if (action.type === "paste") {
       void this.handlePaste();
     } else if (action.type === "pasteText") {
@@ -1467,7 +1809,9 @@ export class ChatLayout {
     } else if (action.type === "char") {
       this.lastCtrlCAt = 0;
       this.clearExitHint();
-      this.clearHistoryClearHint();
+      this.clearInputClearHint();
+      this.clearCopyHint();
+      this.clearInputSelection();
       if (this.inputHistory.isBrowsing()) {
         this.inputHistory.resetBrowse();
       }
@@ -1476,6 +1820,7 @@ export class ChatLayout {
         action.char +
         this.inputBuffer.slice(this.inputCursor);
       this.inputCursor += action.char.length;
+      this.syncInputScrollRow();
     } else {
       // enter / interrupt handled above
     }
@@ -1492,13 +1837,35 @@ export class ChatLayout {
     this.lastSlashSuggestQuery = slashSuggestQuery(this.inputBuffer, this.inputCursor) ?? "";
   }
 
+  private syncInputScrollRow(): void {
+    const cursorLine = cursorLogicalLine(this.inputBuffer, this.inputCursor);
+    const totalLines = Math.max(1, this.inputBuffer.split("\n").length);
+    this.inputScrollRow = clampInputScrollRow(
+      this.inputScrollRow,
+      cursorLine,
+      totalLines,
+      INPUT_MAX_VISIBLE_LINES,
+    );
+  }
+
+  private lineStartOffsetForInput(text: string, cursor: number): number {
+    return lineStartOffset(text, cursorLogicalLine(text, cursor));
+  }
+
+  private lineEndOffsetForInput(text: string, cursor: number): number {
+    return lineEndOffset(text, cursorLogicalLine(text, cursor));
+  }
+
   private filteredSlashSuggestions(): SystemSkillEntry[] {
     if (!this.readingLine || this.readingChoice || this.wizardMode || this.readingWorkflowsPanel) {
       return [];
     }
     if (this.inputHistory.isBrowsing()) return [];
-    if (!shouldShowSlashMenu(this.inputBuffer, this.inputCursor)) return [];
-    const query = slashSuggestQuery(this.inputBuffer, this.inputCursor);
+    if (cursorLogicalLine(this.inputBuffer, this.inputCursor) !== 0) return [];
+    const lineText = this.inputBuffer.slice(0, lineEndOffset(this.inputBuffer, 0));
+    const lineCursor = this.inputCursor;
+    if (!shouldShowSlashMenu(lineText, lineCursor)) return [];
+    const query = slashSuggestQuery(lineText, lineCursor);
     if (query === null) return [];
     return filterSlashSuggestions(query, this.slashInvokableSkills);
   }
@@ -1518,9 +1885,20 @@ export class ChatLayout {
     }
   }
 
-  private updateSlashSuggestFooterHeight(suggestions: SystemSkillEntry[]): void {
+  private currentInputFooterHeight(inputValue: string): number {
+    const { cols } = getTerminalSize();
+    const rows = inputBlockRowCount(inputValue, this.inputScrollRow, cols);
+    const topHintRow = this.readingLine && this.inputTopHintText() ? 1 : 0;
+    return 3 + rows + topHintRow;
+  }
+
+  private updateSlashSuggestFooterHeight(
+    suggestions: SystemSkillEntry[],
+    inputValue = this.inputBuffer,
+  ): void {
+    const inputFooterHeight = this.currentInputFooterHeight(inputValue);
     if (!suggestions.length) {
-      this.activeFooterHeight = this.defaultFooterHeight;
+      this.activeFooterHeight = this.clampFooterHeight(inputFooterHeight);
       this.slashSuggestMaxVisible = 4;
       return;
     }
@@ -1530,7 +1908,7 @@ export class ChatLayout {
       selectedIndex: this.slashSuggestSelected,
       cols,
       maxHeight: this.maxFooterHeight(),
-      inputFooterHeight: this.defaultFooterHeight,
+      inputFooterHeight,
     });
     this.activeFooterHeight = plan.height;
     this.slashSuggestMaxVisible = plan.maxVisible > 0 ? plan.maxVisible : 4;
@@ -1557,6 +1935,42 @@ export class ChatLayout {
     );
   }
 
+  /** True when a modal footer (approval, picker, etc.) owns the bottom of the screen. */
+  private isFooterOverlayActive(): boolean {
+    return (
+      this.toolApprovalMode ||
+      this.planReviewMode ||
+      this.workflowConfirmMode ||
+      this.readingChoice ||
+      this.readingWorkflowsPanel
+    );
+  }
+
+  /** Route footer paint to the active panel — never stack chat input on overlays. */
+  private drawActiveFooter(inputValue = this.inputBuffer, placeholder?: string): void {
+    if (this.toolApprovalMode) {
+      this.drawToolApprovalFooter();
+      return;
+    }
+    if (this.workflowConfirmMode) {
+      this.drawWorkflowConfirmFooter();
+      return;
+    }
+    if (this.planReviewMode) {
+      this.drawPlanReviewFooter();
+      return;
+    }
+    if (this.readingWorkflowsPanel) {
+      this.drawWorkflowsPanel();
+      return;
+    }
+    if (this.readingChoice) {
+      this.drawActiveChoiceFooter();
+      return;
+    }
+    this.drawFooter(inputValue, placeholder);
+  }
+
   private async handlePaste(): Promise<void> {
     if (!this.sessionId) return;
     const clip = await readClipboardImage();
@@ -1571,6 +1985,7 @@ export class ChatLayout {
 
   private async handlePasteContent(raw: string): Promise<void> {
     if (!this.sessionId) return;
+    this.clearInputSelection();
     const text = normalizeClipboardPath(raw);
     if (!text) return;
     if (text.includes("\n")) {
@@ -1617,34 +2032,43 @@ export class ChatLayout {
 
   private insertAtCursor(text: string): void {
     if (this.readingLine) {
-      this.clearHistoryClearHint();
+      this.clearInputClearHint();
       if (this.inputHistory.isBrowsing()) {
         this.inputHistory.resetBrowse();
       }
     }
+    const normalized = text.replace(/\r\n?/g, "\n");
     this.inputBuffer =
-      this.inputBuffer.slice(0, this.inputCursor) + text + this.inputBuffer.slice(this.inputCursor);
-    this.inputCursor += text.length;
+      this.inputBuffer.slice(0, this.inputCursor) +
+      normalized +
+      this.inputBuffer.slice(this.inputCursor);
+    this.inputCursor += normalized.length;
+    this.syncInputScrollRow();
     if (this.readingLine) {
       this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
     }
   }
 
   private finishReadLine(): void {
-    this.clearHistoryClearHint();
+    this.clearInputClearHint();
     this.inputResolve = null;
     this.inputReject = null;
     this.readingLine = false;
     this.inputBuffer = "";
     this.inputCursor = 0;
+    this.inputScrollRow = 0;
     this.readLinePlaceholder = undefined;
     this.slashSuggestSelected = 0;
     this.lastSlashSuggestQuery = "";
     this.slashFooterDrawExtent = { top: 0, rows: 0 };
     this.slashSuggestMaxVisible = 4;
+    this.inputScrollRow = 0;
     if (!this.readingChoice && !this.readingWorkflowsPanel) {
       this.activeFooterHeight = this.defaultFooterHeight;
     }
+    this.disableMouseDragTracking();
+    this.clearInputSelection();
+    this.clearCopyHint();
   }
 
   private scrollableHeaderLines(): RenderLine[] {
@@ -1824,7 +2248,7 @@ export class ChatLayout {
     this.redrawContent();
   }
 
-  beginToolCall(name: string, detail: string): void {
+  beginToolCall(name: string, detail: string, toolInput?: Record<string, unknown>): void {
     if (!this.activeTurn) {
       this.appendContent(`${name} ${detail}`.trim());
       return;
@@ -1837,6 +2261,7 @@ export class ChatLayout {
       detail,
       status: "waiting",
       dotFrame: 0,
+      toolInput,
     };
     this.activeTurn.timeline.push(entry);
     this.activeTurn.answerText = "";
@@ -1869,6 +2294,15 @@ export class ChatLayout {
         return;
       }
     }
+  }
+
+  /** Snapshot file content before Write overwrites an existing path. */
+  updateLastWaitingToolPriorContent(content: string): void {
+    const entry = this.findLastWaitingToolEntry();
+    if (!entry) return;
+    entry.priorContent = content;
+    this.invalidateContentCache();
+    this.redrawContent();
   }
 
   private findLastWaitingToolEntry(): ToolCallTimelineEntry | undefined {
@@ -1913,6 +2347,19 @@ export class ChatLayout {
     const turn = this.findTurn(turnId);
     if (!turn) return;
     const key = `plan:${toolId}`;
+    if (turn.expandedToolGroups.has(key)) {
+      turn.expandedToolGroups.delete(key);
+    } else {
+      turn.expandedToolGroups.add(key);
+    }
+    this.invalidateContentCache();
+    this.redrawContent();
+  }
+
+  toggleWriteEditTool(turnId: string, toolId: string, kind: "write" | "edit"): void {
+    const turn = this.findTurn(turnId);
+    if (!turn) return;
+    const key = `${kind}:${toolId}`;
     if (turn.expandedToolGroups.has(key)) {
       turn.expandedToolGroups.delete(key);
     } else {
@@ -1989,6 +2436,7 @@ export class ChatLayout {
     };
     this.tipText = null;
     this.followBottom = true;
+    this.enableMouseDragTracking();
     this.startTurnTick();
     this.scrollToBottom();
     this.invalidateContentCache();
@@ -2084,6 +2532,7 @@ export class ChatLayout {
     }
     this.turns.push(this.activeTurn);
     this.activeTurn = null;
+    this.turnExitRequested = false;
     this.tipText = null;
     this.stopTurnTick();
     if (!this.exitHintTimer) {
@@ -2142,34 +2591,153 @@ export class ChatLayout {
     this.redrawContent();
   }
 
+  private clearCopyHint(): void {
+    if (this.copyHintTimer) {
+      clearTimeout(this.copyHintTimer);
+      this.copyHintTimer = null;
+    }
+    this.copyHintText = null;
+  }
+
+  private clearInputSelection(): void {
+    this.inputSelectAnchor = null;
+    this.inputSelectEnd = null;
+    this.inputMouseSelecting = false;
+  }
+
+  private inputSelectionRange(): InputSelectionRange | null {
+    if (this.inputSelectAnchor === null || this.inputSelectEnd === null) return null;
+    const range = normalizeSelectionRange(this.inputSelectAnchor, this.inputSelectEnd);
+    if (range.start === range.end) return null;
+    return range;
+  }
+
+  private showCopyHint(charCount: number): void {
+    this.clearCopyHint();
+    this.copyHintText = `copied ${charCount} chars to clipboard`;
+    this.copyHintTimer = setTimeout(() => {
+      this.copyHintTimer = null;
+      this.copyHintText = null;
+      if (this.active && this.readingLine) {
+        this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
+      }
+    }, COPY_HINT_MS);
+    if (this.active && this.readingLine) {
+      this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
+    }
+  }
+
+  private isInputMouseRow(row: number): boolean {
+    if (!this.readingLine || this.inputRowsScreenCount <= 0) return false;
+    const screenRow = row - this.inputRowsScreenStart;
+    return screenRow >= 0 && screenRow < this.inputRowsScreenCount;
+  }
+
+  private enableMouseDragTracking(): void {
+    if (this.mouseDragTracking) return;
+    this.mouseDragTracking = true;
+    if (process.stdout.isTTY) {
+      process.stdout.write(ENABLE_MOUSE_DRAG);
+    }
+  }
+
+  private disableMouseDragTracking(): void {
+    if (!this.mouseDragTracking) return;
+    this.mouseDragTracking = false;
+    if (process.stdout.isTTY) {
+      process.stdout.write(DISABLE_MOUSE_DRAG);
+    }
+  }
+
+  private handleContentMouseClick(
+    phase: "mouseDown" | "mouseUp",
+    row: number,
+    col: number,
+  ): void {
+    if (contentClickMousePhase(this.mouseDragTracking, phase) !== "click") return;
+    this.handleClick(row, col);
+  }
+
+  private handleInputMouse(
+    action: { type: "mouseDown" | "mouseDrag" | "mouseUp"; row: number; col: number },
+  ): void {
+    const screenRow = action.row - this.inputRowsScreenStart;
+    if (screenRow < 0 || screenRow >= this.inputRowsScreenCount) return;
+
+    const offset = inputOffsetFromScreen({
+      value: this.inputBuffer,
+      scrollRow: this.inputScrollRow,
+      screenRow,
+      screenCol: action.col,
+    });
+
+    if (action.type === "mouseDown") {
+      this.clearCopyHint();
+      this.inputSelectAnchor = offset;
+      this.inputSelectEnd = offset;
+      this.inputMouseSelecting = true;
+      this.inputCursor = offset;
+      this.syncInputScrollRow();
+      this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
+      return;
+    }
+
+    if (action.type === "mouseDrag" && this.inputMouseSelecting) {
+      this.inputSelectEnd = offset;
+      this.inputCursor = offset;
+      this.syncInputScrollRow();
+      this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
+      return;
+    }
+
+    if (action.type === "mouseUp" && this.inputMouseSelecting) {
+      this.inputSelectEnd = offset;
+      this.inputMouseSelecting = false;
+      this.inputCursor = offset;
+      const anchor = this.inputSelectAnchor ?? offset;
+      const text = selectedText(this.inputBuffer, anchor, offset);
+      if (text) {
+        void writeClipboardText(text).then((ok) => {
+          if (ok) this.showCopyHint(text.length);
+        });
+      } else {
+        this.clearInputSelection();
+      }
+      this.refreshInputFooter(this.readLinePlain, this.readLinePlaceholder);
+    }
+  }
+
   handleClick(row: number, _col: number): void {
-    const contentTop = this.headerHeight + 1;
-    const index = row - contentTop;
-    const scrollH = this.scrollableContentHeight();
-    if (index < 0 || index >= scrollH) return;
-    const all = this.allRenderLines();
-    const maxOffset = this.maxScrollOffset();
-    const offset = Math.min(this.scrollOffset, maxOffset);
-    const visible = all.slice(offset, offset + scrollH);
-    const line = visible[index];
-    if (line && isThoughtSummaryLine(line) && line.meta) {
-      this.toggleThought(line.meta.turnId);
-      return;
-    }
-    if (line && line.meta && isToolGroupToggleLine(line.meta) && line.meta.groupId) {
-      this.toggleToolGroup(line.meta.turnId, line.meta.groupId);
-      return;
-    }
-    if (line && line.meta && isChoiceToggleLine(line.meta) && line.meta.choiceId) {
-      this.toggleChoice(line.meta.turnId, line.meta.choiceId);
-      return;
-    }
-    if (line && isToolErrorToggleLine(line.meta) && line.meta?.toolId) {
-      this.toggleToolError(line.meta.turnId, line.meta.toolId);
-      return;
-    }
-    if (line && isPlanToolToggleLine(line.meta) && line.meta?.toolId) {
-      this.togglePlanTool(line.meta.turnId, line.meta.toolId);
+    const action = resolveContentClickTarget({
+      allLines: this.allRenderLines(),
+      scrollOffset: this.scrollOffset,
+      scrollHeight: this.scrollableContentHeight(),
+      screenRow: row,
+      headerHeight: this.headerHeight,
+    });
+    if (!action) return;
+    switch (action.type) {
+      case "toggleThought":
+        this.toggleThought(action.turnId);
+        break;
+      case "toggleToolGroup":
+        this.toggleToolGroup(action.turnId, action.groupId);
+        break;
+      case "toggleChoice":
+        this.toggleChoice(action.turnId, action.choiceId);
+        break;
+      case "toggleToolError":
+        this.toggleToolError(action.turnId, action.toolId);
+        break;
+      case "togglePlanTool":
+        this.togglePlanTool(action.turnId, action.toolId);
+        break;
+      case "toggleWriteTool":
+        this.toggleWriteEditTool(action.turnId, action.toolId, "write");
+        break;
+      case "toggleEditTool":
+        this.toggleWriteEditTool(action.turnId, action.toolId, "edit");
+        break;
     }
   }
 
@@ -2267,19 +2835,7 @@ export class ChatLayout {
 
     out += this.renderContentBuffer(cols);
     process.stdout.write(out);
-    if (this.toolApprovalMode) {
-      this.drawToolApprovalFooter();
-    } else if (this.workflowConfirmMode) {
-      this.drawWorkflowConfirmFooter();
-    } else if (this.planReviewMode) {
-      this.drawPlanReviewFooter();
-    } else if (this.readingWorkflowsPanel) {
-      this.drawWorkflowsPanel();
-    } else if (this.readingChoice) {
-      this.drawActiveChoiceFooter();
-    } else {
-      this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
-    }
+    this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
     this.viewportNeedsFullRedraw = false;
   }
 
@@ -2380,17 +2936,7 @@ export class ChatLayout {
     }
     const { cols } = getTerminalSize();
     process.stdout.write(this.renderContentBuffer(cols, true));
-    if (this.toolApprovalMode) {
-      this.drawToolApprovalFooter();
-    } else if (this.workflowConfirmMode) {
-      this.drawWorkflowConfirmFooter();
-    } else if (this.planReviewMode) {
-      this.drawPlanReviewFooter();
-    } else if (this.readingChoice) {
-      this.drawActiveChoiceFooter();
-    } else {
-      this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
-    }
+    this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
   }
 
   private clearExitHint(): void {
@@ -2401,15 +2947,15 @@ export class ChatLayout {
     this.shortcutsOverride = null;
   }
 
-  private clearHistoryClearHint(): void {
+  private clearInputClearHint(): void {
     if (this.historyClearHintTimer) {
       clearTimeout(this.historyClearHintTimer);
       this.historyClearHintTimer = null;
     }
   }
 
-  private showHistoryClearHint(): void {
-    this.clearHistoryClearHint();
+  private showInputClearHint(): void {
+    this.clearInputClearHint();
     const plain = this.readLinePlain;
     const placeholder = this.readLinePlaceholder;
     this.historyClearHintTimer = setTimeout(() => {
@@ -2420,14 +2966,27 @@ export class ChatLayout {
     }, HISTORY_CLEAR_HINT_MS);
   }
 
-  private handleHistoryBrowseEscape(plain: boolean, placeholder?: string): void {
+  private inputTopHintText(): string | null {
+    if (this.copyHintText) return this.copyHintText;
+    if (this.historyClearHintTimer) return HISTORY_CLEAR_HINT;
+    return null;
+  }
+
+  private handleInputEscape(plain: boolean, placeholder?: string): void {
+    const canClear = this.inputHistory.isBrowsing() || this.inputBuffer.length > 0;
+    if (!canClear) return;
+
     if (this.historyClearHintTimer) {
-      this.clearHistoryClearHint();
-      this.inputHistory.resetBrowse();
+      this.clearInputClearHint();
+      if (this.inputHistory.isBrowsing()) {
+        this.inputHistory.resetBrowse();
+      }
       this.inputBuffer = "";
       this.inputCursor = 0;
+      this.inputScrollRow = 0;
+      this.syncInputScrollRow();
     } else {
-      this.showHistoryClearHint();
+      this.showInputClearHint();
     }
     this.refreshInputFooter(plain, placeholder);
   }
@@ -2439,24 +2998,9 @@ export class ChatLayout {
       this.exitHintTimer = null;
       this.shortcutsOverride = null;
       if (this.active) {
-        this.drawFooter(this.inputBuffer, this.readLinePlaceholder);
+        this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
       }
     }, EXIT_HINT_MS);
-  }
-
-  private renderInputLine(value: string, placeholder?: string): string {
-    if (value) {
-      return `${ansi.text}${ansi.bold}>${ansi.reset} ${value}`;
-    }
-    return placeholder
-      ? renderClaudeInputLine(placeholder)
-      : `${ansi.text}${ansi.bold}>${ansi.reset} `;
-  }
-
-  private inputCursorCol(value: string, cursor: number): number {
-    const before = value.slice(0, cursor);
-    const plain = value ? `> ${before}` : "> ";
-    return 1 + displayWidth(plain);
   }
 
   private footerShortcutsLine(inputValue: string): string {
@@ -2485,27 +3029,51 @@ export class ChatLayout {
   private footerTopSeparator(cols: number): string {
     if (this.readingLine && this.inputHistory.isBrowsing()) {
       const label = `History ${this.inputHistory.indicatorPosition()}/${this.inputHistory.length}`;
-      const rightHint = this.historyClearHintTimer ? HISTORY_CLEAR_HINT : undefined;
-      return renderHistorySeparator(label, cols, rightHint);
+      return renderHistorySeparator(label, cols);
     }
     return inputFooterSeparator(cols);
   }
 
   private drawFooter(inputValue: string, placeholder?: string): void {
+    if (this.isFooterOverlayActive()) {
+      this.drawActiveFooter(inputValue, placeholder);
+      return;
+    }
     const { cols, rows } = getTerminalSize();
-    const top = this.footerTop;
     const shortcuts = this.footerShortcutsLine(inputValue);
     const suggestions =
       this.readingLine && !this.readingChoice && !this.wizardMode && !this.readingWorkflowsPanel
         ? this.filteredSlashSuggestions()
         : [];
 
+    if (this.readingLine) {
+      this.updateSlashSuggestFooterHeight(suggestions, inputValue);
+    }
+
+    const top = this.footerTop;
+    const inputRendered = renderMultilineInput({
+      value: inputValue,
+      cursor: this.inputCursor,
+      scrollRow: this.inputScrollRow,
+      cols,
+      placeholder: this.inputResolve ? placeholder : undefined,
+      selection: this.inputSelectionRange(),
+    });
+    this.inputScrollRow = inputRendered.scrollRow;
+
     const inputBlock = [
+      ...(this.readingLine && this.inputTopHintText()
+        ? [padToWidth(renderInputCopyHint(cols, this.inputTopHintText()!), cols)]
+        : []),
       padToWidth(this.footerTopSeparator(cols), cols),
-      padToWidth(this.renderInputLine(inputValue, placeholder), cols),
+      ...inputRendered.rows.map((line) => padToWidth(line, cols)),
       padToWidth(inputFooterSeparator(cols), cols),
       padToWidth(suggestions.length && !this.inputHistory.isBrowsing() ? SLASH_SUGGEST_HINT : shortcuts, cols),
     ];
+
+    const inputRowOffset = inputBlock.length - inputRendered.rows.length - 2;
+    this.inputRowsScreenStart = top + inputRowOffset;
+    this.inputRowsScreenCount = inputRendered.rows.length;
 
     const footerRows = suggestions.length
       ? [
@@ -2548,11 +3116,12 @@ export class ChatLayout {
     }
 
     process.stdout.write(out);
-    if (this.inputResolve) {
-      this.inputRow = top + footerRows.length - inputBlock.length + 1;
-      const col = Math.min(cols, this.inputCursorCol(inputValue, this.inputCursor));
-      process.stdout.write(moveTo(this.inputRow, col));
+    if (this.inputResolve && !this.inputMouseSelecting && !this.inputSelectionRange()) {
+      const col = Math.min(cols, inputRendered.cursorScreenCol);
+      process.stdout.write(moveTo(this.inputRowsScreenStart + inputRendered.cursorScreenRow, col));
       process.stdout.write(SHOW_CURSOR);
+    } else if (this.inputResolve) {
+      process.stdout.write(HIDE_CURSOR);
     }
   }
 
@@ -2623,11 +3192,19 @@ export class ChatLayout {
     });
   }
 
-  async readLine(options?: { placeholder?: string; plain?: boolean }): Promise<string> {
+  async readLine(options?: {
+    placeholder?: string;
+    plain?: boolean;
+    initialValue?: string;
+  }): Promise<string> {
     this.readLinePlaceholder = options?.placeholder;
     this.readLinePlain = options?.plain ?? false;
-    this.inputBuffer = "";
-    this.inputCursor = 0;
+    this.inputBuffer = options?.initialValue ?? "";
+    this.inputCursor = this.inputBuffer.length;
+    this.inputScrollRow = 0;
+    this.clearInputSelection();
+    this.clearCopyHint();
+    this.syncInputScrollRow();
     this.inputHistory.resetBrowse();
     this.inputRow = this.footerTop + 1;
     this.lastCtrlCAt = 0;
@@ -2636,15 +3213,18 @@ export class ChatLayout {
       this.inputResolve = resolve;
       this.inputReject = reject;
       this.readingLine = true;
-      this.drawFooter("", this.readLinePlain ? undefined : this.readLinePlaceholder);
+      this.enableMouseDragTracking();
+      this.drawFooter(this.inputBuffer, this.readLinePlain ? undefined : this.readLinePlaceholder);
     });
   }
 
-  /** True once after Ctrl+C during streaming; consumed by the agent loop. */
-  consumeTurnExitRequested(): boolean {
-    const requested = this.turnExitRequested;
+  /** True while the user requested turn exit (Esc / Ctrl+C) — polled until the turn ends. */
+  isTurnExitRequested(): boolean {
+    return this.turnExitRequested;
+  }
+
+  clearTurnExitRequested(): void {
     this.turnExitRequested = false;
-    return requested;
   }
 
   async readConfirm(message: string): Promise<boolean> {
@@ -3328,8 +3908,12 @@ export class ChatLayout {
 
   async readToolApproval(opts: { toolCall: ToolCall; cwd: string }): Promise<ToolConfirmResult> {
     const entry = this.findLastWaitingToolEntry();
-    if (entry) entry.awaitingApproval = true;
+    if (entry) {
+      entry.awaitingApproval = true;
+      entry.approvalRequired = true;
+    }
 
+    process.stdout.write(HIDE_CURSOR);
     this.toolApprovalMode = true;
     this.toolApprovalContent = null;
     this.toolApprovalSelected = 0;
@@ -3339,6 +3923,7 @@ export class ChatLayout {
     this.updateToolApprovalFooterHeight();
     this.invalidateContentCache();
     this.redraw();
+    this.drawToolApprovalFooter();
 
     const { cols } = getTerminalSize();
     const content = await buildToolApprovalContent(opts.toolCall, opts.cwd, cols);
@@ -3350,6 +3935,7 @@ export class ChatLayout {
 
     return new Promise((resolve) => {
       this.pendingToolApprovalCall = opts.toolCall;
+      this.pendingToolApprovalCwd = opts.cwd;
       this.toolApprovalResolve = resolve;
     });
   }
@@ -3385,13 +3971,14 @@ export class ChatLayout {
     const { cols, rows } = getTerminalSize();
     const top = this.footerTop;
     const content = this.toolApprovalContent;
-    if (!content) return;
 
-    const panelLines = renderToolApprovalPanelLines({
-      content,
-      selectedIndex: this.toolApprovalSelected,
-      cols,
-    });
+    const panelLines = content
+      ? renderToolApprovalPanelLines({
+          content,
+          selectedIndex: this.toolApprovalSelected,
+          cols,
+        })
+      : [`${ansi.muted}Loading preview…${ansi.reset}`];
     const sep = footerSeparator(cols);
     const footerRows = [
       padToWidth(sep, cols),
@@ -3449,7 +4036,7 @@ export class ChatLayout {
       if (action.type === "enter") {
         const row = content.rows[this.toolApprovalSelected];
         if (!row) return;
-        this.finishToolApproval(toolApprovalDecisionFromRow(row));
+        this.finishToolApproval(toolApprovalDecisionFromRow(row, content.networkHosts));
         return;
       }
     }
@@ -3458,15 +4045,21 @@ export class ChatLayout {
   private finishToolApproval(decision: ReturnType<typeof toolApprovalDecisionFromRow>): void {
     const resolve = this.toolApprovalResolve;
     const toolCall = this.pendingToolApprovalCall;
+    const cwd = this.pendingToolApprovalCwd;
 
     this.toolApprovalResolve = null;
     this.toolApprovalMode = false;
     this.toolApprovalContent = null;
     this.toolApprovalSelected = 0;
     this.pendingToolApprovalCall = null;
+    this.pendingToolApprovalCwd = undefined;
 
     const entry = this.findLastWaitingToolEntry();
-    if (entry) entry.awaitingApproval = false;
+    if (entry) {
+      entry.awaitingApproval = false;
+      entry.approvalRequired = true;
+      entry.approvalGranted = decision.action !== "deny";
+    }
 
     this.restoreDefaultFooter();
     this.invalidateContentCache();
@@ -3481,6 +4074,6 @@ export class ChatLayout {
       return;
     }
 
-    resolve(toolConfirmResultFromDecision(toolCall, decision));
+    resolve(toolConfirmResultFromDecision(toolCall, decision, cwd ?? undefined));
   }
 }

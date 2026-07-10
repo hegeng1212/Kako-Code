@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
+import type { SessionCapability } from "@kako/shared";
 import type { ToolCall } from "@kako/shared";
 import { ToolRegistry } from "../registry.js";
 import { bashHandler, bashToolDefinition } from "./bash.js";
@@ -10,13 +11,18 @@ import { toolContext, withTempDir } from "./test-helpers.js";
 
 function registryWith(
   cwd: string,
-  opts?: { confirm?: (tc: ToolCall) => Promise<boolean>; permissionMode?: "plan" | "default" },
+  opts?: {
+    confirm?: (tc: ToolCall) => Promise<boolean>;
+    permissionMode?: "plan" | "default";
+    capability?: SessionCapability;
+  },
 ): ToolRegistry {
   const registry = new ToolRegistry({
     cwd,
     sessionId: "sess-adv",
     agentId: "agent-adv",
     permissionMode: opts?.permissionMode,
+    capability: opts?.capability,
     confirm: opts?.confirm,
   });
   registry.register(readToolDefinition, readHandler);
@@ -40,7 +46,7 @@ describe("ToolRegistry adversarial", () => {
   it("denies when user rejects confirmation outside trusted scope", async () => {
     await withTempDir(async (dir) => {
       const confirm = vi.fn(async () => false);
-      const registry = registryWith(dir, { confirm });
+      const registry = registryWith(dir, { confirm, capability: "WorkspaceWrite" });
       const outside = join(tmpdir(), `kako-deny-${Date.now()}.txt`);
       const result = await registry.execute({
         id: "tu-deny",
@@ -52,9 +58,9 @@ describe("ToolRegistry adversarial", () => {
     });
   });
 
-  it("auto-approves Write inside session cwd without prompting", async () => {
+  it("skips confirm for Write inside trusted session cwd with FullAccess", async () => {
     await withTempDir(async (dir) => {
-      const confirm = vi.fn(async () => false);
+      const confirm = vi.fn(async () => true);
       const registry = registryWith(dir, { confirm });
       const result = await registry.execute({
         id: "tu-auto",

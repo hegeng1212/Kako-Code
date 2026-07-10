@@ -1,4 +1,4 @@
-export { readClipboardImage, readClipboardText } from "./clipboard.js";
+export { readClipboardImage, readClipboardText, writeClipboardText } from "./clipboard.js";
 export { isImagePath } from "./mime.js";
 export {
   storeClipboardImage,

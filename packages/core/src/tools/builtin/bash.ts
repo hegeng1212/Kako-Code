@@ -2,6 +2,7 @@ import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_BASH_DESCRIPTION } from "../claude-tool-text.js";
 import { resolvePath } from "./path.js";
+import { loadSecurityPolicy } from "../../security/policy-store.js";
 
 export const BASH_DEFAULT_TIMEOUT_MS = 120_000;
 export const BASH_MAX_TIMEOUT_MS = 600_000;
@@ -53,12 +54,18 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
   },
 };
 
-/** Resolve timeout from \`timeout\` (schema) or legacy \`timeout_ms\`. */
-export function resolveBashTimeoutMs(input: Record<string, unknown>): number {
-  const raw = input.timeout ?? input.timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS;
+/** Resolve timeout from \`timeout\` (schema) or legacy \`timeout_ms\`, with policy defaults. */
+export async function resolveBashTimeoutMs(
+  input: Record<string, unknown>,
+  cwd?: string,
+): Promise<number> {
+  const policy = await loadSecurityPolicy(cwd ?? process.cwd());
+  const defaultMs = policy.resources.bashTimeoutMs ?? BASH_DEFAULT_TIMEOUT_MS;
+  const maxMs = policy.resources.bashMaxTimeoutMs ?? BASH_MAX_TIMEOUT_MS;
+  const raw = input.timeout ?? input.timeout_ms ?? defaultMs;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return BASH_DEFAULT_TIMEOUT_MS;
-  return Math.min(Math.floor(n), BASH_MAX_TIMEOUT_MS);
+  if (!Number.isFinite(n) || n <= 0) return defaultMs;
+  return Math.min(Math.floor(n), maxMs);
 }
 
 export function assertBashInputSupported(input: Record<string, unknown>): void {
@@ -77,13 +84,15 @@ export const bashHandler: ToolHandler = async (input, context) => {
   const cwd = input.working_directory
     ? resolvePath(String(input.working_directory), context.cwd)
     : context.cwd;
-  const timeout = resolveBashTimeoutMs(input);
+  const policy = await loadSecurityPolicy(context.cwd);
+  const timeout = await resolveBashTimeoutMs(input, context.cwd);
+  const maxBuffer = policy.resources.bashMaxOutputBytes ?? 10 * 1024 * 1024;
 
   try {
     const { stdout, stderr } = await execAsync(String(input.command), {
       cwd,
       timeout,
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer,
       signal: context.signal,
     });
     const parts = [];

@@ -16,6 +16,7 @@ import { PanelToolbar, ToolbarButton } from "./PanelToolbar";
 import { useConfirmDialog } from "./ConfirmDialog";
 import { McpFormPage } from "./McpFormPage";
 import { McpUsagePage } from "./McpUsagePage";
+import { McpApprovalAdvanced } from "./McpApprovalControls";
 
 type McpView = "manage" | "usage" | "add" | "edit";
 
@@ -46,6 +47,10 @@ interface McpServerCardProps {
   onEdit: () => void;
   onDelete: () => void;
   onOpenUsage: () => void;
+  showAdvanced: boolean;
+  onToggleAdvanced: () => void;
+  savingApproval: boolean;
+  onApprovalChange: (server: McpServerConfig) => void;
 }
 
 function formatSyncedAt(iso?: string): string | null {
@@ -72,6 +77,10 @@ function McpServerCard({
   onEdit,
   onDelete,
   onOpenUsage,
+  showAdvanced,
+  onToggleAdvanced,
+  savingApproval,
+  onApprovalChange,
 }: McpServerCardProps) {
   const [hovered, setHovered] = useState(false);
   const showActions = hovered || expanded;
@@ -266,6 +275,27 @@ function McpServerCard({
               </tbody>
             </table>
           )}
+          <button
+            type="button"
+            className="mcp-extra-toggle"
+            onClick={onToggleAdvanced}
+          >
+            <span>高级选项</span>
+            <span className="mcp-extra-toggle__icon">{showAdvanced ? "▲" : "▼"}</span>
+          </button>
+          {showAdvanced && (
+            <section className="form-section form-section--card advanced-panel mcp-approval-panel">
+              <p className="mcp-hint">
+                控制该 MCP 工具执行前是否弹出审批。单工具设置优先于服务默认。
+              </p>
+              <McpApprovalAdvanced
+                server={server}
+                serverTools={serverTools}
+                disabled={savingApproval}
+                onChange={onApprovalChange}
+              />
+            </section>
+          )}
         </div>
       )}
     </li>
@@ -292,6 +322,8 @@ export function McpPanel() {
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<McpActionToast | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [advancedId, setAdvancedId] = useState<string | null>(null);
+  const [savingApprovalId, setSavingApprovalId] = useState<string | null>(null);
   const { requestConfirm, dialog: confirmDialog } = useConfirmDialog();
 
   const statusMap = useMemo(
@@ -506,6 +538,19 @@ export function McpPanel() {
     }
   }
 
+  async function handleApprovalChange(server: McpServerConfig) {
+    setSavingApprovalId(server.id);
+    setError(null);
+    try {
+      const reg = await api.saveMcp(server);
+      setServers(reg.servers);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingApprovalId(null);
+    }
+  }
+
   async function handleDelete(id: string, name: string) {
     const ok = await requestConfirm({
       title: "删除 MCP 服务",
@@ -641,6 +686,12 @@ export function McpPanel() {
                 void refresh();
                 setView("usage");
               }}
+              showAdvanced={advancedId === server.id}
+              onToggleAdvanced={() =>
+                setAdvancedId((current) => (current === server.id ? null : server.id))
+              }
+              savingApproval={savingApprovalId === server.id}
+              onApprovalChange={(next) => void handleApprovalChange(next)}
             />
           );
         })}

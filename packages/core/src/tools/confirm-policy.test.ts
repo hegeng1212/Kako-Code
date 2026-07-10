@@ -34,6 +34,24 @@ describe("toolCallNeedsUserConfirm", () => {
     ).toBe(true);
   });
 
+  it("skips confirm when MCP policy is never", () => {
+    expect(
+      toolCallNeedsUserConfirm(
+        { id: "1", name: "mcp/demo/tool", input: {} },
+        {
+          name: "mcp/demo/tool",
+          description: "demo",
+          inputSchema: { type: "object" },
+          security: { sideEffect: true },
+          requiresConfirmation: true,
+        },
+        "default",
+        undefined,
+        "never",
+      ),
+    ).toBe(false);
+  });
+
   it("skips write confirm in acceptEdits mode", () => {
     expect(
       toolCallNeedsUserConfirm(

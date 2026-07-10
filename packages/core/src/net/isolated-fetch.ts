@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { NetworkPolicy } from "../config/network-store.js";
+import { evaluateNetworkAccess } from "../security/network-guard.js";
 import { rawKakoFetch } from "./proxy-fetch.js";
 
 export type FetchLike = typeof fetch;
@@ -6,6 +9,45 @@ type DownstreamSet = Set<AbortController>;
 
 /** One upstream abort listener fans out to many per-request controllers. */
 const upstreamLinks = new WeakMap<AbortSignal, DownstreamSet>();
+
+export interface FetchSecurityScope {
+  enforceNetworkPolicy: boolean;
+  networkPolicy?: NetworkPolicy;
+  sessionAllowedHosts?: Set<string>;
+  mcpContext?: boolean;
+  mcpExceptionHosts?: Set<string>;
+}
+
+const fetchSecurityScope = new AsyncLocalStorage<FetchSecurityScope>();
+
+export function runWithFetchSecurityScope<T>(scope: FetchSecurityScope, fn: () => T): T {
+  return fetchSecurityScope.run(scope, fn);
+}
+
+function urlFromFetchInput(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+async function assertNetworkAllowed(input: string | URL | Request): Promise<void> {
+  const scope = fetchSecurityScope.getStore();
+  if (!scope?.enforceNetworkPolicy || !scope.networkPolicy) return;
+
+  const url = urlFromFetchInput(input);
+  const decision = evaluateNetworkAccess(
+    url,
+    scope.networkPolicy,
+    scope.sessionAllowedHosts ?? new Set(),
+    {
+      mcpContext: scope.mcpContext,
+      mcpExceptionHosts: scope.mcpExceptionHosts,
+    },
+  );
+  if (decision.action === "deny") {
+    throw new Error(decision.reason);
+  }
+}
 
 function linkToUpstream(upstream: AbortSignal, downstream: AbortController): () => void {
   if (upstream.aborted) {
@@ -68,6 +110,8 @@ export async function kakoFetch(
   input: string | URL | Request,
   init?: RequestInit,
 ): Promise<Response> {
+  await assertNetworkAllowed(input);
+
   if (!init?.signal) {
     return rawKakoFetch(input, init);
   }

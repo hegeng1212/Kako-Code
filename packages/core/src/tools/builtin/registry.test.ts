@@ -3,6 +3,7 @@ import { ToolRegistry } from "../registry.js";
 import {
   BUILTIN_TOOLS,
   DEFAULT_BUILTIN_TOOL_NAMES,
+  defaultBuiltinToolNamesForCapability,
   missingBuiltinToolNames,
   registerBuiltinTools,
   resolveAllToolNames,
@@ -77,7 +78,9 @@ describe("builtin tool registry", () => {
 
   it("defaults to all built-ins when agent tools omitted", () => {
     const registry = registryWithBuiltins();
-    expect(resolveAllowedToolNames(undefined, registry)).toEqual(DEFAULT_BUILTIN_TOOL_NAMES);
+    expect(resolveAllowedToolNames(undefined, registry)).toEqual(
+      defaultBuiltinToolNamesForCapability("WorkspaceWrite"),
+    );
   });
 
   it("resolveAllToolNames returns every registered tool including MCP", () => {

@@ -4,6 +4,9 @@ import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_READ_DESCRIPTION } from "../claude-tool-text.js";
 import { findSkillByMdPath } from "../../skills/loader.js";
+import { loadSecurityPolicy } from "../../security/policy-store.js";
+import { isDeniedSecretPath } from "../../security/secret-guard.js";
+import { resolveWorkspacePath } from "./path.js";
 import { isImagePath, isOfficeDocumentPath, isPdfPath, isSpreadsheetPath, NOTEBOOK_EXTENSION } from "../../media/mime.js";
 import { readMediaFile } from "../../media/read-media.js";
 import { formatNotebookForRead } from "./notebook.js";
@@ -113,6 +116,16 @@ async function assertReadableFile(filePath: string): Promise<void> {
 
 export const readHandler: ToolHandler = async (input, context) => {
   const parsed = parseReadInput(input);
+  const policy = await loadSecurityPolicy(context.cwd);
+  if (isDeniedSecretPath(parsed.filePath, policy)) {
+    throw new Error(`Access denied: ${parsed.filePath} contains sensitive configuration`);
+  }
+  await resolveWorkspacePath(
+    parsed.filePath,
+    context.cwd,
+    policy,
+    context.getCapability?.() ?? "ReadOnly",
+  );
   await assertReadableFile(parsed.filePath);
 
   const ext = extensionOf(parsed.filePath);

@@ -1,23 +1,32 @@
 import type { AskUserQuestionOption } from "@kako/shared";
-import { ansi, visibleLength } from "./ansi.js";
+import { ansi, displayWidth, visibleLength } from "./ansi.js";
 import {
   renderChoiceGroupLines,
   renderChoiceOptionLine,
   renderChoiceSummaryLine,
 } from "./ask-user-question-display.js";
 import { renderRichContentLines } from "./markdown-render.js";
+import { renderSlashInputText } from "./slash-suggest.js";
 import {
   collectActivityStats,
+  fileToolContentIndent,
+  isFileEditTool,
+  isFileWriteTool,
   isPlanFileTool,
   isPlanToolToggleLine,
   isWorkflowTool,
   renderActivitySummaryLine,
+  renderBashOutputLines,
+  renderEditToolLines,
   renderPlanPreviewHint,
   renderToolCallErrorLines,
   renderToolCallStatusLine,
   renderToolInvocationLine,
+  isExecutionBashEntry,
   renderToolOutputLines,
   renderWorkflowToolLines,
+  renderWriteToolLines,
+  shouldShowFileBodyInChat,
   type ToolCallTimelineEntry,
 } from "./tool-call-display.js";
 import { renderPlanBoxLines } from "./plan-box.js";
@@ -105,7 +114,16 @@ export interface RenderLine {
   text: string;
   meta?: {
     turnId: string;
-    kind: "thought-summary" | "thought-toggle" | "thought-body" | "tool-error-toggle" | "tool-group-toggle" | "choice-toggle";
+    kind:
+      | "thought-summary"
+      | "thought-toggle"
+      | "thought-body"
+      | "tool-error-toggle"
+      | "tool-group-toggle"
+      | "plan-tool-toggle"
+      | "write-tool-toggle"
+      | "edit-tool-toggle"
+      | "choice-toggle";
     toolId?: string;
     groupId?: string;
     choiceId?: string;
@@ -318,16 +336,36 @@ export function renderAnswerLines(
   });
 }
 
-export function renderUserMessage(userText: string): string[] {
+function formatUserMessageLine(lineText: string, isFirst: boolean): string {
+  const body = renderSlashInputText(lineText);
+  if (isFirst) {
+    return `${ansi.muted}> ${body}`;
+  }
+  return `  ${body}`;
+}
+
+/** Inner `ansi.reset` clears background; re-apply the strip after each nested reset. */
+function withPersistentUserMessageBg(promptLine: string): string {
+  if (!promptLine.includes(ansi.reset)) return promptLine;
+  return promptLine.replaceAll(ansi.reset, `${ansi.reset}${ansi.userMessageBg}`);
+}
+
+/** Full-width dark strip for user input in chat history (Claude Code style). */
+export function padUserMessageLine(promptLine: string, cols: number): string {
+  const inner = `${ansi.userMessageBg}${withPersistentUserMessageBg(promptLine)}`;
+  const w = displayWidth(inner);
+  const pad = Math.max(0, cols - w);
+  return `${inner}${" ".repeat(pad)}${ansi.reset}`;
+}
+
+export function renderUserMessage(userText: string, cols: number): string[] {
   const imageLabels = extractImageLabelsInOrder(userText);
   const filePaths = extractDisplayFilePaths(userText);
-  const lines = [
-    gap(),
-    indent(
-      `${ansi.muted}> ${ansi.reset}${ansi.text}${userText}${ansi.reset}`,
-      LINE_INDENT,
-    ),
-  ];
+  const logicalLines = userText.length ? userText.split("\n") : [""];
+  const lines = [gap()];
+  for (let i = 0; i < logicalLines.length; i++) {
+    lines.push(padUserMessageLine(formatUserMessageLine(logicalLines[i]!, i === 0), cols));
+  }
   for (const label of imageLabels) {
     lines.push(
       indent(
@@ -486,6 +524,96 @@ function renderPlanToolEntry(
   return out;
 }
 
+function renderWriteToolEntry(
+  turn: ChatTurn,
+  entry: ToolCallTimelineEntry,
+  width: number,
+  thoughtSeconds?: number,
+): RenderLine[] {
+  const collapsed = turn.expandedToolGroups.has(`write:${entry.id}`);
+  const contentIndent = fileToolContentIndent(entry, BODY_START);
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  if (thoughtSeconds != null) {
+    out.push({
+      text: indent(
+        `${ansi.muted}Thought for ${formatDurationSeconds(thoughtSeconds)}${ansi.reset}`,
+        LINE_INDENT,
+      ),
+    });
+  }
+  const lines = renderWriteToolLines(entry, width, contentIndent, collapsed);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    let text: string;
+    if (i === 0 || i === 1) {
+      text = indent(line, BODY_START);
+    } else {
+      text = line;
+    }
+    out.push({
+      text,
+      meta:
+        i === 0 && entry.status === "success" && shouldShowFileBodyInChat(entry.detail)
+          ? { turnId: turn.id, kind: "write-tool-toggle", toolId: entry.id }
+          : i === 0 && entry.status === "error" && entry.errorDetail
+            ? { turnId: turn.id, kind: "tool-error-toggle", toolId: entry.id }
+            : undefined,
+    });
+  }
+  if (entry.status === "error") {
+    for (const line of renderToolCallErrorLines(entry, width, BODY_START)) {
+      out.push({ text: indent(line, BODY_START) });
+    }
+  }
+  out.push(...timelineBlockGaps());
+  return out;
+}
+
+function renderEditToolEntry(
+  turn: ChatTurn,
+  entry: ToolCallTimelineEntry,
+  width: number,
+  thoughtSeconds?: number,
+): RenderLine[] {
+  const collapsed = turn.expandedToolGroups.has(`edit:${entry.id}`);
+  const contentIndent = fileToolContentIndent(entry, BODY_START);
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  if (thoughtSeconds != null) {
+    out.push({
+      text: indent(
+        `${ansi.muted}Thought for ${formatDurationSeconds(thoughtSeconds)}${ansi.reset}`,
+        LINE_INDENT,
+      ),
+    });
+  }
+  const lines = renderEditToolLines(entry, width, contentIndent, collapsed);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    let text: string;
+    if (i === 0 || i === 1) {
+      text = indent(line, BODY_START);
+    } else {
+      text = line;
+    }
+    out.push({
+      text,
+      meta:
+        i === 0 && entry.status === "success" && shouldShowFileBodyInChat(entry.detail)
+          ? { turnId: turn.id, kind: "edit-tool-toggle", toolId: entry.id }
+          : i === 0 && entry.status === "error" && entry.errorDetail
+            ? { turnId: turn.id, kind: "tool-error-toggle", toolId: entry.id }
+            : undefined,
+    });
+  }
+  if (entry.status === "error") {
+    for (const line of renderToolCallErrorLines(entry, width, BODY_START)) {
+      out.push({ text: indent(line, BODY_START) });
+    }
+  }
+  out.push(...timelineBlockGaps());
+  return out;
+}
+
 function renderActivityGroup(
   turn: ChatTurn,
   entries: ToolCallTimelineEntry[],
@@ -498,16 +626,20 @@ function renderActivityGroup(
   const stats = collectActivityStats(entries);
   const out: RenderLine[] = [...timelineBlockGaps()];
   out.push({
-    text: indent(renderActivitySummaryLine(thoughtSeconds, stats, expanded), BODY_START),
+    text: indent(renderActivitySummaryLine(thoughtSeconds, stats, expanded, entries), BODY_START),
     meta: { turnId: turn.id, kind: "tool-group-toggle", groupId },
   });
   if (expanded) {
+    const branchIndent = treeBranchIndent(BODY_START, 0);
     for (const entry of entries) {
       if (isPlanFileTool(entry)) continue;
       out.push({
-        text: indent(renderToolInvocationLine(entry), treeBranchIndent(BODY_START, 0)),
+        text: indent(renderToolInvocationLine(entry), branchIndent),
       });
-      for (const line of renderToolOutputLines(entry, width, treeBranchIndent(BODY_START, 0))) {
+      const outputLines = isExecutionBashEntry(entry)
+        ? renderBashOutputLines(entry, width, treeBranchIndent(BODY_START, 0))
+        : renderToolOutputLines(entry, width, treeBranchIndent(BODY_START, 0));
+      for (const line of outputLines) {
         out.push({ text: indent(line, treeBranchIndent(BODY_START)) });
       }
     }
@@ -550,10 +682,32 @@ function renderToolRun(
       continue;
     }
 
+    if (isFileWriteTool(entry)) {
+      out.push(...renderWriteToolEntry(turn, entry, width, thoughtSeconds));
+      thoughtSeconds = undefined;
+      k++;
+      continue;
+    }
+
+    if (isFileEditTool(entry)) {
+      out.push(...renderEditToolEntry(turn, entry, width, thoughtSeconds));
+      thoughtSeconds = undefined;
+      k++;
+      continue;
+    }
+
     let m = k;
     while (m < entries.length) {
       const next = entries[m]!;
-      if (next.status !== "success" || isPlanFileTool(next) || isWorkflowTool(next)) break;
+      if (
+        next.status !== "success" ||
+        isPlanFileTool(next) ||
+        isFileWriteTool(next) ||
+        isFileEditTool(next) ||
+        isWorkflowTool(next)
+      ) {
+        break;
+      }
       m++;
     }
     const activityBatch = entries.slice(k, m);
@@ -639,7 +793,7 @@ export function renderTurnToLines(
   const streamingAnswerIdx =
     isActive && turn.phase !== "done" ? lastAnswerTimelineIndex(turn.timeline) : -1;
 
-  const out: RenderLine[] = renderUserMessage(turn.userText).map((text) => ({
+  const out: RenderLine[] = renderUserMessage(turn.userText, width).map((text) => ({
     text,
   }));
 

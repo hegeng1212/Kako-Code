@@ -5,6 +5,7 @@ import {
   filterSlashSuggestions,
   planSlashSuggestFooter,
   renderSlashSuggestLines,
+  renderSlashInputText,
   resolveSlashSubmitValue,
   slashSuggestQuery,
   shouldShowSlashMenu,
@@ -75,6 +76,18 @@ describe("slash suggest", () => {
     const firstDescStart = stripAnsi(lines[0]!).indexOf("[dynamic workflow]");
     const secondStart = second.search(/\S/);
     expect(secondStart).toBe(firstDescStart);
+  });
+
+  it("colors slash command in input line like selected suggest entry", () => {
+    const line = renderSlashInputText("/deep-research");
+    expect(stripAnsi(line)).toBe("/deep-research");
+    expect(line).toContain("\x1b[38;5;117m");
+    expect(line).toContain("\x1b[1m");
+
+    const withArgs = renderSlashInputText("/deep-research topic");
+    expect(stripAnsi(withArgs)).toBe("/deep-research topic");
+    expect(withArgs).toContain("\x1b[38;5;117m");
+    expect(withArgs).toContain("\x1b[38;5;255m");
   });
 
   it("uses cyan for selected command and muted for unselected", () => {

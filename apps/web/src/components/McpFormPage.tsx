@@ -1,11 +1,13 @@
 import { useState } from "react";
-import type { McpPreset, McpServerConfig } from "@kako/shared";
 import {
   connectionConfigToJson,
   mcpServerFromForm,
   mcpServerToConnectionConfig,
   parseMcpConnectionJson,
+  type McpPreset,
+  type McpServerConfig,
 } from "@kako/shared";
+import { McpApprovalAdvanced } from "./McpApprovalControls";
 
 export type McpFormMode = "add" | "edit";
 
@@ -50,6 +52,10 @@ export function McpFormPage({
         : "{\n  \"type\": \"stdio\"\n}",
   );
   const [showExtra, setShowExtra] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [approvalDraft, setApprovalDraft] = useState<McpServerConfig | null>(
+    isEdit ? server : null,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,6 +110,7 @@ export function McpFormPage({
     setSaving(true);
     setError(null);
     try {
+      const approvalSource = approvalDraft ?? (isEdit ? server : undefined);
       const next = mcpServerFromForm({
         id,
         name: displayName.trim(),
@@ -111,6 +118,8 @@ export function McpFormPage({
         preset: presetId,
         enabled: isEdit ? server.enabled : true,
         createdAt: isEdit ? server.createdAt : undefined,
+        approvalMode: approvalSource?.approvalMode ?? "onRequest",
+        toolApproval: approvalSource?.toolApproval,
       });
       await onSave(next);
     } catch (e) {
@@ -214,6 +223,36 @@ export function McpFormPage({
             ✨ 格式化
           </button>
         </section>
+
+        <button
+          type="button"
+          className="mcp-extra-toggle"
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          <span>高级选项</span>
+          <span className="mcp-extra-toggle__icon">{showAdvanced ? "▲" : "▼"}</span>
+        </button>
+
+        {showAdvanced && (
+          <section className="form-section form-section--card advanced-panel mcp-approval-panel">
+            <p className="mcp-hint">
+              控制该 MCP 工具执行前是否弹出审批。单工具设置优先于服务默认；未列出的工具请在保存后于列表页展开配置。
+            </p>
+            <McpApprovalAdvanced
+              server={
+                approvalDraft ?? {
+                  id: isEdit ? server.id : slugifyId(title) || "new-mcp",
+                  name: displayName.trim() || "MCP",
+                  enabled: true,
+                  transport: "stdio",
+                  approvalMode: "onRequest",
+                }
+              }
+              serverTools={[]}
+              onChange={(next) => setApprovalDraft(next)}
+            />
+          </section>
+        )}
       </div>
 
       <footer className="form-page__footer">

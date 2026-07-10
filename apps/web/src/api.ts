@@ -290,4 +290,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  getSecurity: () => request<import("@kako/shared").SecurityConfigFile>("/security"),
+  saveSecurity: (config: import("@kako/shared").SecurityConfigFile) =>
+    request<import("@kako/shared").SecurityConfigFile>("/security", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  getNetwork: () => request<import("@kako/shared").NetworkConfigFile>("/network"),
+  saveNetwork: (config: import("@kako/shared").NetworkConfigFile) =>
+    request<import("@kako/shared").NetworkConfigFile>("/network", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
 };

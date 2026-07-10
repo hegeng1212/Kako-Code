@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import { release } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentDefinition, LLMMessage, SkillMetadata, TranscriptMessage } from "@kako/shared";
+import type { AgentDefinition, LLMMessage, SessionCapability, SkillMetadata, TranscriptMessage } from "@kako/shared";
 import { buildUserContentBlocks } from "../media/attachments.js";
 import {
   attachmentIncludesDocument,
@@ -30,6 +30,9 @@ export interface MessageBuildOptions {
   now?: Date;
   /** Loaded sub-agent definitions for Agent tool catalog in system prompt. */
   subagentDefinitions?: AgentDefinition[];
+  /** Runtime security policy summary injected into system prompt. */
+  securityPolicySection?: string;
+  capability?: SessionCapability;
 }
 
 export async function isGitRepository(cwd: string): Promise<boolean> {
@@ -143,6 +146,9 @@ export async function buildMessages(options: MessageBuildOptions): Promise<LLMMe
     environment: options.environment,
     subagentDefinitions: options.subagentDefinitions,
   });
+  if (options.securityPolicySection) {
+    system += options.securityPolicySection;
+  }
   if (options.availableSkills?.length) {
     system += formatSkillsIndex(options.availableSkills);
   }

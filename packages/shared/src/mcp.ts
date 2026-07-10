@@ -20,6 +20,12 @@ export interface McpPreset {
   config: McpConnectionConfig;
 }
 
+/** MCP tool approval — server default with optional per-tool overrides. */
+export type McpApprovalMode = "never" | "onRequest" | "deny";
+
+/** Default when server-level approvalMode is unset. */
+export const MCP_APPROVAL_DEFAULT: McpApprovalMode = "onRequest";
+
 /** MCP server registration config. */
 export interface McpServerConfig {
   id: string;
@@ -34,6 +40,10 @@ export interface McpServerConfig {
   url?: string;
   headers?: Record<string, string>;
   preset?: string;
+  /** Server-wide tool approval default. Unset = {@link MCP_APPROVAL_DEFAULT}. */
+  approvalMode?: McpApprovalMode;
+  /** Per-tool approval; overrides {@link approvalMode} when set. */
+  toolApproval?: Record<string, McpApprovalMode>;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -106,6 +116,16 @@ export function parseMcpToolName(
   const serverId = parts[0]!;
   const toolName = parts.slice(1).join("/");
   return { serverId, toolName };
+}
+
+/** Effective MCP tool approval — tool override wins over server default. */
+export function resolveMcpToolApprovalMode(
+  server: Pick<McpServerConfig, "approvalMode" | "toolApproval"> | undefined,
+  toolName: string,
+): McpApprovalMode {
+  const toolMode = server?.toolApproval?.[toolName];
+  if (toolMode) return toolMode;
+  return server?.approvalMode ?? MCP_APPROVAL_DEFAULT;
 }
 
 export function connectionConfigToJson(config: McpConnectionConfig): string {
@@ -190,6 +210,8 @@ export function mcpServerFromForm(input: {
   preset?: string;
   enabled?: boolean;
   createdAt?: string;
+  approvalMode?: McpApprovalMode;
+  toolApproval?: Record<string, McpApprovalMode>;
 }): McpServerConfig {
   const base = {
     id: input.id.trim(),
@@ -198,6 +220,10 @@ export function mcpServerFromForm(input: {
     preset: input.preset,
     transport: input.config.type,
     ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    approvalMode: input.approvalMode ?? MCP_APPROVAL_DEFAULT,
+    ...(input.toolApproval && Object.keys(input.toolApproval).length > 0
+      ? { toolApproval: input.toolApproval }
+      : {}),
   };
   if (input.config.type === "stdio") {
     return {

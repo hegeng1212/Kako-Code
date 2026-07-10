@@ -3,7 +3,16 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_WRITE_DESCRIPTION } from "../claude-tool-text.js";
-import { lineCount, resolvePath } from "./path.js";
+import { resolvePath, resolveWorkspacePath } from "./path.js";
+import { loadSecurityPolicy } from "../../security/policy-store.js";
+
+export const FILE_STATE_CURRENT_HINT =
+  "(file state is current in your context — no need to Read it back)";
+
+export function formatWriteResult(filePath: string, created: boolean): string {
+  const verb = created ? "File created successfully at" : "File updated successfully at";
+  return `${verb}: ${filePath} ${FILE_STATE_CURRENT_HINT}`;
+}
 
 export const WRITE_DESCRIPTION = adaptClaudeCodeToolText(CLAUDE_WRITE_DESCRIPTION);
 
@@ -48,6 +57,13 @@ export function parseWriteInput(raw: Record<string, unknown>): ParsedWriteInput 
 
 export const writeHandler: ToolHandler = async (input, context) => {
   const parsed = parseWriteInput(input);
+  const policy = await loadSecurityPolicy(context.cwd);
+  await resolveWorkspacePath(
+    parsed.filePath,
+    context.cwd,
+    policy,
+    context.getCapability?.() ?? "WorkspaceWrite",
+  );
   const path = resolvePath(parsed.filePath, context.cwd);
 
   let exists = false;
@@ -73,5 +89,5 @@ export const writeHandler: ToolHandler = async (input, context) => {
 
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, parsed.content, "utf-8");
-  return `Wrote ${lineCount(parsed.content)} lines to ${path}`;
+  return formatWriteResult(path, !exists);
 };

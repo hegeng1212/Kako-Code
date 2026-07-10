@@ -1,10 +1,14 @@
 import { useState } from "react";
+import { NetworkSettingsTab } from "./NetworkSettingsTab";
 import { SearchSettingsTab } from "./SearchSettingsTab";
+import { SecuritySettingsTab } from "./SecuritySettingsTab";
 
-type SettingsTab = "search";
+type SettingsTab = "search" | "security" | "network";
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "search", label: "搜索设置" },
+  { id: "security", label: "安全策略" },
+  { id: "network", label: "网络安全" },
 ];
 
 interface SettingsPageProps {
@@ -44,6 +48,8 @@ export function SettingsPage({ onBack, version, license, licenseUrl }: SettingsP
         </nav>
 
         {tab === "search" && <SearchSettingsTab />}
+        {tab === "security" && <SecuritySettingsTab />}
+        {tab === "network" && <NetworkSettingsTab />}
 
         {(version || license) && (
           <footer className="app-about">

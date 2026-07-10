@@ -92,9 +92,21 @@ function runElapsed(run: WorkflowRunRecord): number {
 }
 
 function padVisible(text: string, width: number): string {
-  const w = displayWidth(text);
-  if (w >= width) return fitLine(text, width);
-  return text + " ".repeat(width - w);
+  let cell = text;
+  if (displayWidth(cell) > width) {
+    cell = fitLine(cell, width);
+    while (displayWidth(cell) > width && stripAnsi(cell).length > 0) {
+      cell = cell.slice(0, -1);
+    }
+    if (displayWidth(cell) + 1 <= width && stripAnsi(cell).length > 0) {
+      cell += "…";
+    }
+  }
+  const deficit = width - displayWidth(cell);
+  if (deficit > 0) {
+    cell += " ".repeat(deficit);
+  }
+  return cell;
 }
 
 function fitLine(text: string, cols: number): string {

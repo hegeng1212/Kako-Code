@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { stripAnsi } from "./ansi.js";
+import { ansi, stripAnsi } from "./ansi.js";
 import {
   collectActivityStats,
+  fileToolContentIndent,
   renderActivitySummaryLine,
   renderPlanPreviewHint,
   renderToolCallErrorLines,
@@ -120,6 +121,47 @@ describe("tool-call-display", () => {
     expect(text).toBe("Thought for 10s, listed 1 directory ▸ (click to expand)");
   });
 
+  it("shows green approval dot on first-level summary when approved and succeeded", () => {
+    const text = stripAnsi(
+      renderActivitySummaryLine(
+        undefined,
+        ["wrote 1 file"],
+        false,
+        [entry({ name: "Write", detail: "/tmp/a.py", status: "success", approvalRequired: true, approvalGranted: true })],
+      ),
+    );
+    expect(text).toContain("⏺");
+    expect(text).toContain("wrote 1 file");
+  });
+
+  it("shows red approval dot when user denied", () => {
+    const rendered = renderActivitySummaryLine(
+      undefined,
+      ["ran python3 a.py"],
+      false,
+      [entry({ name: "Bash", detail: "python3 a.py", status: "error", approvalRequired: true, approvalGranted: false })],
+    );
+    expect(rendered).toContain(ansi.red);
+    expect(stripAnsi(rendered)).toContain("⏺");
+  });
+
+  it("omits approval dot when tool did not require approval", () => {
+    const text = stripAnsi(
+      renderActivitySummaryLine(
+        undefined,
+        ["read 1 file"],
+        false,
+        [entry({ name: "Read", detail: "/tmp/a.md", status: "success" })],
+      ),
+    );
+    expect(text).not.toContain("⏺");
+  });
+
+  it("aligns file tool content indent with approval prefix", () => {
+    expect(fileToolContentIndent({ approvalRequired: true }, 4)).toBe(7);
+    expect(fileToolContentIndent({ approvalRequired: false }, 4)).toBe(4);
+  });
+
   it("renders expanded tool invocation with output", () => {
     const bash = entry({
       name: "Bash",
@@ -127,7 +169,7 @@ describe("tool-call-display", () => {
       status: "success",
       output: "total 0\ndrwxr-xr-x  3 user  staff  96 Jul  1 11:15 .",
     });
-    expect(stripAnsi(renderToolInvocationLine(bash))).toBe("⏺ Bash(ls -la /tmp)");
+    expect(stripAnsi(renderToolInvocationLine(bash))).toBe("Bash(ls -la /tmp)");
     const lines = renderToolOutputLines(bash, 80);
     expect(lines.length).toBeGreaterThan(0);
     expect(stripAnsi(lines[0]!)).toContain("total 0");
@@ -190,5 +232,14 @@ describe("toolCallStatPhrase", () => {
     expect(
       toolCallStatPhrase("Write", "/Users/me/.kako/plans/abc.md", "plan body"),
     ).toBeNull();
+  });
+
+  it("aggregates execution bash into shell command stat", () => {
+    expect(
+      collectActivityStats([
+        entry({ name: "Bash", detail: "python3 a.py", status: "success", output: "ok" }),
+        entry({ name: "Bash", detail: "node run.js", status: "success", output: "done" }),
+      ]),
+    ).toEqual(["ran 2 shell commands"]);
   });
 });

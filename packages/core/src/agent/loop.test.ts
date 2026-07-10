@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LLMMessage, ToolCall } from "@kako/shared";
+import type { LLMMessage, LLMStreamChunk, LLMRouter, ToolCall } from "@kako/shared";
 import { runAgentLoop } from "./loop.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolLogger } from "../observability/tool-logger.js";
@@ -311,6 +311,40 @@ describe("runAgentLoop", () => {
     expect(onTextDelta).toHaveBeenCalled();
     expect(onAnswerRollback).toHaveBeenCalled();
     expect(result).toBe("");
+  });
+
+  it("aborts while waiting for the first stream chunk", async () => {
+    const router: LLMRouter & { callCount: () => number } = {
+      callCount: () => 1,
+      async complete() {
+        throw new Error("mock complete not implemented");
+      },
+      stream(): AsyncIterable<LLMStreamChunk> {
+        return {
+          async *[Symbol.asyncIterator]() {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            yield { type: "text_delta", text: "late" };
+            yield { type: "done", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
+          },
+        };
+      },
+    };
+
+    const started = Date.now();
+    const result = await runAgentLoop({
+      router,
+      registry: echoRegistry(),
+      toolLogger: new ToolLogger(),
+      messages: [{ role: "user", content: "hello" }],
+      allowedTools: ["Echo"],
+      model: "test-model",
+      maxTurns: 1,
+      shouldAbort: () => true,
+    });
+    const elapsed = Date.now() - started;
+
+    expect(result).toBe("");
+    expect(elapsed).toBeLessThan(200);
   });
 
   it("invokes onReasoningEnd when reasoning stops before answer", async () => {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  isExecutionBashCommand,
+  shellCommandStat,
   toolCallFailurePhrase,
+  toolCallStatPhrase,
   toolCallSuccessPhrase,
   toolCallWaitingPhrase,
 } from "./tool-call-phrases.js";
@@ -57,5 +60,24 @@ describe("tool-call-phrases", () => {
     expect(
       toolCallFailurePhrase("Write", "{}", "Write requires file_path"),
     ).toBe("Failed to write file — Write requires file_path");
+  });
+
+  it("classifies execution vs read-only bash", () => {
+    expect(isExecutionBashCommand("ls -la")).toBe(false);
+    expect(isExecutionBashCommand("python3 add.py 15.6 28.3")).toBe(true);
+  });
+
+  it("maps execution bash to shell command stat", () => {
+    expect(toolCallStatPhrase("Bash", "python3 add.py 15.6 28.3", "43.9")).toBe(
+      "ran 1 shell command",
+    );
+    expect(toolCallStatPhrase("Bash", "ls -la /tmp", "drwxr-xr-x  3 user  staff  96 .\n")).toBe(
+      "listed 1 directory",
+    );
+  });
+
+  it("formats aggregated shell command stat", () => {
+    expect(shellCommandStat(1)).toBe("ran 1 shell command");
+    expect(shellCommandStat(2)).toBe("ran 2 shell commands");
   });
 });

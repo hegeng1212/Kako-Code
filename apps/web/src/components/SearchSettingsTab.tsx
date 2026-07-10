@@ -8,6 +8,7 @@ import type {
 import { api } from "../api";
 import { SearchProviderIcon } from "./SearchProviderIcon";
 import { PanelToolbar } from "./PanelToolbar";
+import { SettingsDirtyStatus } from "./SettingsDirtyStatus";
 import {
   IconChevronDown,
   IconEye,
@@ -564,7 +565,7 @@ export function SearchSettingsTab() {
 
       <div className={`search-settings__footer ${dirty ? "search-settings__footer--dirty" : ""}`}>
         <span className="search-settings__footer-status">
-          {dirty ? "有未保存的更改" : saving ? "保存中…" : "所有更改已保存"}
+          {dirty ? <SettingsDirtyStatus /> : saving ? "保存中…" : "所有更改已保存"}
         </span>
         <div className="search-settings__footer-actions">
           {dirty && (

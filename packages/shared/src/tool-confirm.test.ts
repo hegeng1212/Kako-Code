@@ -47,6 +47,29 @@ describe("normalizeToolConfirmResult", () => {
       denialReason: undefined,
       inputPatch: undefined,
       sessionAllow: "writes",
+      networkHost: undefined,
+      mcpTool: undefined,
+      workspacePath: undefined,
+      networkAllowlistHosts: undefined,
+    });
+  });
+
+  it("passes networkAllowlistHosts through", () => {
+    expect(
+      normalizeToolConfirmResult({
+        allowed: true,
+        networkAllowlistHosts: ["api.example.com"],
+      }),
+    ).toEqual({
+      allowed: true,
+      permissionMode: undefined,
+      denialReason: undefined,
+      inputPatch: undefined,
+      sessionAllow: undefined,
+      networkHost: undefined,
+      mcpTool: undefined,
+      workspacePath: undefined,
+      networkAllowlistHosts: ["api.example.com"],
     });
   });
 });
