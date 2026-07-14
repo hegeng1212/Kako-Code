@@ -79,6 +79,12 @@ export async function runSecurityGate(
     return { allowed: false, needsConfirm: false, error: capError, audit };
   }
 
+  if (toolCall.name === "Agent") {
+    audit.approvalRequired = false;
+    audit.approvalResult = "skipped";
+    return { allowed: true, needsConfirm: false, audit };
+  }
+
   let workspaceNeedsApproval = false;
   for (const rawPath of assessment.workspacePaths) {
     if (isDeniedSecretPath(rawPath, ctx.policy)) {

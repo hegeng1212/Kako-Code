@@ -28,6 +28,10 @@ alwaysApply: true
 
 **应做：** 定义通用契约；工具结果原样回给模型，由模型决定下一步（含 `AskUserQuestion`）；prompt 写规则不写样例；测试用中性 `Option A/B` 数据。
 
+## 技能目录完整性
+
+默认 skill（bundled + system）与用户已启用 skill **必须**出现在 system prompt 的 Skill catalog 中：默认段在前、用户段动态追加。不得以 agent YAML 白名单或 harness 过滤裁剪。详见 `docs/dev/engineering-principles.md` 第三节。
+
 ## 应做（共同）
 
 - 模型行为 → `agents/prompts/`、agent YAML

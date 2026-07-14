@@ -62,6 +62,63 @@ async function writeSessionMeta(meta: SessionMeta): Promise<void> {
 }
 
 export class SessionManager {
+  isProjectTrusted(project: Project): boolean {
+    return Boolean(project.trustedAt);
+  }
+
+  async ensureProjectsTrustMigrated(): Promise<void> {
+    const index = await readProjectIndex();
+    if (index.workspaceTrustMigrated) return;
+    for (const p of index.projects) {
+      if (!p.lastSessionId) {
+        // Untrusted stubs (including "No, exit" leftovers wrongly backfilled earlier).
+        delete p.trustedAt;
+        continue;
+      }
+      if (!p.trustedAt) {
+        p.trustedAt = p.updatedAt ?? p.createdAt;
+      }
+    }
+    index.workspaceTrustMigrated = true;
+    await writeProjectIndex(index);
+  }
+
+  async findProject(cwd: string): Promise<Project | null> {
+    const normalized = resolve(cwd);
+    const id = projectIdFromCwd(normalized);
+    const index = await readProjectIndex();
+    return index.projects.find((p) => p.id === id) ?? null;
+  }
+
+  /** Create or return the project row for cwd; new projects leave trustedAt unset. */
+  async getOrCreateProject(cwd: string): Promise<Project> {
+    return this.resolveProject(cwd);
+  }
+
+  async markProjectTrusted(cwd: string, at = new Date()): Promise<Project> {
+    const normalized = resolve(cwd);
+    const id = projectIdFromCwd(normalized);
+    const index = await readProjectIndex();
+    const now = at.toISOString();
+    let project = index.projects.find((p) => p.id === id);
+    if (!project) {
+      project = {
+        id,
+        cwd: normalized,
+        name: projectNameFromCwd(normalized),
+        createdAt: now,
+        updatedAt: now,
+        trustedAt: now,
+      };
+      index.projects.push(project);
+    } else {
+      project.trustedAt = now;
+      project.updatedAt = now;
+    }
+    await writeProjectIndex(index);
+    return project;
+  }
+
   async resolveProject(cwd: string): Promise<Project> {
     const normalized = resolve(cwd);
     const id = projectIdFromCwd(normalized);
@@ -116,6 +173,34 @@ export class SessionManager {
     return metaToSession(meta);
   }
 
+  async createChildSession(input: {
+    parentSessionId: SessionId;
+    agentName: string;
+    cwd: string;
+  }): Promise<Session> {
+    const parent = await readSessionMeta(input.parentSessionId);
+    if (!parent) {
+      throw new Error(`Parent session not found: ${input.parentSessionId}`);
+    }
+    const cwd = resolve(input.cwd);
+    const project = await this.resolveProject(cwd);
+    const now = new Date().toISOString();
+    const sessionId: SessionId = `sess-${randomUUID().slice(0, 8)}`;
+    const meta: SessionMeta = {
+      id: sessionId,
+      projectId: project.id,
+      cwd,
+      agentName: input.agentName,
+      title: `${input.agentName} subagent`,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      parentSessionId: input.parentSessionId,
+    };
+    await writeSessionMeta(meta);
+    return metaToSession(meta);
+  }
+
   async getSession(id: SessionId): Promise<Session | null> {
     const meta = await readSessionMeta(id);
     return meta ? metaToSession(meta) : null;
@@ -155,7 +240,9 @@ export class SessionManager {
 
   async updateSession(
     id: SessionId,
-    patch: Partial<Pick<SessionMeta, "title" | "status">>,
+    patch: Partial<
+      Pick<SessionMeta, "title" | "status" | "jobLabel" | "agentState" | "planFilePath">
+    >,
   ): Promise<Session> {
     const meta = await readSessionMeta(id);
     if (!meta) {
@@ -164,6 +251,9 @@ export class SessionManager {
 
     if (patch.title !== undefined) meta.title = patch.title;
     if (patch.status !== undefined) meta.status = patch.status;
+    if (patch.jobLabel !== undefined) meta.jobLabel = patch.jobLabel;
+    if (patch.agentState !== undefined) meta.agentState = patch.agentState;
+    if (patch.planFilePath !== undefined) meta.planFilePath = patch.planFilePath;
     meta.updatedAt = new Date().toISOString();
     await writeSessionMeta(meta);
     return metaToSession(meta);

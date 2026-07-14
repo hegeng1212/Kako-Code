@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentCompletedSummary,
+  agentFinishedTimelineLine,
   buildAgentTaskNotificationMessage,
   formatBackgroundAgentLaunchResult,
 } from "./agent-notification.js";
@@ -12,8 +13,9 @@ describe("agent task notification", () => {
       description: "Scan auth module",
       subagentName: "explore",
     });
-    expect(text).toContain("Task ID: aabc1234");
+    expect(text).toContain("agentId: aabc1234");
     expect(text).toContain("explore");
+    expect(text).toContain("Async agent launched successfully");
   });
 
   it("builds task-notification XML for completed agents", () => {
@@ -29,6 +31,14 @@ describe("agent task notification", () => {
     expect(message).toContain("<task-notification>");
     expect(message).toContain("<kind>agent</kind>");
     expect(message).toContain("<status>completed</status>");
+    expect(agentFinishedTimelineLine({
+      taskId: "aabc1234",
+      subagentName: "explore",
+      description: "Scan auth module",
+      status: "completed",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:30.000Z",
+    })).toBe('Agent "Scan auth module" finished');
     expect(agentCompletedSummary({
       taskId: "aabc1234",
       subagentName: "explore",
@@ -36,6 +46,6 @@ describe("agent task notification", () => {
       status: "completed",
       startedAt: "2026-01-01T00:00:00.000Z",
       completedAt: "2026-01-01T00:00:30.000Z",
-    })).toContain("completed · 30s");
+    })).toContain('finished · 30s');
   });
 });

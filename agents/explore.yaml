@@ -8,12 +8,13 @@ model: ""
 systemPrompt: ./prompts/explore.md
 tools:
   - Read
-  - Glob
   - Grep
+  - Glob
 disallowedTools:
   - Agent
   - ExitPlanMode
   - Edit
   - Write
+  - NotebookEdit
 permissionMode: plan
 maxTurns: 30

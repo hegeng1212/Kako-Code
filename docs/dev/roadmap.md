@@ -61,7 +61,7 @@
 | Skill 系统 | 发现、激活、安装 |
 | Memory L2/L3 | rolling summary + 事实提取 |
 | Hook 系统 | PreToolUse / PostToolUse |
-| 更多 Tools | Edit, Glob, Grep, Agent, Skill |
+| 更多 Tools | Edit, Grep, Agent, Skill |
 | 更多 LLM | Google, Azure, OpenRouter, Ollama |
 | Tauri App | 对话页 + 日志页 + 运行树 |
 | CLI 扩展 | `kako agent run`, `kako skill install` |

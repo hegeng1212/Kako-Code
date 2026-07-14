@@ -1,9 +1,33 @@
 import { describe, expect, it } from "vitest";
+import { agentToolDefinition } from "./builtin/agent-tool.js";
 import { bashToolDefinition } from "./builtin/bash.js";
+import { taskUpdateToolDefinition } from "./builtin/task-update.js";
 import { writeToolDefinition } from "./builtin/write.js";
 import { toolCallNeedsUserConfirm } from "./confirm-policy.js";
 
 describe("toolCallNeedsUserConfirm", () => {
+  it("never requires confirm for Agent in any permission mode", () => {
+    const call = {
+      id: "1",
+      name: "Agent",
+      input: { description: "Explore code", prompt: "Find handlers" },
+    };
+    for (const mode of ["default", "plan", "acceptEdits", "bypassPermissions"] as const) {
+      expect(toolCallNeedsUserConfirm(call, agentToolDefinition, mode)).toBe(false);
+    }
+  });
+
+  it("never requires confirm for Task tools in any permission mode", () => {
+    const call = {
+      id: "1",
+      name: "TaskUpdate",
+      input: { taskId: "task-1", status: "completed" },
+    };
+    for (const mode of ["default", "plan", "acceptEdits", "bypassPermissions"] as const) {
+      expect(toolCallNeedsUserConfirm(call, taskUpdateToolDefinition, mode)).toBe(false);
+    }
+  });
+
   it("requires confirm for Write in default mode", () => {
     expect(
       toolCallNeedsUserConfirm(

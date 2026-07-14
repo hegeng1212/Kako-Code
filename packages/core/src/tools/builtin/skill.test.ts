@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import {
   assertSkillAllowed,
+  buildInitSkillActivatedMessages,
   buildSkillActivatedMessages,
   formatActiveSkillReminder,
   formatSkillActivationResult,
@@ -87,6 +88,21 @@ describe("skillHandler", () => {
     });
   });
 
+  it("activates init skill for Claude-style pivot", async () => {
+    await withTempDir(async (cwd) => {
+      const result = await skillHandler({ skill: "init" }, toolContext(cwd, { allowedSkills: ["init"] }));
+      expect(result).toBe("Launching skill: init");
+    });
+  });
+
+  it("rejects slash-only skills", async () => {
+    await withTempDir(async (cwd) => {
+      await expect(
+        skillHandler({ skill: "workflows" }, toolContext(cwd, { allowedSkills: ["workflows"] })),
+      ).rejects.toThrow(/only available as a slash command/);
+    });
+  });
+
   it("rejects skills not bound to agent", async () => {
     await withTempDir(async (cwd) => {
       await seedSkill(cwd, "secret", "hidden");
@@ -100,6 +116,22 @@ describe("skillHandler", () => {
 describe("assertSkillAllowed adversarial", () => {
   it("blocks unlisted skill names", () => {
     expect(() => assertSkillAllowed("x", ["y"])).toThrow(/not available/);
+  });
+});
+
+describe("buildInitSkillActivatedMessages", () => {
+  it("injects init core prompt as a follow-up user message", () => {
+    const messages = buildInitSkillActivatedMessages({
+      systemPromptBase: "You are helpful.",
+      transcript: [{ role: "user", content: "init" }],
+      workspaceKakoMd: "Team uses Kako.",
+      now: new Date("2026-07-13T12:00:00"),
+    });
+    expect(messages).toHaveLength(3);
+    expect(messages[0]?.role).toBe("system");
+    expect(messages[1]?.role).toBe("user");
+    expect(String(messages[2]?.content)).toContain("create a KAKO.md file");
+    expect(String(messages[2]?.content)).not.toContain("<command-message>");
   });
 });
 

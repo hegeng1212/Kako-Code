@@ -9,6 +9,7 @@ import {
   formatEditResult,
   parseEditInput,
 } from "./edit.js";
+import { FILE_VERSION_REFRESH_TAG } from "../file-version.js";
 import { readHandler, readToolDefinition } from "./read.js";
 import { toolContext, withTempDir } from "./test-helpers.js";
 
@@ -36,7 +37,8 @@ describe("Edit tool definition", () => {
 
 - You must Read the file in this conversation before editing, or the call will fail.
 - \`old_string\` must match the file exactly, including indentation, and be unique — the edit fails otherwise. Strip the Read line prefix (line number + tab) before matching.
-- \`replace_all: true\` replaces every occurrence instead.`,
+- \`replace_all: true\` replaces every occurrence instead.
+- When the on-disk file changed since your last Read or successful Write/Edit on this path, the tool result includes the current file contents. When unchanged, only the edit summary is returned. Failed edits also include the current file to help you retry.`,
     );
     expect(editToolDefinition.requiresConfirmation).toBe(true);
   });
@@ -101,6 +103,38 @@ describe("editHandler", () => {
           toolContext(dir, { hasReadFile: () => false }),
         ),
       ).rejects.toThrow(/Read the file/);
+    });
+  });
+
+  it("attaches current file content when old_string is not found", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "stale.txt");
+      await writeFile(path, "current-line\n", "utf-8");
+      await expect(
+        editHandler(
+          { file_path: path, old_string: "missing", new_string: "new" },
+          readContext(dir, path),
+        ),
+      ).rejects.toThrow(new RegExp(`${FILE_VERSION_REFRESH_TAG}.*current-line`, "s"));
+    });
+  });
+
+  it("attaches refreshed file content when version is stale", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "versioned.txt");
+      await writeFile(path, "alpha\n", "utf-8");
+      const ctx = {
+        ...readContext(dir, path),
+        isFileVersionStale: async () => true,
+        noteFileVersion: async () => {},
+      };
+      const msg = await editHandler(
+        { file_path: path, old_string: "alpha", new_string: "beta" },
+        ctx,
+      );
+      expect(msg).toContain("Replaced 1 occurrence");
+      expect(msg).toContain(FILE_VERSION_REFRESH_TAG);
+      expect(msg).toContain("beta");
     });
   });
 });
@@ -173,6 +207,35 @@ describe("Edit via ToolRegistry", () => {
       });
       expect(editResult.status).toBe("error");
       expect(editResult.error).toContain("Read the file");
+    });
+  });
+
+  it("includes current file on failed edit after Read", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "retry.txt");
+      await writeFile(path, "keep-me\n", "utf-8");
+      const registry = new ToolRegistry({
+        cwd: dir,
+        sessionId: "sess-edit",
+        agentId: "agent-main",
+      });
+      registry.register(readToolDefinition, readHandler);
+      registry.register(editToolDefinition, editHandler);
+
+      await registry.execute({
+        id: "tu-read",
+        name: "Read",
+        input: { file_path: path },
+      });
+
+      const editResult = await registry.execute({
+        id: "tu-edit",
+        name: "Edit",
+        input: { file_path: path, old_string: "missing", new_string: "new" },
+      });
+      expect(editResult.status).toBe("error");
+      expect(editResult.error).toContain(FILE_VERSION_REFRESH_TAG);
+      expect(editResult.error).toContain("keep-me");
     });
   });
 });

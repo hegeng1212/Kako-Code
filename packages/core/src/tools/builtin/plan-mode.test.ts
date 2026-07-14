@@ -7,7 +7,9 @@ import { exitPlanModeHandler, exitPlanModeToolDefinition } from "./exit-plan-mod
 import {
   parseAllowedPrompts,
   parseExitPlanModeInput,
-  planFilePathForSession,
+  ensurePlanFile,
+  resolvePlanFileForSession,
+  legacyPlanFilePathForSession,
 } from "./plan-mode-shared.js";
 import { ToolRegistry } from "../registry.js";
 import { registerBuiltinTools } from "./registry.js";
@@ -74,6 +76,23 @@ describe("plan-mode-shared", () => {
         .allowedPrompts,
     ).toHaveLength(1);
   });
+
+  it("creates friendly plan filenames", async () => {
+    await withTempKakoHome();
+    const path = await ensurePlanFile("sess-plan", "API design");
+    expect(path).toMatch(/\/plans\/api-.+\.md$/);
+    const text = await readFile(path, "utf-8");
+    expect(text).toBe("");
+  });
+
+  it("migrates legacy sessionId plan paths", async () => {
+    await withTempKakoHome();
+    const legacy = legacyPlanFilePathForSession("sess-legacy");
+    await mkdir(join(tempHome!, "plans"), { recursive: true });
+    await writeFile(legacy, "# Legacy plan", "utf-8");
+    const path = await resolvePlanFileForSession("sess-legacy");
+    expect(path).toBe(legacy);
+  });
 });
 
 describe("EnterPlanMode tool definition", () => {
@@ -107,15 +126,14 @@ describe("EnterPlanMode / ExitPlanMode handlers", () => {
     const ctx = harnessContext();
     const out = await enterPlanModeHandler({}, ctx);
     expect(String(out)).toContain("Entered plan mode");
-    expect(String(out)).toContain(planFilePathForSession("sess-plan"));
+    expect(String(out)).toContain("/plans/");
     expect(ctx.getPermissionMode?.()).toBe("plan");
-    expect(ctx.getPlanFilePath?.()).toBe(planFilePathForSession("sess-plan"));
+    expect(ctx.getPlanFilePath?.()).toMatch(/\/plans\/.*\.md$/);
   });
 
   it("exits plan mode and returns plan file contents", async () => {
     await withTempKakoHome();
-    const planPath = planFilePathForSession("sess-plan");
-    await mkdir(join(tempHome!, "plans"), { recursive: true });
+    const planPath = await ensurePlanFile("sess-plan");
     await writeFile(planPath, "# Plan\n\nStep 1", "utf-8");
 
     const ctx = harnessContext();

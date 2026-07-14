@@ -12,6 +12,7 @@ import type {
   SkillDefinition,
   ToolCall,
   ToolConfirmResult,
+  TranscriptMessage,
   UserTurnInput,
 } from "@kako/shared";
 import { normalizeUserTurnInput } from "@kako/shared";
@@ -46,10 +47,11 @@ import { generateSessionTitle } from "../session/title.js";
 import {
   discoverSkillsForAgent,
   loadSkill,
-  toSkillIndex,
+  partitionSkillsForCatalog,
 } from "../skills/loader.js";
 import { skillNamesForToolAllowlist } from "../skills/system-skills.js";
 import {
+  buildInitSkillActivatedMessages,
   buildSkillActivatedMessages,
   formatActiveSkillReminder,
   parseSkillInput,
@@ -57,6 +59,7 @@ import {
 import { beginTurnBudget, getTurnBudget } from "../workflows/budget.js";
 import {
   completeBackgroundTask,
+  listBackgroundTasks,
   registerBackgroundTask,
 } from "../background/task-store.js";
 import {
@@ -64,6 +67,13 @@ import {
   type AgentTaskRecord,
 } from "../background/agent-notification.js";
 import { getAgentCompleteHandler } from "../background/agent-completion-registry.js";
+import {
+  classifySessionState,
+  summarizeToolCallsFromTranscript,
+} from "../background/session-state-classifier.js";
+import { generateJobLabel } from "../background/job-label.js";
+import { formatPlanWorkflowReminder } from "./plan-workflow.js";
+import { ensurePlanFile } from "../tools/builtin/plan-mode-shared.js";
 
 export interface RunTurnOptions {
   /** Pre-load skill instructions into system-reminder (slash harness path). */
@@ -100,6 +110,7 @@ const DEFAULT_TITLE = "New chat";
 function buildUserTurnMetadata(turn: UserTurnInput): Record<string, unknown> | undefined {
   const metadata: Record<string, unknown> = {};
   if (turn.llmText) metadata.llmText = turn.llmText;
+  if (turn.llmBlocks?.length) metadata.llmBlocks = turn.llmBlocks;
   if (turn.cliInput) metadata.cliInput = true;
   return Object.keys(metadata).length ? metadata : undefined;
 }
@@ -229,7 +240,7 @@ export class AgentRuntime {
         ? await sessionManager.loadSessionSummary(session.id)
         : undefined;
     const discoveredSkills = await discoverSkillsForAgent(session.cwd);
-    const skillIndex = await toSkillIndex(discoveredSkills);
+    const skillCatalog = await partitionSkillsForCatalog(session.cwd);
 
     const subagentDefinitions = await loadSubagentDefinitions(
       definition.subagents,
@@ -252,7 +263,7 @@ export class AgentRuntime {
       workspaceKakoMd: workspaceKako?.content,
       globalContext: globalContext?.content,
       sessionSummary,
-      availableSkills: skillIndex,
+      availableSkills: skillCatalog,
       environment,
       subagentDefinitions,
       securityPolicySection,
@@ -273,6 +284,17 @@ export class AgentRuntime {
       }
     }
 
+    const permissionMode = this.sessionPermissionMode ?? definition.permissionMode ?? "default";
+    if (permissionMode === "plan") {
+      const planPath =
+        this.sessionPlanFilePath ?? (await ensurePlanFile(session.id));
+      this.sessionPlanFilePath = planPath;
+      const systemMsg = messages[0];
+      if (systemMsg?.role === "system" && typeof systemMsg.content === "string") {
+        systemMsg.content += await formatPlanWorkflowReminder(planPath);
+      }
+    }
+
     const responseText = await runAgentLoop({
       router,
       registry: toolRegistry,
@@ -286,21 +308,30 @@ export class AgentRuntime {
       shouldAbort: this.callbacks.shouldAbort,
       onSkillActivate: async ({ toolCall }) => {
         const parsed = parseSkillInput(toolCall.input);
-        const loaded = await loadSkill(parsed.skill, session.cwd);
         const transcript = await memory.loadTranscript();
         const dialog = transcript.filter(
           (msg) => msg.role === "user" || msg.role === "assistant",
         );
+        const systemPromptBase = buildSystemPromptBase(definition, {
+          globalContext: globalContext?.content,
+          sessionSummary,
+          environment,
+          subagentDefinitions,
+        });
+        if (parsed.skill === "init") {
+          return buildInitSkillActivatedMessages({
+            systemPromptBase,
+            transcript: dialog,
+            skillArgs: parsed.args,
+            workspaceKakoMd: workspaceKako?.content,
+          });
+        }
+        const loaded = await loadSkill(parsed.skill, session.cwd);
         if (parsed.args?.trim()) {
           await memory.append(createMessage("user", parsed.args.trim()));
         }
         return buildSkillActivatedMessages({
-          systemPromptBase: buildSystemPromptBase(definition, {
-            globalContext: globalContext?.content,
-            sessionSummary,
-            environment,
-            subagentDefinitions,
-          }),
+          systemPromptBase,
           transcript: dialog,
           skillName: loaded.name,
           skillInstructions: loaded.instructions,
@@ -316,7 +347,69 @@ export class AgentRuntime {
 
     session.updatedAt = new Date().toISOString();
     await sessionManager.updateSession(session.id, { status: "active" });
+
+    void this.postTurnMetadata(session, turn.text, responseText, transcript, model, router);
+
     return { session, response: responseText };
+  }
+
+  private async postTurnMetadata(
+    session: Session,
+    userAsk: string,
+    responseText: string,
+    transcriptBefore: TranscriptMessage[],
+    model: string,
+    router: ReturnType<typeof createLLMRouter>,
+  ): Promise<void> {
+    const bgTasks = listBackgroundTasks(session.id).filter((t) => !t.stopped);
+    const hasBackgroundWork = bgTasks.some((t) => t.kind === "agent" || t.kind === "workflow");
+    if (!hasBackgroundWork && !responseText.trim()) return;
+
+    const updatedTranscript = [...transcriptBefore];
+    if (responseText) {
+      updatedTranscript.push(createMessage("assistant", responseText));
+    }
+    const toolNames = updatedTranscript
+      .filter((m) => m.role === "tool")
+      .map((m) => {
+        const meta = m.metadata as { toolName?: string } | undefined;
+        return meta?.toolName ?? "tool";
+      });
+
+    const meta = await sessionManager.getSessionMeta(session.id);
+    if (hasBackgroundWork || meta?.agentState) {
+      try {
+        const classified = await classifySessionState(router, model, {
+          previousState: meta?.agentState,
+          userAsk,
+          assistantTail: responseText,
+          toolSummary: summarizeToolCallsFromTranscript(toolNames),
+        });
+        if (classified) {
+          await sessionManager.updateSession(session.id, {
+            agentState: {
+              state: classified.state,
+              detail: classified.detail,
+              tempo: classified.tempo,
+              needs: classified.needs,
+              result: classified.result,
+              since: new Date().toISOString(),
+            },
+          });
+        }
+      } catch {
+        // Classifier is best-effort.
+      }
+    }
+
+    if (!meta?.jobLabel && responseText.trim().length > 20) {
+      void generateJobLabel(router, model, userAsk, responseText)
+        .then(async (label) => {
+          if (!label) return;
+          await sessionManager.updateSession(session.id, { jobLabel: label });
+        })
+        .catch(() => {});
+    }
   }
 
   async endSession(session: Session): Promise<void> {
@@ -365,15 +458,13 @@ export class AgentRuntime {
     registerBuiltinTools(registry);
     await mcpManager.registerTo((def, handler) => registry.register(def, handler));
 
-    if (definition.subagents?.length) {
-      registry.register(
-        agentToolDefinition,
-        createAgentHandler({
-          spawnSubAgent: (input, context) =>
-            this.spawnSubAgent(session, definition, input, context.agentId),
-        }),
-      );
-    }
+    registry.register(
+      agentToolDefinition,
+      createAgentHandler({
+        spawnSubAgent: (input, context) =>
+          this.spawnSubAgent(session, definition, input, context.agentId),
+      }),
+    );
 
     return registry;
   }
@@ -416,10 +507,20 @@ export class AgentRuntime {
     const taskId = `a${randomBytes(4).toString("hex")}`;
     const startedAt = new Date().toISOString();
     const abortController = new AbortController();
+    let childSessionId: string | undefined;
 
-    registerBackgroundTask(session.id, taskId, "agent", async () => {
-      abortController.abort();
-    });
+    registerBackgroundTask(
+      session.id,
+      taskId,
+      "agent",
+      async () => {
+        abortController.abort();
+      },
+      {
+        description: input.description,
+        subagentName,
+      },
+    );
 
     void this.executeSubAgentRun({
       session,
@@ -428,6 +529,14 @@ export class AgentRuntime {
       parentAgentId,
       subagentName,
       shouldAbort: () => abortController.signal.aborted || this.callbacks.shouldAbort?.() === true,
+      silentTools: true,
+      onChildSession: (childId) => {
+        childSessionId = childId;
+        const task = listBackgroundTasks(session.id).find((t) => t.id === taskId);
+        if (task) {
+          task.childSessionId = childId;
+        }
+      },
     })
       .then((result) => {
         void this.notifyAgentComplete(session.id, {
@@ -465,6 +574,7 @@ export class AgentRuntime {
       taskId,
       description: input.description,
       subagentName,
+      childSessionId,
     });
   }
 
@@ -485,9 +595,21 @@ export class AgentRuntime {
     parentAgentId: string;
     subagentName: string;
     shouldAbort?: () => boolean;
+    silentTools?: boolean;
+    onChildSession?: (childSessionId: SessionId) => void;
   }): Promise<string> {
     const { session, parentDefinition, subagentName, input: agentInput } = input;
     const subDefinition = await loadAgent(subagentName, session.cwd);
+    const childSession = await sessionManager.createChildSession({
+      parentSessionId: session.id,
+      agentName: subagentName,
+      cwd: session.cwd,
+    });
+    input.onChildSession?.(childSession.id);
+
+    const memory = new FileMemoryStore(childSession.id);
+    await memory.append(createMessage("user", agentInput.prompt));
+
     const logger = new ToolLogger();
     const router = createLLMRouter(this.registry);
 
@@ -504,18 +626,19 @@ export class AgentRuntime {
     const globalContext = await loadGlobalUserContext();
     const environment = await resolveEnvironmentInfo(session.cwd, model);
     const subSkills = await discoverSkillsForAgent(session.cwd);
+    const subSkillCatalog = await partitionSkillsForCatalog(session.cwd);
     const messages = await buildMessages({
       definition: subDefinition,
       transcript: [createMessage("user", agentInput.prompt)],
       workspaceKakoMd: workspaceKako?.content,
       globalContext: globalContext?.content,
-      availableSkills: await toSkillIndex(subSkills),
+      availableSkills: subSkillCatalog,
       environment,
     });
 
     const subRegistry = new ToolRegistry({
       cwd: session.cwd,
-      sessionId: session.id,
+      sessionId: childSession.id,
       agentId: `${input.parentAgentId}/${subagentName}`,
       permissionMode: subDefinition.permissionMode,
       confirm: this.callbacks.confirm,
@@ -535,17 +658,24 @@ export class AgentRuntime {
       router,
       registry: subRegistry,
       toolLogger: logger,
+      memory,
       messages,
       allowedTools,
       model,
       maxTurns: subDefinition.maxTurns ?? 20,
       blockAgentTool: true,
       shouldAbort: input.shouldAbort ?? this.callbacks.shouldAbort,
-      callbacks: {
-        onToolStart: this.callbacks.onToolStart,
-        onToolEnd: this.callbacks.onToolEnd,
-      },
+      callbacks: input.silentTools
+        ? {}
+        : {
+            onToolStart: this.callbacks.onToolStart,
+            onToolEnd: this.callbacks.onToolEnd,
+          },
     });
+
+    if (responseText) {
+      await memory.append(createMessage("assistant", responseText));
+    }
 
     return formatSubAgentResult(subagentName, agentInput.description, responseText);
   }

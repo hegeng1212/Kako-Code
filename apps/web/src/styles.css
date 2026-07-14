@@ -2279,6 +2279,7 @@ input {
 
 .mcp-server-card--expanded {
   box-shadow: var(--shadow-md);
+  overflow: visible;
 }
 
 .mcp-server-card--disabled {
@@ -2714,6 +2715,11 @@ input {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
 
+.mcp-approval-menu--dropup .mcp-approval-menu__list {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
 .mcp-approval-menu__option {
   display: block;
   width: 100%;
@@ -2893,8 +2899,13 @@ input {
   gap: 2px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
+  overflow: visible;
   background: #fff;
+}
+
+.mcp-approval-tools__row:has(.mcp-approval-menu--open) {
+  position: relative;
+  z-index: 3;
 }
 
 .mcp-approval-tools__row {

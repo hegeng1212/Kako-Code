@@ -6,6 +6,16 @@ import { bashApprovalMode } from "../security/risk-evaluator.js";
 
 const WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 
+/** Session task list + background task control — orchestration, not pre-approval gated. */
+const TASK_TOOLS_NO_CONFIRM = new Set([
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskUpdate",
+  "TaskStop",
+  "TaskOutput",
+]);
+
 export function toolCallNeedsUserConfirm(
   toolCall: ToolCall,
   definition: ToolDefinition,
@@ -13,6 +23,11 @@ export function toolCallNeedsUserConfirm(
   policy?: SecurityPolicy,
   mcpApproval?: McpApprovalMode,
 ): boolean {
+  /** Spawning a subagent is orchestration; child tool policy gates side effects. */
+  if (toolCall.name === "Agent") return false;
+
+  if (TASK_TOOLS_NO_CONFIRM.has(toolCall.name)) return false;
+
   if (mcpApproval === "never") return false;
   if (mcpApproval === "deny") return false;
   if (!definition.requiresConfirmation && !definition.security?.sideEffect) {

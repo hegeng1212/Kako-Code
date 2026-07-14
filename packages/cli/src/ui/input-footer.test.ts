@@ -31,7 +31,7 @@ describe("input-footer", () => {
 
   it("renders plan mode footer hint", () => {
     expect(stripAnsi(renderPlanModeFooterHint())).toBe(
-      "⏸ plan mode on (shift+tab to cycle)",
+      "⏸ plan mode on (shift+tab to cycle) · ← for agents",
     );
   });
 

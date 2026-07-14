@@ -15,6 +15,8 @@ export interface UserTurnInput {
   text: string;
   /** When set, sent to the LLM instead of `text` (slash skill harness injection). */
   llmText?: string;
+  /** When set, sent to the LLM as separate user content blocks (after harness context reminder). */
+  llmBlocks?: import("./llm.js").LLMContentBlock[];
   attachments?: UserAttachment[];
   /** True when the user typed this prompt in the CLI chat box (↑/↓ history). */
   cliInput?: boolean;
@@ -29,6 +31,7 @@ export function normalizeUserTurnInput(value: string | UserTurnInput): UserTurnI
     return {
       text: value.text ?? "",
       llmText: value.llmText?.trim() || undefined,
+      llmBlocks: value.llmBlocks?.length ? value.llmBlocks : undefined,
       attachments: value.attachments?.length ? value.attachments : undefined,
       cliInput: value.cliInput === true ? true : undefined,
     };

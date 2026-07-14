@@ -1,3 +1,4 @@
+import { getSystemSkillHandler, workflowCompletedSummary, type WorkflowRunRecord } from "@kako/core";
 import { ansi } from "./ansi.js";
 import { formatDurationSeconds } from "./format-duration.js";
 import { renderPlanPreviewTreeLine } from "./plan-box.js";
@@ -19,7 +20,9 @@ import {
   toolCallFailurePhrase,
   toolCallStatPhrase,
   toolCallSuccessPhrase,
+  toolCallTimelinePhrase,
   toolCallWaitingPhrase,
+  mergeActivityStatPhrases,
   workflowNameFromDetail,
 } from "./tool-call-phrases.js";
 
@@ -34,6 +37,8 @@ export interface ToolCallTimelineEntry {
   output?: string;
   errorDetail?: string;
   errorExpanded?: boolean;
+  /** Skill name detail visible when the user expands a Skill row. */
+  skillExpanded?: boolean;
   /** Raw tool input — used for Write/Edit previews. */
   toolInput?: Record<string, unknown>;
   /** Pre-write file content — captured before Write overwrites an existing file. */
@@ -46,6 +51,10 @@ export interface ToolCallTimelineEntry {
   dotFrame: number;
   /** Waiting for user to approve a confirmation-gated tool (Write/Edit). */
   awaitingApproval?: boolean;
+  /** Agent tool launched with run_in_background. */
+  backgrounded?: boolean;
+  /** Expanded background agent detail (ctrl+o). */
+  agentExpanded?: boolean;
 }
 
 const WAITING_DOTS = ["", ".", "..", "..."] as const;
@@ -56,14 +65,21 @@ export function toolCallLabel(name: string, detail: string): string {
   return `${name} ${trimmed}`;
 }
 
-function renderPhraseLine(phrase: string, color: "green" | "red" | "yellow"): string {
-  const styled =
-    color === "green"
-      ? ansi.green
-      : color === "red"
-        ? ansi.red
-        : ansi.yellow;
-  return `${styled}${phrase}${ansi.reset}`;
+function renderStatusDot(color: "green" | "red"): string {
+  return color === "green" ? `${ansi.green}⏺${ansi.reset}` : `${ansi.red}⏺${ansi.reset}`;
+}
+
+function renderTimelineStatusLine(
+  entry: ToolCallTimelineEntry,
+  color: "green" | "red",
+  opts?: { expandHint?: boolean },
+): string {
+  const phrase = toolCallTimelinePhrase(entry.name, entry.detail);
+  const hint =
+    opts?.expandHint && !entry.errorExpanded
+      ? ` ${ansi.muted}(click to expand)${ansi.reset}`
+      : "";
+  return `${renderStatusDot(color)} ${ansi.muted}${phrase}${ansi.reset}${hint}`;
 }
 
 /** Single-line tool status (waiting / completed / failed header). */
@@ -83,14 +99,10 @@ export function renderToolCallStatusLine(entry: ToolCallTimelineEntry): string {
     if (isPlanFileTool(entry)) {
       return `${ansi.green}⏺${ansi.reset} ${ansi.text}Updated plan${ansi.reset}`;
     }
-    return renderPhraseLine(toolCallSuccessPhrase(entry.name, entry.detail), "green");
+    return renderTimelineStatusLine(entry, "green");
   }
 
-  const hint =
-    entry.errorDetail && !entry.errorExpanded
-      ? ` ${ansi.muted}(click to expand)${ansi.reset}`
-      : "";
-  return `${renderPhraseLine(toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail), "red")}${hint}`;
+  return renderTimelineStatusLine(entry, "red", { expandHint: Boolean(entry.errorDetail) });
 }
 
 export function isPlanFileTool(entry: Pick<ToolCallTimelineEntry, "name" | "detail">): boolean {
@@ -125,6 +137,45 @@ function editStringsFromEntry(entry: ToolCallTimelineEntry): {
     oldString: typeof input.old_string === "string" ? input.old_string : "",
     newString: typeof input.new_string === "string" ? input.new_string : "",
   };
+}
+
+/** Line add/remove counts for Write/Edit tool rows. */
+export function fileLineChangeStatsFromEntry(
+  entry: ToolCallTimelineEntry,
+): { added: number; removed: number } | null {
+  if (entry.name !== "Write" && entry.name !== "Edit") return null;
+  if (isPlanFileDetail(entry.detail)) return null;
+  if (!shouldShowFileBodyInChat(entry.detail)) return null;
+
+  const update = fileUpdateBeforeAfterFromEntry(entry);
+  if (update) {
+    return countEditDiffStats(update.before, update.after);
+  }
+
+  if (entry.name === "Write") {
+    const content = writeContentFromEntry(entry);
+    if (!content.trim()) return null;
+    return { added: countSourceLines(content), removed: 0 };
+  }
+
+  const { oldString, newString } = editStringsFromEntry(entry);
+  if (!oldString && !newString) return null;
+  return countEditDiffStats(oldString, newString);
+}
+
+/** Inline +N -M suffix after Write/Update(file) labels. */
+export function renderFileLineChangeSuffix(
+  stats: { added: number; removed: number } | null,
+): string {
+  if (!stats || (stats.added === 0 && stats.removed === 0)) return "";
+  const parts: string[] = [];
+  if (stats.added > 0) {
+    parts.push(`${ansi.diffAdd}+${stats.added}${ansi.reset}`);
+  }
+  if (stats.removed > 0) {
+    parts.push(`${ansi.diffRemove}-${stats.removed}${ansi.reset}`);
+  }
+  return parts.length ? ` ${parts.join(" ")}` : "";
 }
 
 /** Green/red status dot for a single first-level tool row that required approval. */
@@ -183,36 +234,61 @@ export function isFileUpdateDisplay(
   return fileUpdateBeforeAfterFromEntry(entry as ToolCallTimelineEntry) !== null;
 }
 
-/** First-level file update header (Claude Code): ⏺ Update(add.py) */
-export function renderFileUpdateHeaderLine(entry: ToolCallTimelineEntry): string {
+/** First-level file update header (Claude Code): ⏺ Update(add.py) +3 -2 */
+export function renderFileUpdateHeaderLine(
+  entry: ToolCallTimelineEntry,
+  fullExpanded = false,
+): string {
   const file = fileBasenameFromDetail(entry.detail);
-  return `${renderEntryApprovalPrefix(entry)}${ansi.text}Update(${file})${ansi.reset}`;
+  const stats =
+    entry.status === "success" ? fileLineChangeStatsFromEntry(entry) : null;
+  const hint =
+    shouldShowFileBodyInChat(entry.detail)
+      ? ` ${ansi.muted}(${fullExpanded ? "click to collapse" : "click to expand"})${ansi.reset}`
+      : "";
+  return `${renderEntryApprovalPrefix(entry)}${ansi.text}Update(${file})${ansi.reset}${renderFileLineChangeSuffix(stats)}${hint}`;
 }
 
-/** First-level Write header (Claude Code): ⏺ Write(add.py) */
-export function renderWriteToolHeaderLine(entry: ToolCallTimelineEntry): string {
+/** First-level Write header (Claude Code): ⏺ Write(add.py) +12 */
+export function renderWriteToolHeaderLine(
+  entry: ToolCallTimelineEntry,
+  fullExpanded = false,
+): string {
   if (isFileUpdateDisplay(entry)) {
-    return renderFileUpdateHeaderLine(entry);
+    return renderFileUpdateHeaderLine(entry, fullExpanded);
   }
   const file = fileBasenameFromDetail(entry.detail);
-  return `${renderEntryApprovalPrefix(entry)}${ansi.text}Write(${file})${ansi.reset}`;
+  const stats =
+    entry.status === "success" ? fileLineChangeStatsFromEntry(entry) : null;
+  const hint =
+    shouldShowFileBodyInChat(entry.detail)
+      ? ` ${ansi.muted}(${fullExpanded ? "click to collapse" : "click to expand"})${ansi.reset}`
+      : "";
+  return `${renderEntryApprovalPrefix(entry)}${ansi.text}Write(${file})${ansi.reset}${renderFileLineChangeSuffix(stats)}${hint}`;
 }
 
 /** First-level Edit header (Claude Code): ⏺ Update(add.py) */
-export function renderEditToolHeaderLine(entry: ToolCallTimelineEntry): string {
-  return renderFileUpdateHeaderLine(entry);
+export function renderEditToolHeaderLine(
+  entry: ToolCallTimelineEntry,
+  fullExpanded = false,
+): string {
+  return renderFileUpdateHeaderLine(entry, fullExpanded);
 }
 
 /** Inner Write row (expanded activity) — no status dot. */
 export function renderWriteToolInvocationLine(entry: ToolCallTimelineEntry): string {
   const file = fileBasenameFromDetail(entry.detail);
-  return `${ansi.text}Write(${file})${ansi.reset}`;
+  const stats =
+    entry.status === "success" ? fileLineChangeStatsFromEntry(entry) : null;
+  return `${ansi.text}Write(${file})${ansi.reset}${renderFileLineChangeSuffix(stats)}`;
 }
 
 /** Inner Edit row (expanded activity) — no status dot. */
 export function renderEditToolInvocationLine(entry: ToolCallTimelineEntry): string {
   const file = fileBasenameFromDetail(entry.detail);
-  return `${ansi.text}Update(${file})${ansi.reset}`;
+  const stats =
+    entry.status === "success" ? fileLineChangeStatsFromEntry(entry) : null;
+  return `${ansi.text}Update(${file})${ansi.reset}${renderFileLineChangeSuffix(stats)}`;
 }
 
 export function renderFileDiffSummaryLine(
@@ -263,10 +339,7 @@ export function renderWriteToolDetailLines(
   width: number,
   branchIndent: number,
 ): string[] {
-  const lines: string[] = [
-    renderWriteToolInvocationLine(entry),
-    renderWriteToolSummaryLine(entry),
-  ];
+  const lines: string[] = [renderWriteToolInvocationLine(entry)];
   if (!shouldShowFileBodyInChat(entry.detail)) return lines;
   const content = writeContentFromEntry(entry);
   const update = fileUpdateBeforeAfterFromEntry(entry);
@@ -274,7 +347,7 @@ export function renderWriteToolDetailLines(
     lines.push(
       ...renderFilePreviewLines(update.before, update.after, width, {
         indent: branchIndent,
-        collapsed: true,
+        expanded: false,
         filePath: entry.detail,
       }),
     );
@@ -282,7 +355,7 @@ export function renderWriteToolDetailLines(
     lines.push(
       ...renderFilePreviewLines("", content, width, {
         indent: branchIndent,
-        collapsed: true,
+        expanded: false,
         filePath: entry.detail,
       }),
     );
@@ -294,14 +367,14 @@ function renderFileUpdateBodyLines(
   entry: ToolCallTimelineEntry,
   width: number,
   contentStart: number,
-  collapsed: boolean,
+  fullExpanded: boolean,
 ): string[] {
   if (!shouldShowFileBodyInChat(entry.detail)) return [];
   const update = fileUpdateBeforeAfterFromEntry(entry);
   if (!update) return [];
   return renderFilePreviewLines(update.before, update.after, width, {
     indent: contentStart,
-    collapsed,
+    expanded: fullExpanded,
     filePath: entry.detail,
   });
 }
@@ -312,10 +385,7 @@ export function renderEditToolDetailLines(
   width: number,
   branchIndent: number,
 ): string[] {
-  const lines: string[] = [
-    renderEditToolInvocationLine(entry),
-    renderEditToolSummaryLine(entry),
-  ];
+  const lines: string[] = [renderEditToolInvocationLine(entry)];
   lines.push(...renderFileUpdateBodyLines(entry, width, branchIndent, false));
   return lines;
 }
@@ -324,21 +394,18 @@ export function renderWriteToolLines(
   entry: ToolCallTimelineEntry,
   width: number,
   contentStart: number,
-  collapsed: boolean,
+  fullExpanded: boolean,
 ): string[] {
-  const lines: string[] = [renderWriteToolHeaderLine(entry)];
+  const lines: string[] = [renderWriteToolHeaderLine(entry, fullExpanded)];
   const showBody = shouldShowFileBodyInChat(entry.detail);
   if (entry.status === "success") {
-    if (!showBody || !collapsed) {
-      lines.push(renderWriteToolSummaryLine(entry));
-    }
-    if (showBody && !collapsed) {
+    if (showBody) {
       const update = fileUpdateBeforeAfterFromEntry(entry);
       if (update) {
         lines.push(
           ...renderFilePreviewLines(update.before, update.after, width, {
             indent: contentStart,
-            collapsed: false,
+            expanded: fullExpanded,
             filePath: entry.detail,
           }),
         );
@@ -348,7 +415,8 @@ export function renderWriteToolLines(
           lines.push(
             ...renderFilePreviewLines("", content, width, {
               indent: contentStart,
-              collapsed: false,
+              expanded: fullExpanded,
+              collapsed: !fullExpanded,
               filePath: entry.detail,
             }),
           );
@@ -363,11 +431,9 @@ export function renderWriteToolLines(
       lines[0] = `${ansi.red}Waiting${dots}${ansi.reset} ${ansi.muted}${toolCallWaitingPhrase(entry.name, entry.detail)}${ansi.reset}`;
     }
   } else {
-    const hint =
-      entry.errorDetail && !entry.errorExpanded
-        ? ` ${ansi.muted}(click to expand)${ansi.reset}`
-        : "";
-    lines[0] = `${ansi.red}${toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail)}${ansi.reset}${hint}`;
+    lines[0] = renderTimelineStatusLine(entry, "red", {
+      expandHint: Boolean(entry.errorDetail),
+    });
   }
   return lines;
 }
@@ -376,16 +442,13 @@ export function renderEditToolLines(
   entry: ToolCallTimelineEntry,
   width: number,
   contentStart: number,
-  collapsed: boolean,
+  fullExpanded: boolean,
 ): string[] {
-  const lines: string[] = [renderEditToolHeaderLine(entry)];
+  const lines: string[] = [renderEditToolHeaderLine(entry, fullExpanded)];
   const showBody = shouldShowFileBodyInChat(entry.detail);
   if (entry.status === "success") {
-    if (!showBody || !collapsed) {
-      lines.push(renderEditToolSummaryLine(entry));
-    }
-    if (showBody && !collapsed) {
-      lines.push(...renderFileUpdateBodyLines(entry, width, contentStart, false));
+    if (showBody) {
+      lines.push(...renderFileUpdateBodyLines(entry, width, contentStart, fullExpanded));
     }
   } else if (entry.status === "waiting") {
     if (entry.awaitingApproval) {
@@ -395,11 +458,101 @@ export function renderEditToolLines(
       lines[0] = `${ansi.red}Waiting${dots}${ansi.reset} ${ansi.muted}${toolCallWaitingPhrase(entry.name, entry.detail)}${ansi.reset}`;
     }
   } else {
-    const hint =
-      entry.errorDetail && !entry.errorExpanded
-        ? ` ${ansi.muted}(click to expand)${ansi.reset}`
-        : "";
-    lines[0] = `${ansi.red}${toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail)}${ansi.reset}${hint}`;
+    lines[0] = renderTimelineStatusLine(entry, "red", {
+      expandHint: Boolean(entry.errorDetail),
+    });
+  }
+  return lines;
+}
+
+export function isSkillTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
+  return entry.name === "Skill";
+}
+
+export function isAgentTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
+  return entry.name === "Agent";
+}
+
+function formatSubagentDisplayName(subagentType: string): string {
+  const normalized = subagentType.trim().toLowerCase();
+  if (normalized === "general-purpose") return "General-purpose";
+  if (!normalized) return "Agent";
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function agentDescriptionFromEntry(entry: ToolCallTimelineEntry): string {
+  const input = entry.toolInput ?? {};
+  if (typeof input.description === "string" && input.description.trim()) {
+    return input.description.trim();
+  }
+  return entry.detail.trim() || "agent task";
+}
+
+function agentSubagentTypeFromEntry(entry: ToolCallTimelineEntry): string {
+  const input = entry.toolInput ?? {};
+  if (typeof input.subagent_type === "string" && input.subagent_type.trim()) {
+    return input.subagent_type.trim();
+  }
+  return "general-purpose";
+}
+
+export function renderAgentToolLines(entry: ToolCallTimelineEntry): string[] {
+  const subagent = formatSubagentDisplayName(agentSubagentTypeFromEntry(entry));
+  const description = agentDescriptionFromEntry(entry);
+  const lines = [`${ansi.green}⏺${ansi.reset} ${ansi.text}${subagent}(${description})${ansi.reset}`];
+  if (entry.backgrounded) {
+    lines.push(
+      `${ansi.muted}└ Backgrounded agent (↓ to manage · ctrl+o to expand)${ansi.reset}`,
+    );
+  }
+  return lines;
+}
+
+/** Tree line when a subagent completes — Agent "…" finished */
+export function renderAgentFinishedEventLine(description: string): string {
+  const label = description.trim() || "agent task";
+  return `${ansi.muted}└ ${ansi.reset}Agent "${ansi.text}${label}${ansi.reset}" finished`;
+}
+
+/** Tree line when a dynamic workflow completes — not user input. */
+export function renderWorkflowFinishedEventLine(record: WorkflowRunRecord): string {
+  return `${ansi.muted}└ ${ansi.reset}${workflowCompletedSummary(record)}`;
+}
+
+function skillDisplayName(detail: string): string {
+  const trimmed = detail.trim();
+  return trimmed || "skill";
+}
+
+/** Collapsed / expanded Skill activation row. */
+export function renderSkillToolLines(entry: ToolCallTimelineEntry): string[] {
+  const lines: string[] = [];
+  const skillName = skillDisplayName(entry.detail);
+  const hint =
+    !entry.skillExpanded && entry.status === "success"
+      ? ` ${ansi.muted}(click to expand)${ansi.reset}`
+      : "";
+  if (entry.status === "waiting") {
+    const dots = WAITING_DOTS[entry.dotFrame % WAITING_DOTS.length]!;
+    lines.push(
+      `${ansi.red}Waiting${dots}${ansi.reset} ${ansi.muted}Skill(${skillName})${ansi.reset}`,
+    );
+    return lines;
+  }
+  const color = entry.status === "success" ? "green" : "red";
+  lines.push(
+    `${renderStatusDot(color)} ${ansi.text}Skill(${skillName})${ansi.reset}${hint}`,
+  );
+  if (entry.skillExpanded && entry.status === "success") {
+    lines.push(`${ansi.muted}└ Successfully loaded skill${ansi.reset}`);
+  }
+  if (entry.skillExpanded && entry.status === "error" && entry.errorDetail?.trim()) {
+    const wrapWidth = 72;
+    const short =
+      entry.errorDetail.trim().length > wrapWidth
+        ? `${entry.errorDetail.trim().slice(0, wrapWidth - 1)}…`
+        : entry.errorDetail.trim();
+    lines.push(`${ansi.red}   ✘ ${short}${ansi.reset}`);
   }
   return lines;
 }
@@ -412,21 +565,40 @@ function renderWorkflowsSlashLink(): string {
   return `${ansi.planBorder}/workflows${ansi.reset}`;
 }
 
+export function workflowDisplayName(entry: Pick<ToolCallTimelineEntry, "detail">): string {
+  return isWorkflowDetail(entry.detail)
+    ? workflowNameFromDetail(entry.detail)
+    : entry.detail.trim() || "workflow";
+}
+
+export function isDynamicWorkflowSkillName(name: string): boolean {
+  return getSystemSkillHandler(name.trim()) === "dynamic-workflow";
+}
+
 export function renderWorkflowViewHintLine(): string {
-  return `${ansi.muted}   └ ${renderWorkflowsSlashLink()} ${ansi.muted}to view dynamic workflow runs${ansi.reset}`;
+  return `${ansi.muted}└ ${renderWorkflowsSlashLink()} ${ansi.muted}to view dynamic workflow runs${ansi.reset}`;
 }
 
 export function renderWorkflowToolLines(entry: ToolCallTimelineEntry): string[] {
-  const wfName = isWorkflowDetail(entry.detail)
-    ? workflowNameFromDetail(entry.detail)
-    : entry.detail.trim() || "workflow";
-  const header = `${ansi.green}⏺${ansi.reset} ${ansi.text}Workflow(dynamic workflow: ${wfName})${ansi.reset}`;
+  const wfName = workflowDisplayName(entry);
+  if (isDynamicWorkflowSkillName(wfName)) {
+    return renderSkillToolLines(entry);
+  }
+  const header = `${ansi.green}⏺${ansi.reset} ${ansi.text}Workflow(${wfName})${ansi.reset}`;
   if (entry.status === "error") {
     const detail = entry.errorDetail?.trim() || toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail);
-    return [header, `${ansi.red}   ✘ ${detail}${ansi.reset}`];
+    return [header, `${ansi.red}└ ${detail}${ansi.reset}`];
   }
   if (entry.status === "waiting" || entry.status === "success") {
-    return [header, renderWorkflowViewHintLine()];
+    const hint =
+      !entry.skillExpanded && entry.status === "success"
+        ? ` ${ansi.muted}(click to expand)${ansi.reset}`
+        : "";
+    const lines = [`${header}${hint}`];
+    if (entry.skillExpanded || entry.status === "waiting") {
+      lines.push(renderWorkflowViewHintLine());
+    }
+    return lines;
   }
   return [renderToolCallStatusLine(entry)];
 }
@@ -540,7 +712,8 @@ export function collectActivityStats(entries: ToolCallTimelineEntry[]): string[]
   };
 
   for (const entry of entries) {
-    if (isPlanFileTool(entry) || isFileWriteTool(entry) || isFileEditTool(entry) || isWorkflowTool(entry)) {
+    if (entry.status === "waiting") continue;
+    if (isPlanFileTool(entry) || isFileWriteTool(entry) || isFileEditTool(entry) || isWorkflowTool(entry) || isSkillTool(entry) || isAgentTool(entry)) {
       flushExecutionBash();
       continue;
     }
@@ -553,7 +726,15 @@ export function collectActivityStats(entries: ToolCallTimelineEntry[]): string[]
     if (stat) stats.push(stat);
   }
   flushExecutionBash();
-  return stats;
+  return mergeActivityStatPhrases(stats);
+}
+
+export function isSkillToolToggleLine(meta?: { kind?: string }): boolean {
+  return meta?.kind === "skill-tool-toggle";
+}
+
+export function isAgentToolToggleLine(meta?: { kind?: string }): boolean {
+  return meta?.kind === "agent-tool-toggle";
 }
 
 export function isToolErrorToggleLine(meta?: {

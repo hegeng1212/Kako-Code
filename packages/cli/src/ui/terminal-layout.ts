@@ -17,6 +17,7 @@ import {
   storeUserAttachment,
   FileMemoryStore,
   sessionInputHistory,
+  listBackgroundTasks,
   type SystemSkillEntry,
   type WorkflowMeta,
   type WorkflowRunRecord,
@@ -42,7 +43,7 @@ import {
   type ToolCallTimelineEntry,
   type TurnTimelineEntry,
 } from "./chat-blocks.js";
-import { isToolErrorToggleLine, isToolGroupToggleLine, isPlanToolToggleLine, isWriteToolToggleLine, isEditToolToggleLine } from "./tool-call-display.js";
+import { isToolErrorToggleLine, isToolGroupToggleLine, isPlanToolToggleLine, isWriteToolToggleLine, isEditToolToggleLine, isSkillToolToggleLine, isAgentTool } from "./tool-call-display.js";
 import { isChoiceToggleLine } from "./ask-user-question-display.js";
 import {
   INPUT_MAX_VISIBLE_LINES,
@@ -90,6 +91,7 @@ import { openFileInEditor, openPlanInEditor, readPlanFileText } from "./open-edi
 import { renderHistorySeparator, renderInputCopyHint, renderPlanModeFooterHint } from "./input-footer.js";
 import {
   completeSlashSuggestion,
+  computeInputRowsScreenStart,
   filterSlashSuggestions,
   planSlashSuggestFooter,
   renderSlashSuggestLines,
@@ -98,11 +100,20 @@ import {
   slashSuggestQuery,
   SLASH_SUGGEST_HINT,
 } from "./slash-suggest.js";
+import { renderPlanEnabledLine } from "./plan-box.js";
 import {
   renderWorkflowFooterLine,
   renderWorkflowWaitingLine,
+  renderBackgroundAgentWaitingLine,
   type WorkflowFooterState,
 } from "./workflow-footer.js";
+import {
+  createAgentsPanelState,
+  renderAgentsPanelBody,
+  renderAgentsPanelFooter,
+  renderAgentsPanelHeader,
+  type AgentsPanelState,
+} from "./agents-panel.js";
 import {
   buildWorkflowConfirmChoiceRows,
   padWorkflowConfirmLines,
@@ -517,7 +528,8 @@ export type ContentClickAction =
   | { type: "toggleToolError"; turnId: string; toolId: string }
   | { type: "togglePlanTool"; turnId: string; toolId: string }
   | { type: "toggleWriteTool"; turnId: string; toolId: string }
-  | { type: "toggleEditTool"; turnId: string; toolId: string };
+  | { type: "toggleEditTool"; turnId: string; toolId: string }
+  | { type: "toggleSkillTool"; turnId: string; toolId: string };
 
 /** Map a screen row to a scrollable content line index, or null when out of range. */
 export function contentLineIndexFromScreen(
@@ -562,6 +574,9 @@ export function resolveContentClickAction(line: RenderLine | undefined): Content
   }
   if (isEditToolToggleLine(line.meta) && line.meta.toolId) {
     return { type: "toggleEditTool", turnId: line.meta.turnId, toolId: line.meta.toolId };
+  }
+  if (isSkillToolToggleLine(line.meta) && line.meta.toolId) {
+    return { type: "toggleSkillTool", turnId: line.meta.turnId, toolId: line.meta.toolId };
   }
   return null;
 }
@@ -695,6 +710,7 @@ export class ChatLayout {
 
   private workflowFooter: WorkflowFooterState | null = null;
   private workflowWaitingCount = 0;
+  private backgroundAgentWaitingCount = 0;
   private workflowPollTimer: ReturnType<typeof setInterval> | null = null;
   private workflowPollSessionId = "";
 
@@ -702,6 +718,11 @@ export class ChatLayout {
   private workflowsPanelState: WorkflowsPanelState = createInitialWorkflowsPanelState();
   private workflowsPanelSessionId = "";
   private workflowsPanelResolve: (() => void) | null = null;
+
+  private readingAgentsPanel = false;
+  private agentsPanelState: AgentsPanelState = createAgentsPanelState([]);
+  private agentsPanelSessionId = "";
+  private agentsPanelResolve: (() => void) | null = null;
 
   private workflowConfirmMode = false;
   private workflowConfirmMeta: WorkflowMeta | null = null;
@@ -943,6 +964,15 @@ export class ChatLayout {
         this.workflowFooter = null;
       }
       this.workflowWaitingCount = this.isTurnInProgress() ? countRunningWorkflows(runs) : 0;
+      this.backgroundAgentWaitingCount = this.isTurnInProgress()
+        ? listBackgroundTasks(sessionId).filter((t) => t.kind === "agent" && !t.stopped).length
+        : 0;
+      if (this.readingAgentsPanel && this.agentsPanelSessionId === sessionId) {
+        this.agentsPanelState = {
+          ...this.agentsPanelState,
+          tasks: listBackgroundTasks(sessionId).filter((t) => t.kind === "agent"),
+        };
+      }
       if (this.readingWorkflowsPanel && this.workflowsPanelSessionId === sessionId) {
         this.workflowsPanelState = {
           ...this.workflowsPanelState,
@@ -972,6 +1002,40 @@ export class ChatLayout {
     } catch {
       // Ignore transient read errors during polling.
     }
+  }
+
+  async openAgentsPanel(sessionId: string): Promise<void> {
+    const tasks = listBackgroundTasks(sessionId).filter((t) => t.kind === "agent");
+    this.agentsPanelSessionId = sessionId;
+    this.agentsPanelState = createAgentsPanelState(tasks);
+    this.readingAgentsPanel = true;
+    this.invalidateContentCache();
+    this.drawAgentsPanel();
+
+    return new Promise((resolve) => {
+      this.agentsPanelResolve = resolve;
+    });
+  }
+
+  appendPlanEnabledEvent(): void {
+    if (!this.activeTurn) return;
+    this.activeTurn.timeline.push({
+      type: "event",
+      lines: [renderPlanEnabledLine()],
+    });
+    this.invalidateContentCache();
+    this.redrawContent();
+  }
+
+  appendPlanPreviewEvent(planPath: string, planText: string): void {
+    if (!this.activeTurn) return;
+    this.activeTurn.timeline.push({
+      type: "plan-preview",
+      planPath,
+      planText,
+    });
+    this.invalidateContentCache();
+    this.redrawContent();
   }
 
   async openWorkflowsPanel(sessionId: string): Promise<void> {
@@ -1125,6 +1189,10 @@ export class ChatLayout {
     }
     if (this.readingWorkflowsPanel) {
       void this.handleWorkflowsPanelInput(chunk);
+      return;
+    }
+    if (this.readingAgentsPanel) {
+      void this.handleAgentsPanelInput(chunk);
       return;
     }
     if (this.readingChoice) {
@@ -1777,6 +1845,21 @@ export class ChatLayout {
     } else if (action.type === "shiftTab") {
       this.cyclePermissionMode();
       return;
+    } else if (
+      action.type === "cursorLeft" &&
+      this.permissionMode === "plan" &&
+      this.inputBuffer.length === 0 &&
+      this.inputCursor === 0
+    ) {
+      void this.openAgentsPanel(this.sessionId);
+      return;
+    } else if (
+      action.type === "cursorDown" &&
+      this.permissionMode === "plan" &&
+      this.inputBuffer.length === 0
+    ) {
+      void this.openAgentsPanel(this.sessionId);
+      return;
     } else if (action.type === "backspace") {
       this.clearInputClearHint();
       this.clearCopyHint();
@@ -1942,7 +2025,8 @@ export class ChatLayout {
       this.planReviewMode ||
       this.workflowConfirmMode ||
       this.readingChoice ||
-      this.readingWorkflowsPanel
+      this.readingWorkflowsPanel ||
+      this.readingAgentsPanel
     );
   }
 
@@ -1962,6 +2046,10 @@ export class ChatLayout {
     }
     if (this.readingWorkflowsPanel) {
       this.drawWorkflowsPanel();
+      return;
+    }
+    if (this.readingAgentsPanel) {
+      this.drawAgentsPanel();
       return;
     }
     if (this.readingChoice) {
@@ -2110,6 +2198,9 @@ export class ChatLayout {
     const lines: string[] = [];
     if (this.workflowWaitingCount > 0) {
       lines.push(renderWorkflowWaitingLine(this.workflowWaitingCount));
+    }
+    if (this.backgroundAgentWaitingCount > 0) {
+      lines.push(renderBackgroundAgentWaitingLine(this.backgroundAgentWaitingCount));
     }
     if (!this.activeTurn || this.activeTurn.phase === "done") return lines;
     const now = Date.now();
@@ -2274,6 +2365,8 @@ export class ChatLayout {
       status: "waiting",
       dotFrame: 0,
       toolInput,
+      backgrounded:
+        name === "Agent" && toolInput?.run_in_background === true,
     };
     this.activeTurn.timeline.push(entry);
     this.activeTurn.answerText = "";
@@ -2355,6 +2448,18 @@ export class ChatLayout {
     this.redrawContent();
   }
 
+  toggleSkillTool(turnId: string, toolId: string): void {
+    const turn = this.findTurn(turnId);
+    if (!turn) return;
+    const entry = turn.timeline.find(
+      (e): e is ToolCallTimelineEntry => e.type === "tool" && e.id === toolId,
+    );
+    if (!entry || entry.name !== "Skill") return;
+    entry.skillExpanded = !entry.skillExpanded;
+    this.invalidateContentCache();
+    this.redrawContent();
+  }
+
   togglePlanTool(turnId: string, toolId: string): void {
     const turn = this.findTurn(turnId);
     if (!turn) return;
@@ -2385,9 +2490,6 @@ export class ChatLayout {
     const turn = this.activeTurn!;
     const last = turn.timeline[turn.timeline.length - 1];
     if (last?.type === "thinking" && last.endedAt === null) return last;
-
-    // One "Thought for …" block per user turn (tool loops may stream reasoning again).
-    if (turn.timeline.some((e) => e.type === "thinking")) return null;
 
     const now = Date.now();
     const entry: Extract<TurnTimelineEntry, { type: "thinking" }> = {
@@ -2445,6 +2547,7 @@ export class ChatLayout {
       expandedToolGroups: new Set(),
       expandedChoices: new Set(),
       pulseFrame: 0,
+      planMode: this.permissionMode === "plan",
     };
     this.tipText = null;
     this.followBottom = true;
@@ -2519,6 +2622,28 @@ export class ChatLayout {
     this.redrawContent();
   }
 
+  finishHarnessTurn(): void {
+    if (!this.activeTurn) return;
+    this.finalizeOpenThinking();
+    this.activeTurn.harnessOnly = true;
+    this.activeTurn.phase = "done";
+    this.activeTurn.finishedAt = Date.now();
+    if (!this.activeTurn.thinkingEndedAt) {
+      this.activeTurn.thinkingEndedAt = this.activeTurn.finishedAt;
+    }
+    this.turns.push(this.activeTurn);
+    this.activeTurn = null;
+    this.turnExitRequested = false;
+    this.tipText = null;
+    this.stopTurnTick();
+    if (!this.exitHintTimer) {
+      this.shortcutsOverride = null;
+    }
+    this.maybeScrollToBottom();
+    this.invalidateContentCache();
+    this.redrawContent();
+  }
+
   finishTurn(): void {
     if (!this.activeTurn) return;
     this.finalizeOpenThinking();
@@ -2538,7 +2663,22 @@ export class ChatLayout {
     }
     this.activeTurn.phase = "done";
     this.activeTurn.finishedAt = Date.now();
-    this.activeTurn.doneVerb = pickDoneVerb();
+    this.activeTurn.doneVerb = this.activeTurn.planMode ? "Worked" : pickDoneVerb();
+    if (this.activeTurn.planMode) {
+      const answer =
+        this.activeTurn.answerText.trim() ||
+        this.activeTurn.timeline
+          .filter((e): e is Extract<TurnTimelineEntry, { type: "answer" }> => e.type === "answer")
+          .map((e) => e.text)
+          .join(" ")
+          .trim();
+      if (answer) {
+        const firstLine = answer.split("\n").find((l) => l.trim())?.trim() ?? answer;
+        const sentence = firstLine.split(/(?<=[.!?。！？])\s+/)[0]?.trim() ?? firstLine;
+        this.activeTurn.recapText =
+          sentence.length > 120 ? `${sentence.slice(0, 117)}…` : sentence;
+      }
+    }
     if (!this.activeTurn.thinkingEndedAt) {
       this.activeTurn.thinkingEndedAt = this.activeTurn.finishedAt;
     }
@@ -2749,6 +2889,9 @@ export class ChatLayout {
         break;
       case "toggleEditTool":
         this.toggleWriteEditTool(action.turnId, action.toolId, "edit");
+        break;
+      case "toggleSkillTool":
+        this.toggleSkillTool(action.turnId, action.toolId);
         break;
     }
   }
@@ -3084,22 +3227,31 @@ export class ChatLayout {
     ];
 
     const inputRowOffset = inputBlock.length - inputRendered.rows.length - 2;
-    this.inputRowsScreenStart = top + inputRowOffset;
-    this.inputRowsScreenCount = inputRendered.rows.length;
-
-    const footerRows = suggestions.length
-      ? [
-          padToWidth(footerSeparator(cols), cols),
-          ...renderSlashSuggestLines({
+    const slashLines =
+      suggestions.length > 0
+        ? renderSlashSuggestLines({
             skills: suggestions,
             selectedIndex: this.slashSuggestSelected,
             cols,
             maxVisible: this.slashSuggestMaxVisible,
-          }).map((line) => padToWidth(line, cols)),
-          padToWidth(footerSeparator(cols), cols),
-          ...inputBlock,
-        ]
-      : inputBlock;
+          })
+        : [];
+    this.inputRowsScreenStart = computeInputRowsScreenStart({
+      footerTop: top,
+      slashSuggestLineCount: slashLines.length,
+      inputRowOffset,
+    });
+    this.inputRowsScreenCount = inputRendered.rows.length;
+
+    const footerRows =
+      slashLines.length > 0
+        ? [
+            padToWidth(footerSeparator(cols), cols),
+            ...slashLines.map((line) => padToWidth(line, cols)),
+            padToWidth(footerSeparator(cols), cols),
+            ...inputBlock,
+          ]
+        : inputBlock;
 
     const paintedEnd = top + footerRows.length;
     const prevExtent = this.slashFooterDrawExtent;
@@ -3453,6 +3605,77 @@ export class ChatLayout {
     this.invalidateContentCache();
     this.redraw();
     resolve?.();
+  }
+
+  private drawAgentsPanel(): void {
+    const { cols, rows } = getTerminalSize();
+    const header = renderAgentsPanelHeader(cols);
+    const bodyRows = Math.max(4, rows - 4);
+    const body = renderAgentsPanelBody(this.agentsPanelState, cols, bodyRows);
+    const footer = renderAgentsPanelFooter();
+    const screen = [header, ...body, footer];
+    let out = "";
+    for (let i = 0; i < rows; i++) {
+      out += moveTo(i + 1);
+      out += clearLine();
+      out += padToWidth(screen[i] ?? "", cols);
+    }
+    process.stdout.write(out);
+    process.stdout.write(HIDE_CURSOR);
+  }
+
+  private closeAgentsPanel(): void {
+    if (!this.readingAgentsPanel) return;
+    const resolve = this.agentsPanelResolve;
+    this.agentsPanelResolve = null;
+    this.readingAgentsPanel = false;
+    this.agentsPanelSessionId = "";
+    this.agentsPanelState = createAgentsPanelState([]);
+    this.activeFooterHeight = this.defaultFooterHeight;
+    this.invalidateContentCache();
+    this.redraw();
+    resolve?.();
+  }
+
+  private async handleAgentsPanelInput(chunk: string): Promise<void> {
+    const { actions: inputActions } = parseInputActions(chunk);
+    for (const action of inputActions) {
+      if (action.type === "escape" || action.type === "cursorLeft") {
+        if (this.agentsPanelState.view === "detail") {
+          this.agentsPanelState = { ...this.agentsPanelState, view: "list" };
+          this.drawAgentsPanel();
+          return;
+        }
+        this.closeAgentsPanel();
+        return;
+      }
+      if (action.type === "cursorUp") {
+        this.agentsPanelState = {
+          ...this.agentsPanelState,
+          selectedIndex: Math.max(0, this.agentsPanelState.selectedIndex - 1),
+        };
+        this.drawAgentsPanel();
+        return;
+      }
+      if (action.type === "cursorDown") {
+        this.agentsPanelState = {
+          ...this.agentsPanelState,
+          selectedIndex: Math.min(
+            Math.max(0, this.agentsPanelState.tasks.length - 1),
+            this.agentsPanelState.selectedIndex + 1,
+          ),
+        };
+        this.drawAgentsPanel();
+        return;
+      }
+      if (action.type === "enter" || action.type === "cursorRight") {
+        if (this.agentsPanelState.tasks.length > 0) {
+          this.agentsPanelState = { ...this.agentsPanelState, view: "detail" };
+          this.drawAgentsPanel();
+        }
+        return;
+      }
+    }
   }
 
   private async loadWorkflowsPanelPhases(run: WorkflowRunRecord): Promise<void> {

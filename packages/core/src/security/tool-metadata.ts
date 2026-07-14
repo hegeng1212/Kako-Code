@@ -2,6 +2,8 @@ import type { ToolDefinition, ToolSecurityMetadata } from "@kako/shared";
 
 export const BUILTIN_SECURITY_METADATA: Record<string, ToolSecurityMetadata> = {
   Read: { readonly: true, capability: ["read"], defaultRiskLevel: "low" },
+  Grep: { readonly: true, capability: ["read"], defaultRiskLevel: "low" },
+  Glob: { readonly: true, capability: ["read"], defaultRiskLevel: "low" },
   Write: { sideEffect: true, capability: ["write"], defaultRiskLevel: "medium" },
   Edit: { sideEffect: true, capability: ["write"], defaultRiskLevel: "medium" },
   NotebookEdit: { sideEffect: true, capability: ["write"], defaultRiskLevel: "medium" },
@@ -19,13 +21,20 @@ export const BUILTIN_SECURITY_METADATA: Record<string, ToolSecurityMetadata> = {
   CronCreate: { sideEffect: true, modifiesExternal: true, defaultRiskLevel: "medium" },
   CronDelete: { sideEffect: true, modifiesExternal: true, defaultRiskLevel: "medium" },
   CronList: { readonly: true, defaultRiskLevel: "none" },
-  TaskCreate: { sideEffect: true, defaultRiskLevel: "medium" },
+  /** Session task list CRUD — in-session orchestration, not pre-approval gated. */
+  TaskCreate: { defaultRiskLevel: "none" },
   TaskGet: { readonly: true, defaultRiskLevel: "none" },
   TaskList: { readonly: true, defaultRiskLevel: "none" },
-  TaskUpdate: { sideEffect: true, defaultRiskLevel: "medium" },
-  TaskStop: { sideEffect: true, defaultRiskLevel: "medium" },
+  TaskUpdate: { defaultRiskLevel: "none" },
+  /** Background task stop — user already delegated via Agent/Workflow/Monitor. */
+  TaskStop: { defaultRiskLevel: "none" },
+  TaskOutput: { readonly: true, defaultRiskLevel: "none" },
+  PushNotification: { modifiesExternal: true, defaultRiskLevel: "low" },
+  DesignSync: { sideEffect: true, requiresNetwork: true, modifiesExternal: true, defaultRiskLevel: "high" },
   /** Interactive prompt — user interaction is the tool itself, not a pre-approval gate. */
   AskUserQuestion: { readonly: true, defaultRiskLevel: "none" },
+  /** Spawns subagents; tool policy applies inside the child run, not at spawn. */
+  Agent: { defaultRiskLevel: "none" },
 };
 
 export function applySecurityMetadata(definition: ToolDefinition): ToolDefinition {

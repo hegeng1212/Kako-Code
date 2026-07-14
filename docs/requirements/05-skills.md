@@ -79,7 +79,12 @@ slashCommands:
 
 ## Agent 绑定
 
-Agent 定义中通过 `skills: [brainstorming, tdd]` 限制可用 Skill 集合。未绑定的 Skill 对 Agent 不可见。
+`agents/main.yaml` 中的 `skills:` 字段**当前未用于裁剪 system prompt 中的 Skill 目录**。运行时通过 `partitionSkillsForCatalog` 注入完整目录：
+
+1. **默认段** — bundled `skills/` + system registry（`init`、`deep-research` 等）
+2. **用户段** — 设置页（Web Skills 面板）安装且 `enabled !== false` 的**全部** skill，经 `discoverUserInstalledSkills` 注入；非单个示例 skill
+
+模型仅应调用目录中出现的 skill（或用户显式输入的 `/<name>`）。`filterSkillsForAgent` 保留供未来子 agent 场景，**禁止**接入 `buildMessages`。
 
 ## 日志
 

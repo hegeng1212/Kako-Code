@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import {
   BUILTIN_TOOLS,
+  CLAUDE_CODE_BUILTIN_TOOL_NAMES,
   DEFAULT_BUILTIN_TOOL_NAMES,
   defaultBuiltinToolNamesForCapability,
   missingBuiltinToolNames,
@@ -9,6 +10,7 @@ import {
   resolveAllToolNames,
   resolveAllowedToolNames,
 } from "./registry.js";
+import { agentToolDefinition } from "./agent-tool.js";
 
 describe("builtin tool registry", () => {
   function registryWithBuiltins(): ToolRegistry {
@@ -26,11 +28,14 @@ describe("builtin tool registry", () => {
     expect(registry.getDefinitions().map((d) => d.name)).toEqual(DEFAULT_BUILTIN_TOOL_NAMES);
     expect(DEFAULT_BUILTIN_TOOL_NAMES).toEqual([
       "Read",
+      "Grep",
+      "Glob",
       "Write",
       "Edit",
       "NotebookEdit",
       "Bash",
       "Monitor",
+      "TaskOutput",
       "TaskStop",
       "AskUserQuestion",
       "EnterPlanMode",
@@ -40,16 +45,34 @@ describe("builtin tool registry", () => {
       "CronCreate",
       "CronDelete",
       "CronList",
+      "DesignSync",
       "ScheduleWakeup",
       "TaskCreate",
       "TaskGet",
       "TaskList",
       "TaskUpdate",
+      "PushNotification",
       "WebFetch",
       "WebSearch",
       "Skill",
       "Workflow",
     ]);
+  });
+
+  it("includes every Claude Code built-in except Agent in DEFAULT_BUILTIN_TOOL_NAMES", () => {
+    const withoutAgent = CLAUDE_CODE_BUILTIN_TOOL_NAMES.filter((name) => name !== "Agent");
+    for (const name of withoutAgent) {
+      expect(DEFAULT_BUILTIN_TOOL_NAMES, `missing ${name}`).toContain(name);
+    }
+  });
+
+  it("registers Agent alongside built-ins for main-agent LLM tool surface", () => {
+    const registry = registryWithBuiltins();
+    registry.register(agentToolDefinition, async () => "ok");
+    const names = resolveAllToolNames(registry);
+    for (const name of CLAUDE_CODE_BUILTIN_TOOL_NAMES) {
+      expect(names, `missing Claude built-in ${name}`).toContain(name);
+    }
   });
 
   it("exposes LLM tool schemas for allowed names", () => {
@@ -118,6 +141,7 @@ describe("builtin tool registry", () => {
 
   it("resolveAllowedToolNames supports tools wildcard", () => {
     const registry = registryWithBuiltins();
+    registry.setCapability("FullAccess");
     const all = resolveAllowedToolNames(["*"], registry);
     expect(all).toContain("Read");
     expect(all).toContain("Bash");
@@ -131,7 +155,7 @@ describe("builtin tool registry", () => {
   });
 
   it("reports unimplemented built-ins requested by agent config", () => {
-    expect(missingBuiltinToolNames(["Read", "Edit", "Glob"])).toEqual(["Glob"]);
+    expect(missingBuiltinToolNames(["Read", "Edit", "Grep"])).toEqual([]);
   });
 
   it("every built-in has definition and handler", () => {

@@ -122,6 +122,48 @@ const result = await registry.execute(toolCall);
 // 结果原样回给模型；是否 AskUserQuestion 由模型在下一轮 tool call 决定
 ```
 
+## 技能目录完整性
+
+**System prompt 必须完整列出模型可调用的 Skill 目录**，格式与 Claude Code 一致：
+
+```
+<system-reminder>
+The following skills are available for use with the Skill tool:
+
+- deep-research: ...
+- init: ...
+[默认段：bundled + system registry，按 name 排序]
+
+- code-review: ...
+[用户段：已安装且 enabled 的用户 skill，按 name 排序]
+</system-reminder>
+```
+
+### 契约
+
+| 段 | 来源 |
+|----|------|
+| **默认段** | monorepo `skills/`（bundled）+ `SYSTEM_SKILL_REGISTRY` 中非 `slashOnly` 项 |
+| **用户段** | 设置页安装且 `enabled !== false` 的**全部** skill（`installed-skills.json` + `~/.kako/skills/` / 项目 `.kako/skills/`） |
+
+注入位置：`buildMessages` 在 Environment、Agent catalog 之后追加（不在 `agents/prompts/main.md` 硬编码）。
+
+### 禁止
+
+- 用 `agents/main.yaml` 的 `skills:` 白名单裁剪目录（`filterSkillsForAgent` 不得接入 `buildMessages`）
+- 用 harness patch 在运行时隐藏已发现 skill
+- 工具失败后在 assistant 文本中谎报成功（改 `agents/prompts/main.md`）
+
+### 测试
+
+`partitionSkillsForCatalog` 默认段 + 用户段条目数应等于 `discoverSkillsForAgent` 去重后的全集；缺 bundled system skill 文件时应 warning，不得静默跳过。
+
+## Claude Code 内置 Tool 完整性
+
+主 agent 每轮 LLM 请求的 **`tools` 参数**（非 `tool_calls`）必须包含 `CLAUDE_CODE_BUILTIN_TOOL_NAMES` 中的全部 built-in（28 个，含 Agent）+ 已连接 MCP tool。描述文案以 `packages/core/src/tools/claude-tool-text.ts` 为 canonical 源，经 `adaptClaudeCodeToolText` 做 Kako 路径/product 替换，**不得删段、不得缩写**。
+
+缺失 built-in 视为红线；`registry.test.ts` 契约测试覆盖。
+
 ## 相关文档
 
 - Agent 与 AskUserQuestion 边界：`agents/prompts/main.md`

@@ -41,6 +41,11 @@ const PY_KEYWORDS = new Set([
 ]);
 
 const DEFAULT_VISIBLE_LINES = 10;
+export const DEFAULT_DIFF_CONTEXT_LINES = 3;
+
+export type CompactDiffRow =
+  | { type: "line"; line: DiffLine }
+  | { type: "fold"; count: number };
 
 const CODE_EXTENSIONS = new Set([
   ".py",
@@ -477,15 +482,89 @@ export function countEditDiffStats(before: string, after: string): {
 export interface FoldableDiffOptions {
   indent?: number;
   maxVisibleLines?: number;
-  collapsed: boolean;
+  /** Truncate long single-file previews (new writes). */
+  collapsed?: boolean;
+  /** Full diff (true) vs compact hunks around changes (false, default). */
+  expanded?: boolean;
+  /** Context lines shown above/below each change hunk. */
+  contextLines?: number;
   filePath?: string;
+}
+
+/** Select diff rows around changes with fold markers for skipped unchanged regions. */
+export function buildCompactDiffRows(
+  diff: DiffLine[],
+  contextLines = DEFAULT_DIFF_CONTEXT_LINES,
+): CompactDiffRow[] {
+  const visible = new Set<number>();
+  for (let i = 0; i < diff.length; i++) {
+    if (diff[i]!.kind !== "context") {
+      for (
+        let j = Math.max(0, i - contextLines);
+        j <= Math.min(diff.length - 1, i + contextLines);
+        j++
+      ) {
+        visible.add(j);
+      }
+    }
+  }
+
+  if (visible.size === 0) {
+    return diff.map((line) => ({ type: "line" as const, line }));
+  }
+
+  const indices = [...visible].sort((a, b) => a - b);
+  const rows: CompactDiffRow[] = [];
+  if (indices[0]! > 0) {
+    rows.push({ type: "fold", count: indices[0]! });
+  }
+  for (let k = 0; k < indices.length; k++) {
+    const idx = indices[k]!;
+    if (k > 0) {
+      const gap = idx - indices[k - 1]! - 1;
+      if (gap > 0) {
+        rows.push({ type: "fold", count: gap });
+      }
+    }
+    rows.push({ type: "line", line: diff[idx]! });
+  }
+  const lastIdx = indices[indices.length - 1]!;
+  if (lastIdx < diff.length - 1) {
+    rows.push({ type: "fold", count: diff.length - 1 - lastIdx });
+  }
+  return rows;
 }
 
 function diffLineNumber(row: DiffLine): number {
   return row.oldLineNo ?? row.newLineNo ?? 1;
 }
 
-/** Green/red unified diff with optional fold (Claude Code Edit preview). */
+function renderDiffLineRow(
+  row: DiffLine,
+  opts: {
+    pad: string;
+    lineNumWidth: number;
+    innerWidth: number;
+    language: "python" | "plain";
+  },
+): string {
+  const lineNo = String(diffLineNumber(row)).padStart(opts.lineNumWidth);
+  const sign = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
+  const raw = row.text;
+  const clipped =
+    raw.length > opts.innerWidth ? `${raw.slice(0, opts.innerWidth - 1)}…` : raw;
+  return renderCodeGutterRow({
+    pad: opts.pad,
+    lineNo,
+    sign,
+    clipped,
+    innerWidth: opts.innerWidth,
+    language: opts.language,
+    kind: row.kind,
+  });
+}
+
+/** Green/red unified diff with compact hunks or full file view. */
 export function renderFoldableDiffLines(
   before: string,
   after: string,
@@ -494,37 +573,54 @@ export function renderFoldableDiffLines(
 ): string[] {
   const indent = options.indent ?? 0;
   const maxVisible = options.maxVisibleLines ?? DEFAULT_VISIBLE_LINES;
+  const expanded = options.expanded ?? false;
+  const contextLines = options.contextLines ?? DEFAULT_DIFF_CONTEXT_LINES;
   const diff = computeUnifiedLineDiff(before, after);
   const language = detectLanguage(options.filePath ?? "");
   const maxLineNo = Math.max(...diff.map(diffLineNumber), 1);
   const lineNumWidth = Math.max(2, String(maxLineNo).length);
   const innerWidth = codeInnerWidth(cols, indent, lineNumWidth);
-  const visibleCount = options.collapsed ? Math.min(maxVisible, diff.length) : diff.length;
   const out: string[] = [];
   const pad = " ".repeat(indent);
+  const rowOpts = { pad, lineNumWidth, innerWidth, language };
 
-  for (let i = 0; i < visibleCount; i++) {
-    const row = diff[i]!;
-    const lineNo = String(diffLineNumber(row)).padStart(lineNumWidth);
-    const sign = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
-    const raw = row.text;
-    const clipped = raw.length > innerWidth ? `${raw.slice(0, innerWidth - 1)}…` : raw;
-    out.push(
-      renderCodeGutterRow({
-        pad,
-        lineNo,
-        sign,
-        clipped,
-        innerWidth,
-        language,
-        kind: row.kind,
-      }),
-    );
+  if (expanded) {
+    const visibleCount = options.collapsed ? Math.min(maxVisible, diff.length) : diff.length;
+    for (let i = 0; i < visibleCount; i++) {
+      out.push(renderDiffLineRow(diff[i]!, rowOpts));
+    }
+    if (options.collapsed && diff.length > maxVisible) {
+      const hidden = diff.length - maxVisible;
+      out.push(`${pad}${ansi.muted}   … +${hidden} lines${ansi.reset}`);
+    }
+    return out;
   }
 
-  if (options.collapsed && diff.length > maxVisible) {
+  const rows = buildCompactDiffRows(diff, contextLines);
+  const allAdds = diff.length > 0 && diff.every((d) => d.kind === "add");
+  if (allAdds && options.collapsed && diff.length > maxVisible) {
+    for (let i = 0; i < maxVisible; i++) {
+      out.push(renderDiffLineRow(diff[i]!, rowOpts));
+    }
     const hidden = diff.length - maxVisible;
-    out.push(`${pad}${ansi.muted}   … +${hidden} lines${ansi.reset}`);
+    out.push(
+      `${pad}${ansi.muted}   … +${hidden} lines (click to expand)${ansi.reset}`,
+    );
+    return out;
+  }
+
+  for (const row of rows) {
+    if (row.type === "fold") {
+      const label =
+        row.count === 1
+          ? "1 unchanged line"
+          : `${row.count} unchanged lines`;
+      out.push(
+        `${pad}${ansi.muted}   … ${label} (click to expand)${ansi.reset}`,
+      );
+      continue;
+    }
+    out.push(renderDiffLineRow(row.line, rowOpts));
   }
 
   return out;

@@ -169,7 +169,7 @@ describe("formatSubAgentResult", () => {
 
 describe("Agent tool registration policy", () => {
   it("excludes Agent from sub-agent allowed tools even if yaml lists it", () => {
-    const registry = new ToolRegistry(execContext);
+    const registry = new ToolRegistry({ ...execContext, capability: "FullAccess" });
     registerBuiltinTools(registry);
     registry.register(
       agentToolDefinition,
@@ -177,7 +177,7 @@ describe("Agent tool registration policy", () => {
     );
 
     const allowed = resolveAllowedToolNames(
-      ["Read", "Write", "Bash", "Agent", "Glob"],
+      ["Read", "Write", "Bash", "Agent"],
       registry,
       { excludeAgent: true },
     );

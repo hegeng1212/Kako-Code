@@ -116,9 +116,14 @@ export {
 } from "./media/index.js";
 export {
   ensurePlanFile,
+  legacyPlanFilePathForSession,
   planFilePathForSession,
   readPlanFile,
+  resolvePlanFileForSession,
 } from "./tools/builtin/plan-mode-shared.js";
+export { enterPlanModeSession } from "./tools/builtin/plan-mode-enter.js";
+export { listBackgroundTasks } from "./background/task-store.js";
+export type { BackgroundTask } from "./background/types.js";
 export {
   discoverSkills,
   discoverSkillsForAgent,
@@ -146,15 +151,23 @@ export { loadSkill } from "./skills/loader.js";
 export {
   SYSTEM_SKILL_REGISTRY,
   skillNamesForToolAllowlist,
+  isSlashOnlySystemSkill,
   isSlashInvokableSkill,
   isSystemSkill,
   listSlashInvokableSkills,
+  loadSlashOnlyCatalogSkills,
   loadSystemSkills,
   type SystemSkillEntry,
   type SystemSkillHandler,
   getSystemSkillHandler,
 } from "./skills/system-skills.js";
-export { resolveSkillSlashLlmText } from "./skills/slash-command-message.js";
+export {
+  buildInitSlashContentBlocks,
+  INIT_SLASH_CORE_PROMPT,
+  resolveSkillSlashLlmText,
+  parseBareInitCommand,
+  resolveSkillSlashUserContent,
+} from "./skills/slash-command-message.js";
 export {
   loadWorkflowRuns,
   saveWorkflowRun,
@@ -209,6 +222,7 @@ export {
 export { resolveNestedWorkflowScript } from "./workflows/nested.js";
 export {
   agentCompletedSummary,
+  agentFinishedTimelineLine,
   buildAgentTaskNotificationMessage,
   formatBackgroundAgentLaunchResult,
   type AgentTaskRecord,

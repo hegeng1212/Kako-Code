@@ -41,5 +41,5 @@ export function renderInputCopyHint(cols: number, hint: string): string {
 
 /** Footer hint while plan mode is active. */
 export function renderPlanModeFooterHint(): string {
-  return `${ansi.planBorder}⏸ plan mode on (shift+tab to cycle)${ansi.reset}`;
+  return `${ansi.planBorder}⏸ plan mode on (shift+tab to cycle) · ← for agents${ansi.reset}`;
 }

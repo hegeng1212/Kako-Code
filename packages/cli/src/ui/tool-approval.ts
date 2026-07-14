@@ -230,7 +230,7 @@ async function buildFileDiffPreview(
   filePath: string,
 ): Promise<string[]> {
   return renderFilePreviewLines(before, after, cols, {
-    collapsed: false,
+    expanded: false,
     filePath,
   });
 }

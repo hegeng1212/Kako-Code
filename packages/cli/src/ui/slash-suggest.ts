@@ -81,6 +81,23 @@ function renderSlashSuggestEntry(
   });
 }
 
+export function slashMenuPrefixRowCount(suggestLineCount: number): number {
+  return suggestLineCount > 0 ? suggestLineCount + 2 : 0;
+}
+
+/** Screen row where the first input line is drawn inside the footer. */
+export function computeInputRowsScreenStart(opts: {
+  footerTop: number;
+  slashSuggestLineCount: number;
+  inputRowOffset: number;
+}): number {
+  return (
+    opts.footerTop +
+    slashMenuPrefixRowCount(opts.slashSuggestLineCount) +
+    opts.inputRowOffset
+  );
+}
+
 /** Flattened panel lines for the slash-skill menu (excludes separators and hint). */
 export function renderSlashSuggestLines(opts: RenderSlashSuggestOptions): string[] {
   const { skills, selectedIndex, cols, maxVisible = 4 } = opts;

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { IconChevronDown } from "./RowIcons";
+import { useDropdownPlacement } from "./use-dropdown-placement.js";
 
 export type SettingsSelectTone = "allow" | "review" | "deny" | "info" | "elevated";
 
@@ -26,6 +27,9 @@ export function SettingsColoredSelect<T extends string>({
 }: SettingsColoredSelectProps<T>) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const dropUp = useDropdownPlacement(open, triggerRef, listRef);
   const selected = options.find((opt) => opt.value === value) ?? options[0]!;
 
   useEffect(() => {
@@ -44,12 +48,14 @@ export function SettingsColoredSelect<T extends string>({
       className={[
         "mcp-approval-menu settings-colored-select",
         open ? "mcp-approval-menu--open" : "",
+        dropUp ? "mcp-approval-menu--dropup" : "",
         disabled ? "mcp-approval-menu--disabled" : "",
       ]
         .filter(Boolean)
         .join(" ")}
     >
       <button
+        ref={triggerRef}
         id={id}
         type="button"
         className={`mcp-approval-menu__trigger mcp-approval-menu__trigger--${selected.tone}`}
@@ -64,7 +70,7 @@ export function SettingsColoredSelect<T extends string>({
         <IconChevronDown className="mcp-approval-menu__chevron" />
       </button>
       {open && (
-        <ul className="mcp-approval-menu__list" role="listbox" aria-labelledby={id}>
+        <ul ref={listRef} className="mcp-approval-menu__list" role="listbox" aria-labelledby={id}>
           {options.map((opt) => {
             const active = value === opt.value;
             return (

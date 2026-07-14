@@ -6,6 +6,7 @@ import {
   discoverSkillsForAgent,
   filterSkillsForAgent,
   formatSkillsIndex,
+  partitionSkillsForCatalog,
   parseSkillMd,
   skillIndexDescription,
   skillNameCandidates,
@@ -171,5 +172,118 @@ describe("formatSkillsIndex", () => {
     expect(text).toContain("The following skills are available for use with the Skill tool:");
     expect(text).toContain("- brainstorming: Explores approaches and design");
     expect(text).toContain("requirements are not yet concrete");
+  });
+
+  it("places default skills before user skills in one catalog block", () => {
+    const text = formatSkillsIndex({
+      defaults: [
+        {
+          name: "deep-research",
+          description: "Deep research harness",
+          path: "/deep-research",
+          skillMdPath: "/deep-research/SKILL.md",
+        },
+        {
+          name: "init",
+          description: "Initialize KAKO.md",
+          path: "/init",
+          skillMdPath: "/init/SKILL.md",
+        },
+      ],
+      user: [
+        {
+          name: "code-review",
+          description: "Review the current diff",
+          path: "/code-review",
+          skillMdPath: "/code-review/SKILL.md",
+        },
+      ],
+    });
+    const deepIdx = text.indexOf("- deep-research:");
+    const initIdx = text.indexOf("- init:");
+    const reviewIdx = text.indexOf("- code-review:");
+    expect(deepIdx).toBeGreaterThan(-1);
+    expect(initIdx).toBeGreaterThan(deepIdx);
+    expect(reviewIdx).toBeGreaterThan(initIdx);
+  });
+});
+
+describe("partitionSkillsForCatalog", () => {
+  it("puts bundled defaults in defaults segment and all settings-enabled skills in user segment", async () => {
+    await withTempDir(async (cwd) => {
+      process.env.KAKO_HOME = join(cwd, ".kako-home");
+      const configDir = join(cwd, ".kako-home", "config");
+      const skillsRoot = join(cwd, ".kako-home", "skills");
+      await mkdir(configDir, { recursive: true });
+
+      const userSkills = [
+        { name: "baby-growth-tracker", description: "Record baby growth" },
+        { name: "code-review", description: "Review the current diff" },
+        { name: "update-config", description: "Configure harness settings" },
+      ] as const;
+
+      for (const skill of userSkills) {
+        const skillDir = join(skillsRoot, skill.name);
+        await mkdir(skillDir, { recursive: true });
+        await writeFile(
+          join(skillDir, "SKILL.md"),
+          `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\nRun.`,
+          "utf-8",
+        );
+      }
+
+      const disabledDir = join(skillsRoot, "disabled-skill");
+      await mkdir(disabledDir, { recursive: true });
+      await writeFile(
+        join(disabledDir, "SKILL.md"),
+        "---\nname: disabled-skill\ndescription: Off\n---\n\nHidden.",
+        "utf-8",
+      );
+
+      const { saveSkillsManifest } = await import("./manifest.js");
+      await saveSkillsManifest({
+        skills: [
+          ...userSkills.map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            source: "skillhub" as const,
+            installDir: join(skillsRoot, skill.name),
+            skillMdPath: join(skillsRoot, skill.name, "SKILL.md"),
+            installedAt: new Date().toISOString(),
+            enabled: true,
+          })),
+          {
+            name: "disabled-skill",
+            description: "Off",
+            source: "local",
+            installDir: disabledDir,
+            skillMdPath: join(disabledDir, "SKILL.md"),
+            installedAt: new Date().toISOString(),
+            enabled: false,
+          },
+        ],
+      });
+
+      const partition = await partitionSkillsForCatalog(cwd);
+      const defaultNames = partition.defaults.map((s) => s.name);
+      const userNames = partition.user.map((s) => s.name);
+
+      expect(defaultNames).toContain("deep-research");
+      expect(defaultNames).toContain("init");
+      expect(defaultNames).not.toContain("baby-growth-tracker");
+
+      for (const skill of userSkills) {
+        expect(userNames).toContain(skill.name);
+      }
+      expect(userNames).not.toContain("disabled-skill");
+
+      const discovered = await discoverSkillsForAgent(cwd);
+      const catalogNames = new Set([...defaultNames, ...userNames]);
+      expect(defaultNames).toContain("init");
+      expect(discovered.some((skill) => skill.name === "init")).toBe(true);
+      for (const skill of discovered) {
+        expect(catalogNames.has(skill.name)).toBe(true);
+      }
+    });
   });
 });

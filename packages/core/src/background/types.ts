@@ -7,6 +7,9 @@ export interface BackgroundTask {
   startedAt: string;
   stopped: boolean;
   abort: () => void | Promise<void>;
+  description?: string;
+  subagentName?: string;
+  childSessionId?: string;
 }
 
 export interface TaskStopResult {

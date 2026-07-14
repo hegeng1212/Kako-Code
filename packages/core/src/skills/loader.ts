@@ -5,7 +5,7 @@ import type { InstalledSkillRecord, SkillDefinition, SkillMetadata } from "@kako
 import { findBundledSkillsDir } from "../config/bundled-assets.js";
 import { getSkillsDir } from "../config/paths.js";
 import { loadSkillsManifest } from "./manifest.js";
-import { isSystemSkill, loadSystemSkills, mergeSkillsForAgent } from "./system-skills.js";
+import { isSlashOnlySystemSkill, isSystemSkill, loadSlashOnlyCatalogSkills, loadSystemSkills, mergeSkillsForAgent } from "./system-skills.js";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
 
@@ -47,24 +47,6 @@ export function parseSkillMd(content: string, skillFilePath: string): SkillDefin
   };
 }
 
-async function skillRoots(cwd: string): Promise<string[]> {
-  const roots: string[] = [];
-  const projectRoot = join(resolve(cwd), ".kako", "skills");
-  const globalRoot = getSkillsDir();
-  const bundled = await findBundledSkillsDir();
-
-  for (const root of [projectRoot, globalRoot, bundled]) {
-    if (!root) continue;
-    try {
-      await access(root);
-      roots.push(root);
-    } catch {
-      // skip missing
-    }
-  }
-  return roots;
-}
-
 async function listSkillFilesInRoot(root: string): Promise<string[]> {
   let entries: string[];
   try {
@@ -92,14 +74,31 @@ export async function loadBundledSkills(): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
   for (const filePath of await listSkillFilesInRoot(bundled)) {
     const content = await readFile(filePath, "utf-8");
-    skills.push(parseSkillMd(content, filePath));
+    const parsed = parseSkillMd(content, filePath);
+    if (isSlashOnlySystemSkill(parsed.name)) continue;
+    skills.push(parsed);
   }
   return skills;
 }
 
-async function discoverFilesystemSkills(cwd: string): Promise<SkillDefinition[]> {
+async function discoverFilesystemSkills(cwd: string, options?: { excludeBundled?: boolean }): Promise<SkillDefinition[]> {
   const byName = new Map<string, SkillDefinition>();
-  for (const root of await skillRoots(cwd)) {
+  const bundled = options?.excludeBundled ? undefined : await findBundledSkillsDir();
+  const roots: string[] = [];
+  const projectRoot = join(resolve(cwd), ".kako", "skills");
+  const globalRoot = getSkillsDir();
+
+  for (const root of [projectRoot, globalRoot, bundled]) {
+    if (!root) continue;
+    try {
+      await access(root);
+      roots.push(root);
+    } catch {
+      // skip missing
+    }
+  }
+
+  for (const root of roots) {
     for (const filePath of await listSkillFilesInRoot(root)) {
       const content = await readFile(filePath, "utf-8");
       const skill = parseSkillMd(content, filePath);
@@ -109,6 +108,41 @@ async function discoverFilesystemSkills(cwd: string): Promise<SkillDefinition[]>
     }
   }
   return [...byName.values()];
+}
+
+/**
+ * User-installed skills from settings (`installed-skills.json`, enabled !== false) and
+ * on-disk copies under `~/.kako/skills/` or `{cwd}/.kako/skills/`. Excludes bundled product skills.
+ */
+export async function discoverUserInstalledSkills(cwd: string): Promise<SkillDefinition[]> {
+  const manifest = await loadSkillsManifest();
+  const disabled = new Set(
+    manifest.skills.filter((s) => s.enabled === false).map((s) => s.name),
+  );
+  const byName = new Map<string, SkillDefinition>();
+
+  for (const record of manifest.skills) {
+    if (disabled.has(record.name)) continue;
+    byName.set(record.name, await recordToSkillDefinition(record));
+  }
+
+  for (const skill of await discoverFilesystemSkills(cwd, { excludeBundled: true })) {
+    if (disabled.has(skill.name)) continue;
+    if (!byName.has(skill.name)) {
+      byName.set(skill.name, skill);
+    } else {
+      const existing = byName.get(skill.name)!;
+      byName.set(skill.name, {
+        ...existing,
+        description: skill.description || existing.description,
+        skillMdPath: existing.skillMdPath || skill.skillMdPath,
+        path: existing.path || skill.path,
+        instructions: skill.instructions || existing.instructions,
+      });
+    }
+  }
+
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function recordToSkillDefinition(record: InstalledSkillRecord): Promise<SkillDefinition> {
@@ -171,6 +205,10 @@ export async function discoverSkills(cwd: string): Promise<SkillDefinition[]> {
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Restricts a skill list to an agent YAML whitelist. Not used for system prompt catalog injection.
+ * When agentSkills is empty/undefined, returns [] — do not wire this into buildMessages.
+ */
 export function filterSkillsForAgent(
   discovered: SkillDefinition[],
   agentSkills: string[] | undefined,
@@ -185,6 +223,34 @@ export async function discoverSkillsForAgent(cwd: string): Promise<SkillDefiniti
   const bundled = await loadBundledSkills();
   const systemSkills = await loadSystemSkills();
   return mergeSkillsForAgent(discovered, bundled, systemSkills);
+}
+
+/** Default (bundled + system) and user-installed skills for the system prompt catalog. */
+export interface SkillCatalogPartition {
+  defaults: SkillMetadata[];
+  user: SkillMetadata[];
+}
+
+/**
+ * Split skills for the system prompt: product defaults first, then user-installed skills.
+ * User segment = every skill installed and enabled via settings (Web/CLI), not a single bundled example.
+ * Names in the default segment are omitted from the user segment (no duplicate catalog lines).
+ */
+export async function partitionSkillsForCatalog(cwd: string): Promise<SkillCatalogPartition> {
+  const bundled = await loadBundledSkills();
+  const systemSkills = await loadSystemSkills();
+  const slashCatalog = await loadSlashOnlyCatalogSkills();
+  const defaults = mergeSkillsForAgent([], bundled, [...systemSkills, ...slashCatalog], {
+    forCatalog: true,
+  });
+  const defaultNames = new Set(defaults.map((skill) => skill.name));
+  const user = (await discoverUserInstalledSkills(cwd)).filter(
+    (skill) => !defaultNames.has(skill.name),
+  );
+  return {
+    defaults: await toSkillIndex(defaults),
+    user: await toSkillIndex(user),
+  };
 }
 
 export async function findSkillFile(skillName: string, cwd: string): Promise<string | null> {
@@ -226,16 +292,26 @@ export async function loadSkill(skillName: string, cwd: string): Promise<SkillDe
   return parseSkillMd(content, filePath);
 }
 
-export function formatSkillsIndex(skills: SkillMetadata[]): string {
-  if (!skills.length) return "";
-  const lines = skills.map((skill) => {
-    const when = skill.description.trim().replace(/\s+/g, " ") || "Use when this skill matches the user's request.";
-    return `- ${skill.name}: ${when}`;
-  });
-  const catalog = `The following skills are available for use with the Skill tool:
+function formatSkillCatalogLine(skill: SkillMetadata): string {
+  const when =
+    skill.description.trim().replace(/\s+/g, " ") ||
+    "Use when this skill matches the user's request.";
+  return `- ${skill.name}: ${when}`;
+}
+
+export function formatSkillsIndex(catalog: SkillCatalogPartition | SkillMetadata[]): string {
+  const partition: SkillCatalogPartition = Array.isArray(catalog)
+    ? { defaults: catalog, user: [] }
+    : catalog;
+  if (!partition.defaults.length && !partition.user.length) return "";
+  const lines = [
+    ...partition.defaults.map(formatSkillCatalogLine),
+    ...partition.user.map(formatSkillCatalogLine),
+  ];
+  const body = `The following skills are available for use with the Skill tool:
 
 ${lines.join("\n")}`;
-  return `\n\n<system-reminder>\n${catalog}\n</system-reminder>`;
+  return `\n\n<system-reminder>\n${body}\n</system-reminder>`;
 }
 
 /** @deprecated Use formatSkillsIndex */

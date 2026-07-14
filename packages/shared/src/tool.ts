@@ -87,6 +87,10 @@ export interface ToolExecutionContext {
   markFileRead?: (path: string) => void;
   /** Whether the file was Read earlier in this conversation turn. */
   hasReadFile?: (path: string) => boolean;
+  /** Whether on-disk file changed since the last Read/Write/Edit snapshot. */
+  isFileVersionStale?: (path: string) => Promise<boolean>;
+  /** Record the current on-disk version after a successful Read/Write/Edit. */
+  noteFileVersion?: (path: string) => Promise<void>;
   /** Skill names allowed for this agent (from agent YAML). */
   allowedSkills?: string[];
   /** Whether a skill was already activated in this turn. */

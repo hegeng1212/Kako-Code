@@ -1,6 +1,7 @@
 import type { LLMMessage, LLMTokenUsage, ToolCall } from "@kako/shared";
 import type { LLMRouter } from "@kako/shared";
 import { mergeToolCallInput } from "./merge-tool-input.js";
+import { normalizeToolCall } from "../tools/normalize-tool-input.js";
 import { getTextContent } from "../llm/content-blocks.js";
 import { toolOutputToLlmContent } from "../media/read-media.js";
 import { createMessage, type FileMemoryStore } from "../memory/store.js";
@@ -132,7 +133,7 @@ export async function streamCompletion(
     abortController.abort();
   }
 
-  return [...toolCalls.values()];
+  return [...toolCalls.values()].map(normalizeToolCall);
 }
 
 const ABORT_POLL_MS = 25;
@@ -267,11 +268,19 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
       await toolLogger.log(result);
 
       if (result.status === "success") {
+        callbacks?.onToolStart?.(toolCall.name, toolCall.input);
         const pivoted = await onSkillActivate({
           toolCall,
           priorMessages: [...messages],
         });
         if (pivoted?.length) {
+          callbacks?.onToolEnd?.(
+            toolCall.name,
+            "success",
+            undefined,
+            String(result.output ?? ""),
+            toolCall.input,
+          );
           if (streamedBeforePivot > 0) {
             callbacks?.onAnswerRollback?.(streamedBeforePivot);
           }
@@ -280,6 +289,13 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
           responseText = "";
           continue;
         }
+        callbacks?.onToolEnd?.(
+          toolCall.name,
+          "error",
+          "Skill activation did not rebuild context",
+          undefined,
+          toolCall.input,
+        );
       }
 
       callbacks?.onToolStart?.(toolCall.name, toolCall.input);

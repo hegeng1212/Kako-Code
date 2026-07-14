@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_EDIT_DESCRIPTION } from "../claude-tool-text.js";
+import { formatFileVersionRefresh } from "../file-version.js";
 import { resolvePath, resolveWorkspacePath } from "./path.js";
 import { loadSecurityPolicy } from "../../security/policy-store.js";
 
@@ -103,6 +104,10 @@ export function formatEditResult(filePath: string, replacements: number): string
   return `Replaced ${replacements} ${noun} in ${filePath}`;
 }
 
+function shouldAttachFileRefresh(message: string): boolean {
+  return message.includes("not found") || message.includes("not unique");
+}
+
 export const editHandler: ToolHandler = async (input, context) => {
   const parsed = parseEditInput(input);
   const policy = await loadSecurityPolicy(context.cwd);
@@ -121,12 +126,29 @@ export const editHandler: ToolHandler = async (input, context) => {
   }
 
   const content = await readFile(filePath, "utf-8");
-  const { content: updated, replacements } = applyStringReplace(
-    content,
-    parsed.oldString,
-    parsed.newString,
-    parsed.replaceAll,
-  );
-  await writeFile(filePath, updated, "utf-8");
-  return formatEditResult(filePath, replacements);
+  const stale = context.isFileVersionStale
+    ? await context.isFileVersionStale(filePath)
+    : false;
+
+  try {
+    const { content: updated, replacements } = applyStringReplace(
+      content,
+      parsed.oldString,
+      parsed.newString,
+      parsed.replaceAll,
+    );
+    await writeFile(filePath, updated, "utf-8");
+    await context.noteFileVersion?.(filePath);
+    let result = formatEditResult(filePath, replacements);
+    if (stale) {
+      result += `\n\n${formatFileVersionRefresh(filePath, updated)}`;
+    }
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (stale || shouldAttachFileRefresh(message)) {
+      throw new Error(`${message}\n\n${formatFileVersionRefresh(filePath, content)}`);
+    }
+    throw error;
+  }
 };

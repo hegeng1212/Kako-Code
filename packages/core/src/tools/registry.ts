@@ -31,6 +31,11 @@ import { resolvePath } from "./builtin/path.js";
 import { buildWebSearchDescription } from "./builtin/web-search.js";
 import { findSkillByMdPath } from "../skills/loader.js";
 import { toolCallNeedsUserConfirm } from "./confirm-policy.js";
+import {
+  fileVersionChanged,
+  snapshotFileVersion,
+  type FileVersionSnapshot,
+} from "./file-version.js";
 import { validateToolCallInput } from "./tool-input-validation.js";
 
 export interface ToolRegistryOptions {
@@ -59,6 +64,8 @@ export class ToolRegistry {
   private options: ToolRegistryOptions;
   /** Files successfully Read during this registry's conversation turn. */
   private readFiles = new Set<string>();
+  /** Last known on-disk version after Read/Write/Edit in this session. */
+  private fileVersions = new Map<string, FileVersionSnapshot>();
   /** Skills activated during this registry's conversation turn. */
   private activatedSkills = new Set<string>();
   /** Session-wide auto-allow for write tools after user approval. */
@@ -119,6 +126,27 @@ export class ToolRegistry {
 
   private hasReadFile(path: string): boolean {
     return this.readFiles.has(this.normalizePath(path));
+  }
+
+  private async noteFileVersion(path: string): Promise<void> {
+    const normalized = this.normalizePath(path);
+    try {
+      this.fileVersions.set(normalized, await snapshotFileVersion(normalized));
+    } catch {
+      this.fileVersions.delete(normalized);
+    }
+  }
+
+  private async isFileVersionStale(path: string): Promise<boolean> {
+    const normalized = this.normalizePath(path);
+    const known = this.fileVersions.get(normalized);
+    if (!known) return false;
+    try {
+      const current = await snapshotFileVersion(normalized);
+      return fileVersionChanged(known, current);
+    } catch {
+      return false;
+    }
   }
 
   private isSkillActive(name: string): boolean {
@@ -360,6 +388,8 @@ export class ToolRegistry {
             askUserQuestion: this.options.askUserQuestion,
             markFileRead: (path) => this.markFileRead(path),
             hasReadFile: (path) => this.hasReadFile(path),
+            isFileVersionStale: (path) => this.isFileVersionStale(path),
+            noteFileVersion: (path) => this.noteFileVersion(path),
             allowedSkills: this.options.allowedSkills,
             isSkillActive: (name) => this.isSkillActive(name),
             getPermissionMode: () => this.getPermissionMode(),
@@ -377,16 +407,18 @@ export class ToolRegistry {
         const readPath = toolCall.input.file_path ?? toolCall.input.path;
         if (typeof readPath === "string") {
           this.markFileRead(readPath);
+          await this.noteFileVersion(String(readPath));
           const skill = await findSkillByMdPath(String(readPath), this.options.cwd);
           if (skill) {
             this.activatedSkills.add(skill.name);
           }
         }
       }
-      if (toolCall.name === "Write") {
-        const writtenPath = filePathFromToolInput(toolCall.input, this.options.cwd);
-        if (writtenPath) {
-          this.markFileRead(writtenPath);
+      if (toolCall.name === "Write" || toolCall.name === "Edit") {
+        const touchedPath = filePathFromToolInput(toolCall.input, this.options.cwd);
+        if (touchedPath) {
+          this.markFileRead(touchedPath);
+          await this.noteFileVersion(touchedPath);
         }
       }
       const redacted = redactSecretsInValue(output, policies.security);

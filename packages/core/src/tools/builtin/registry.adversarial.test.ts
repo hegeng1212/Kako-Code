@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
@@ -5,6 +6,7 @@ import type { SessionCapability } from "@kako/shared";
 import type { ToolCall } from "@kako/shared";
 import { ToolRegistry } from "../registry.js";
 import { bashHandler, bashToolDefinition } from "./bash.js";
+import { grepHandler, grepToolDefinition } from "./grep.js";
 import { readHandler, readToolDefinition } from "./read.js";
 import { writeHandler, writeToolDefinition } from "./write.js";
 import { toolContext, withTempDir } from "./test-helpers.js";
@@ -26,6 +28,7 @@ function registryWith(
     confirm: opts?.confirm,
   });
   registry.register(readToolDefinition, readHandler);
+  registry.register(grepToolDefinition, grepHandler);
   registry.register(writeToolDefinition, writeHandler);
   registry.register(bashToolDefinition, bashHandler);
   return registry;
@@ -94,6 +97,20 @@ describe("ToolRegistry adversarial", () => {
         input: { command: "echo hi" },
       });
       expect(result.status).toBe("denied");
+    });
+  });
+
+  it("allows Grep in plan mode", async () => {
+    await withTempDir(async (dir) => {
+      await writeFile(join(dir, "sample.ts"), "export const PLAN = 1;\n", "utf-8");
+      const registry = registryWith(dir, { permissionMode: "plan" });
+      const result = await registry.execute({
+        id: "tu-plan-grep",
+        name: "Grep",
+        input: { pattern: "PLAN", path: dir },
+      });
+      expect(result.status).toBe("success");
+      expect(String(result.output)).toContain("PLAN");
     });
   });
 

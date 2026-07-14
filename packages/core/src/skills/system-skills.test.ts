@@ -1,18 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
   SYSTEM_SKILL_REGISTRY,
+  getSystemSkillEntry,
+  isSlashOnlySystemSkill,
   isSystemSkill,
+  loadSlashOnlyCatalogSkills,
   mergeSkillsForAgent,
   skillNamesForToolAllowlist,
 } from "./system-skills.js";
 
 describe("system skills", () => {
-  it("registers workflows, deep-research, and init", () => {
+  it("registers plan, workflows, deep-research, and init", () => {
     expect(SYSTEM_SKILL_REGISTRY.map((entry) => entry.name)).toEqual([
+      "plan",
       "workflows",
       "deep-research",
       "init",
     ]);
+  });
+
+  it("marks plan and workflows as slash-only", () => {
+    expect(isSlashOnlySystemSkill("plan")).toBe(true);
+    expect(isSlashOnlySystemSkill("workflows")).toBe(true);
+    expect(isSlashOnlySystemSkill("init")).toBe(false);
+    expect(getSystemSkillEntry("init")?.handler).toBe("skill");
+  });
+
+  it("loads slash-only catalog from registry without skill files", async () => {
+    const skills = await loadSlashOnlyCatalogSkills();
+    expect(skills.map((skill) => skill.name)).toEqual(["plan", "workflows"]);
+    expect(skills.every((skill) => skill.description.trim().length > 0)).toBe(true);
+    expect(skills.every((skill) => skill.instructions === "" && skill.skillMdPath === "")).toBe(
+      true,
+    );
   });
 
   it("identifies system skills", () => {
@@ -39,6 +59,23 @@ describe("system skills", () => {
         },
       ]),
     ).toEqual(["brainstorming", "guizang-ppt"]);
+  });
+
+  it("includes init in agent skill merge", () => {
+    const merged = mergeSkillsForAgent(
+      [],
+      [],
+      [
+        {
+          name: "init",
+          description: "Initialize a new KAKO.md file with codebase documentation",
+          path: "/init",
+          skillMdPath: "/init/SKILL.md",
+          instructions: "",
+        },
+      ],
+    );
+    expect(merged.map((skill) => skill.name)).toEqual(["init"]);
   });
 
   it("merges bundled, user, and system skills into the agent skill index", () => {

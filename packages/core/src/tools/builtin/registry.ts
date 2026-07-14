@@ -26,6 +26,8 @@ import { webSearchHandler, webSearchToolDefinition } from "./web-search.js";
 import { skillHandler, skillToolDefinition } from "./skill.js";
 import { workflowHandler, workflowToolDefinition } from "./workflow.js";
 import { readHandler, readToolDefinition } from "./read.js";
+import { grepHandler, grepToolDefinition } from "./grep.js";
+import { globHandler, globToolDefinition } from "./glob.js";
 import { writeHandler, writeToolDefinition } from "./write.js";
 import { editHandler, editToolDefinition } from "./edit.js";
 import { notebookEditHandler, notebookEditToolDefinition } from "./notebook-edit.js";
@@ -45,6 +47,12 @@ import {
   exitWorktreeHandler,
   exitWorktreeToolDefinition,
 } from "./exit-worktree.js";
+import { designSyncHandler, designSyncToolDefinition } from "./design-sync.js";
+import { pushNotificationHandler, pushNotificationToolDefinition } from "./push-notification.js";
+import { taskOutputHandler, taskOutputToolDefinition } from "./task-output.js";
+import { CLAUDE_CODE_BUILTIN_TOOL_NAMES } from "../claude-tool-text.js";
+
+export { CLAUDE_CODE_BUILTIN_TOOL_NAMES };
 
 /** One built-in tool: schema for the model + runtime handler. */
 export interface BuiltinTool {
@@ -58,11 +66,14 @@ export interface BuiltinTool {
  */
 export const BUILTIN_TOOLS: BuiltinTool[] = [
   { definition: readToolDefinition, handler: readHandler },
+  { definition: grepToolDefinition, handler: grepHandler },
+  { definition: globToolDefinition, handler: globHandler },
   { definition: writeToolDefinition, handler: writeHandler },
   { definition: editToolDefinition, handler: editHandler },
   { definition: notebookEditToolDefinition, handler: notebookEditHandler },
   { definition: bashToolDefinition, handler: bashHandler },
   { definition: monitorToolDefinition, handler: monitorHandler },
+  { definition: taskOutputToolDefinition, handler: taskOutputHandler },
   { definition: taskStopToolDefinition, handler: taskStopHandler },
   { definition: askUserQuestionToolDefinition, handler: askUserQuestionHandler },
   { definition: enterPlanModeToolDefinition, handler: enterPlanModeHandler },
@@ -72,16 +83,18 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   { definition: cronCreateToolDefinition, handler: cronCreateHandler },
   { definition: cronDeleteToolDefinition, handler: cronDeleteHandler },
   { definition: cronListToolDefinition, handler: cronListHandler },
+  { definition: designSyncToolDefinition, handler: designSyncHandler },
   { definition: scheduleWakeupToolDefinition, handler: scheduleWakeupHandler },
   { definition: taskCreateToolDefinition, handler: taskCreateHandler },
   { definition: taskGetToolDefinition, handler: taskGetHandler },
   { definition: taskListToolDefinition, handler: taskListHandler },
   { definition: taskUpdateToolDefinition, handler: taskUpdateHandler },
+  { definition: pushNotificationToolDefinition, handler: pushNotificationHandler },
   { definition: webFetchToolDefinition, handler: webFetchHandler },
   { definition: webSearchToolDefinition, handler: webSearchHandler },
   { definition: skillToolDefinition, handler: skillHandler },
   { definition: workflowToolDefinition, handler: workflowHandler },
-  // Glob, Grep, Agent, Memory — add when defined
+  // Agent is registered in createToolRegistry (needs runtime spawn host).
 ];
 
 /** Names of all built-in tools with implementations. */

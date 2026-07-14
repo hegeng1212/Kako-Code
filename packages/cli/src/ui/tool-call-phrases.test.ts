@@ -5,7 +5,9 @@ import {
   toolCallFailurePhrase,
   toolCallStatPhrase,
   toolCallSuccessPhrase,
+  toolCallTimelinePhrase,
   toolCallWaitingPhrase,
+  mergeActivityStatPhrases,
 } from "./tool-call-phrases.js";
 
 describe("tool-call-phrases", () => {
@@ -49,6 +51,14 @@ describe("tool-call-phrases", () => {
     );
   });
 
+  it("uses neutral timeline phrases", () => {
+    expect(toolCallTimelinePhrase("Skill", "baby-growth-record")).toBe("use skill");
+    expect(
+      toolCallTimelinePhrase("mcp/babytree/bbt_tool.save_growth_records", "{}"),
+    ).toBe("called bbt_tool.save_growth_records");
+    expect(toolCallTimelinePhrase("Read", "/path/a.md")).toBe("read 1 file");
+  });
+
   it("formats failure phrases from waiting phrases", () => {
     expect(toolCallFailurePhrase("Read", "/missing")).toBe("Failed to read /missing");
     expect(toolCallFailurePhrase("Skill", "brainstorming")).toBe(
@@ -74,6 +84,13 @@ describe("tool-call-phrases", () => {
     expect(toolCallStatPhrase("Bash", "ls -la /tmp", "drwxr-xr-x  3 user  staff  96 .\n")).toBe(
       "listed 1 directory",
     );
+  });
+
+  it("merges duplicate read stats into one phrase", () => {
+    expect(mergeActivityStatPhrases(["read 1 file", "read 1 file", "listed 1 directory"])).toEqual([
+      "read 2 files",
+      "listed 1 directory",
+    ]);
   });
 
   it("formats aggregated shell command stat", () => {

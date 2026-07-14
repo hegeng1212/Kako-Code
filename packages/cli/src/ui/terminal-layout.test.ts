@@ -119,7 +119,7 @@ describe("content click resolution", () => {
     expect(resolveContentClickAction(toolGroup)).toEqual({
       type: "toggleToolGroup",
       turnId: "turn-1",
-      groupId: "turn-1:tools:1",
+      groupId: "turn-1:activity:0",
     });
   });
 
@@ -140,7 +140,7 @@ describe("content click resolution", () => {
     expect(action).toEqual({
       type: "toggleToolGroup",
       turnId: "turn-1",
-      groupId: "turn-1:tools:1",
+      groupId: "turn-1:activity:0",
     });
   });
 });

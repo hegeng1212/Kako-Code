@@ -21,11 +21,20 @@ export interface RiskAssessment {
 }
 
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "NotebookEdit"]);
+const SEARCH_SCOPE_TOOLS = new Set(["Grep", "Glob"]);
 
 function filePathFromInput(input: Record<string, unknown>, cwd: string): string | null {
   const raw = input.file_path ?? input.path ?? input.notebook_path;
   if (typeof raw !== "string" || !raw.trim()) return null;
   return resolvePath(raw, cwd);
+}
+
+function searchScopePathFromInput(toolCall: ToolCall, cwd: string): string {
+  const raw = toolCall.input.path;
+  if (typeof raw === "string" && raw.trim()) {
+    return resolvePath(raw, cwd);
+  }
+  return resolvePath(cwd, cwd);
 }
 
 function riskFromLevel(current: RiskLevel, next: RiskLevel): RiskLevel {
@@ -62,6 +71,10 @@ export function evaluateToolRisk(
     if (toolCall.name !== "Read") {
       level = riskFromLevel(level, "medium");
     }
+  }
+
+  if (SEARCH_SCOPE_TOOLS.has(toolCall.name)) {
+    workspacePaths.push(searchScopePathFromInput(toolCall, cwd));
   }
 
   if (toolCall.name === "Bash") {

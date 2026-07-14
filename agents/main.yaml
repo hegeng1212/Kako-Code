@@ -3,29 +3,34 @@ description: 主助理，负责协调与委派
 model: ""
 systemPrompt: ./prompts/main.md
 tools:
-  - Read
-  - Write
-  - Edit
-  - Bash
-  - Monitor
-  - TaskStop
   - Agent
   - AskUserQuestion
-  - EnterPlanMode
-  - ExitPlanMode
-  - EnterWorktree
-  - ExitWorktree
-  - Skill
+  - Bash
   - CronCreate
   - CronDelete
   - CronList
+  - DesignSync
+  - Edit
+  - EnterPlanMode
+  - EnterWorktree
+  - ExitPlanMode
+  - ExitWorktree
+  - Monitor
+  - NotebookEdit
+  - PushNotification
+  - Read
   - ScheduleWakeup
+  - Skill
   - TaskCreate
   - TaskGet
   - TaskList
+  - TaskOutput
+  - TaskStop
   - TaskUpdate
   - WebFetch
   - WebSearch
+  - Workflow
+  - Write
 skills:
   - brainstorming
   - writing-plans

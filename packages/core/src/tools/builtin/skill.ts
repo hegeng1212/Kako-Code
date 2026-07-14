@@ -1,7 +1,8 @@
 import type { LLMMessage, ToolDefinition, ToolHandler } from "@kako/shared";
 import { wrapUserMessageForLlm } from "../../agent/context.js";
 import { loadSkill } from "../../skills/loader.js";
-import { isSystemSkill } from "../../skills/system-skills.js";
+import { isSlashOnlySystemSkill, isSystemSkill } from "../../skills/system-skills.js";
+import { INIT_SLASH_CORE_PROMPT } from "../../skills/slash-command-message.js";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import {
   CLAUDE_SKILL_ARGS_DESCRIPTION,
@@ -58,7 +59,41 @@ export function assertSkillAllowed(skillName: string, allowedSkills: string[] | 
 
 /** Tool result logged when Skill succeeds (harness pivots context; model does not see this as a tool message). */
 export function formatSkillActivationResult(skillName: string, skillMdPath: string): string {
+  if (skillName === "init") {
+    return "Launching skill: init";
+  }
   return `Skill "${skillName}" activated from ${skillMdPath}. Instructions loaded into system-reminder.`;
+}
+
+/** Claude-style init pivot: inject core prompt as a follow-up user message (not SKILL.md). */
+export function buildInitSkillActivatedMessages(input: {
+  systemPromptBase: string;
+  transcript: Array<{ role: string; content: string }>;
+  skillArgs?: string;
+  workspaceKakoMd?: string;
+  now?: Date;
+}): LLMMessage[] {
+  const now = input.now ?? new Date();
+  const messages: LLMMessage[] = [{ role: "system", content: input.systemPromptBase }];
+  for (const msg of input.transcript) {
+    if (msg.role === "user") {
+      messages.push({
+        role: "user",
+        content: wrapUserMessageForLlm(msg.content, input.workspaceKakoMd, now),
+      });
+    } else if (msg.role === "assistant") {
+      messages.push({ role: "assistant", content: msg.content });
+    }
+  }
+  let prompt = INIT_SLASH_CORE_PROMPT;
+  if (input.skillArgs?.trim()) {
+    prompt += `\n\nAdditional focus from the user:\n${input.skillArgs.trim()}`;
+  }
+  messages.push({
+    role: "user",
+    content: wrapUserMessageForLlm(prompt, input.workspaceKakoMd, now),
+  });
+  return messages;
 }
 
 /** Full skill body injected into system-reminder after Skill tool activation. */
@@ -120,6 +155,14 @@ export const skillHandler: ToolHandler = async (input, context) => {
   }
 
   assertSkillAllowed(parsed.skill, context.allowedSkills);
+
+  if (isSlashOnlySystemSkill(parsed.skill)) {
+    throw new Error(`Skill "${parsed.skill}" is only available as a slash command (/${parsed.skill})`);
+  }
+
+  if (parsed.skill === "init") {
+    return formatSkillActivationResult("init", "init");
+  }
 
   const loaded = await loadSkill(parsed.skill, context.cwd);
   if (

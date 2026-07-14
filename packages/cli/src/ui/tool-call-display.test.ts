@@ -5,11 +5,14 @@ import {
   fileToolContentIndent,
   renderActivitySummaryLine,
   renderPlanPreviewHint,
+  renderSkillToolLines,
   renderToolCallErrorLines,
   renderToolCallStatusLine,
   renderToolInvocationLine,
   renderToolOutputLines,
   renderWorkflowToolLines,
+  renderAgentToolLines,
+  renderWorkflowFinishedEventLine,
   type ToolCallTimelineEntry,
 } from "./tool-call-display.js";
 import { toolCallStatPhrase } from "./tool-call-phrases.js";
@@ -40,17 +43,46 @@ describe("tool-call-display", () => {
     ).toBe("Waiting.. Reading /tmp/a.md");
   });
 
+  it("renders dynamic workflow skills like Skill(name)", () => {
+    const collapsed = stripAnsi(
+      renderWorkflowToolLines(
+        entry({
+          name: "Workflow",
+          detail: "deep-research",
+          status: "success",
+        }),
+      ).join("\n"),
+    );
+    expect(collapsed).toContain("Skill(deep-research)");
+    expect(collapsed).toContain("(click to expand)");
+    expect(collapsed).not.toContain("Successfully loaded skill");
+
+    const expanded = stripAnsi(
+      renderWorkflowToolLines(
+        entry({
+          name: "Workflow",
+          detail: "deep-research",
+          status: "success",
+          skillExpanded: true,
+        }),
+      ).join("\n"),
+    );
+    expect(expanded).toContain("Skill(deep-research)");
+    expect(expanded).toContain("Successfully loaded skill");
+    expect(expanded).not.toContain("/workflows");
+  });
+
   it("renders workflow waiting with /workflows hint", () => {
     const text = stripAnsi(
       renderWorkflowToolLines(
         entry({
           name: "Workflow",
-          detail: "dynamic workflow: deep-research",
+          detail: "custom-report",
           status: "waiting",
         }),
       ).join("\n"),
     );
-    expect(text).toContain("Workflow(dynamic workflow: deep-research)");
+    expect(text).toContain("Workflow(custom-report)");
     expect(text).toContain("/workflows");
     expect(text).toContain("to view dynamic workflow runs");
     expect(text).not.toContain("Approve?");
@@ -58,13 +90,29 @@ describe("tool-call-display", () => {
     expect(text).not.toContain("Completed in 0s");
   });
 
-  it("renders workflow success with /workflows hint (launched, not finished)", () => {
+  it("renders workflow success collapsed with expand hint", () => {
     const text = stripAnsi(
       renderWorkflowToolLines(
         entry({
           name: "Workflow",
-          detail: "dynamic workflow: deep-research",
+          detail: "custom-report",
           status: "success",
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("Workflow(custom-report)");
+    expect(text).toContain("(click to expand)");
+    expect(text).not.toContain("/workflows");
+  });
+
+  it("renders workflow success expanded with /workflows hint", () => {
+    const text = stripAnsi(
+      renderWorkflowToolLines(
+        entry({
+          name: "Workflow",
+          detail: "custom-report",
+          status: "success",
+          skillExpanded: true,
         }),
       ).join("\n"),
     );
@@ -77,14 +125,14 @@ describe("tool-call-display", () => {
       renderWorkflowToolLines(
         entry({
           name: "Workflow",
-          detail: "dynamic workflow: deep-research",
+          detail: "custom-report",
           status: "error",
-          errorDetail: "Workflow template not found: deep-research",
+          errorDetail: "Workflow template not found: custom-report",
         }),
       ).join("\n"),
     );
-    expect(text).toContain("Workflow(dynamic workflow: deep-research)");
-    expect(text).toContain("Workflow template not found: deep-research");
+    expect(text).toContain("Workflow(custom-report)");
+    expect(text).toContain("Workflow template not found: custom-report");
   });
 
   it("renders approval prompt for confirmation-gated tools", () => {
@@ -114,6 +162,16 @@ describe("tool-call-display", () => {
     );
     expect(text).toContain("⏺");
     expect(text).toContain("Updated plan");
+  });
+
+  it("merges duplicate read stats in activity collection", () => {
+    expect(
+      collectActivityStats([
+        entry({ name: "Read", detail: "a.md", status: "success" }),
+        entry({ name: "Read", detail: "b.md", status: "success" }),
+        entry({ name: "Bash", detail: "ls -la", status: "success", output: "drwxr-xr-x  3 user  staff  96 .\n" }),
+      ]),
+    ).toEqual(["read 2 files", "listed 1 directory"]);
   });
 
   it("renders activity summary with thought time and stats", () => {
@@ -191,6 +249,66 @@ describe("tool-call-display", () => {
     expect(stripAnsi(renderPlanPreviewHint())).toContain("/plan to preview");
   });
 
+  it("renders failed MCP tool with neutral label and expand hint", () => {
+    const text = stripAnsi(
+      renderToolCallStatusLine(
+        entry({
+          name: "mcp/babytree/bbt_tool.save_growth_records",
+          detail: "{}",
+          status: "error",
+          errorDetail: "MCP error -32602: data/record_id must be string",
+          errorExpanded: false,
+        }),
+      ),
+    );
+    expect(text).toContain("⏺");
+    expect(text).toContain("called bbt_tool.save_growth_records");
+    expect(text).not.toContain("Failed to call");
+    expect(text).toContain("(click to expand)");
+  });
+
+  it("renders successful MCP tool with green dot and neutral label", () => {
+    const text = stripAnsi(
+      renderToolCallStatusLine(
+        entry({
+          status: "success",
+        }),
+      ),
+    );
+    expect(text).toContain("⏺");
+    expect(text).toContain("called bbt_pregnancy.find_baby");
+  });
+
+  it("renders skill tool collapsed as Skill(name)", () => {
+    const text = stripAnsi(
+      renderSkillToolLines(
+        entry({
+          name: "Skill",
+          detail: "baby-growth-record",
+          status: "success",
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("Skill(baby-growth-record)");
+    expect(text).toContain("(click to expand)");
+    expect(text).not.toContain("Successfully loaded skill");
+  });
+
+  it("renders expanded skill with loaded message", () => {
+    const text = stripAnsi(
+      renderSkillToolLines(
+        entry({
+          name: "Skill",
+          detail: "baby-growth-record",
+          status: "success",
+          skillExpanded: true,
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("Skill(baby-growth-record)");
+    expect(text).toContain("Successfully loaded skill");
+  });
+
   it("renders failed state with expand hint", () => {
     const text = stripAnsi(
       renderToolCallStatusLine(
@@ -203,7 +321,9 @@ describe("tool-call-display", () => {
         }),
       ),
     );
-    expect(text).toContain("Failed to run curl example.com");
+    expect(text).toContain("⏺");
+    expect(text).toContain("ran 1 shell command");
+    expect(text).not.toContain("Failed to run");
     expect(text).toContain("(click to expand)");
   });
 
@@ -241,5 +361,41 @@ describe("toolCallStatPhrase", () => {
         entry({ name: "Bash", detail: "node run.js", status: "success", output: "done" }),
       ]),
     ).toEqual(["ran 2 shell commands"]);
+  });
+
+  it("renders Agent tool with subagent type and background hint", () => {
+    const text = stripAnsi(
+      renderAgentToolLines(
+        entry({
+          name: "Agent",
+          detail: '{"description":"Option A scan"}',
+          status: "success",
+          backgrounded: true,
+          toolInput: {
+            subagent_type: "explore",
+            description: "Option A scan",
+            run_in_background: true,
+          },
+        }),
+      ).join("\n"),
+    );
+    expect(text).toContain("Explore(Option A scan)");
+    expect(text).toContain("Backgrounded agent");
+  });
+
+  it("renders workflow finished event with tree prefix", () => {
+    const text = stripAnsi(
+      renderWorkflowFinishedEventLine({
+        taskId: "wf-1",
+        runId: "run-1",
+        name: "deep-research",
+        description: "Deep research harness",
+        status: "completed",
+        startedAt: new Date(Date.now() - 732_000).toISOString(),
+        completedAt: new Date().toISOString(),
+        transcriptDir: "/tmp/wf",
+      }),
+    );
+    expect(text).toMatch(/^└ Dynamic workflow "Deep research harness" completed · /);
   });
 });

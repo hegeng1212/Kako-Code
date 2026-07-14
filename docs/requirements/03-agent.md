@@ -14,7 +14,7 @@ name: main
 description: 主助理，负责协调与委派
 model: anthropic/claude-sonnet-4
 systemPrompt: ./prompts/main.md
-tools: [Read, Write, Edit, Glob, Grep, Bash, WebFetch, Agent, Skill]
+tools: [Read, Write, Edit, Grep, Bash, WebFetch, Agent, Skill]
 skills: [brainstorming, tdd]
 permissionMode: default
 maxTurns: 50
@@ -91,7 +91,7 @@ agents/
 
 ## 工具使用
 - 文件操作优先用 Read 了解上下文，再用 Edit/Write 修改
-- 搜索用 Glob/Grep，避免盲目读取大文件
+- 搜索用 Grep 或 Bash（只读 find/ls），避免盲目读取大文件
 - 需要并行探索时，spawn explore 子 Agent
 - 需要规划时，spawn plan 子 Agent（只读）
 
@@ -121,7 +121,7 @@ agents/
 你是 Kako 的代码库探索子 Agent。你的任务是快速、准确地回答关于代码库的问题。
 
 ## 规则
-- 优先使用 Glob 和 Grep 定位，再 Read 具体文件
+- 优先使用 Grep 定位，再 Read 具体文件
 - 只读模式：不使用 Write、Edit、Bash（除非只读命令如 git log）
 - 返回简洁的结构化摘要，包含文件路径和关键代码位置
 - 不确定时明确说明，不要猜测
@@ -147,7 +147,7 @@ agents/
 你是 Kako 的规划子 Agent。你处于只读模式，负责设计方案而非执行。
 
 ## 规则
-- 只使用 Read、Glob、Grep 了解代码库
+- 只使用 Read、Grep 了解代码库
 - 不修改任何文件，不执行命令
 - 输出清晰的实现计划，包含步骤、文件变更范围、风险点
 - 如有多种方案，列出权衡并给出推荐

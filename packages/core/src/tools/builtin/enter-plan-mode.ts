@@ -1,7 +1,7 @@
 import type { ToolDefinition, ToolHandler } from "@kako/shared";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import { CLAUDE_ENTER_PLAN_MODE_DESCRIPTION } from "../claude-tool-text.js";
-import { ensurePlanFile } from "./plan-mode-shared.js";
+import { enterPlanModeSession } from "./plan-mode-enter.js";
 
 export const ENTER_PLAN_MODE_DESCRIPTION = adaptClaudeCodeToolText(
   CLAUDE_ENTER_PLAN_MODE_DESCRIPTION,
@@ -19,19 +19,24 @@ export const enterPlanModeToolDefinition: ToolDefinition = {
 };
 
 export const enterPlanModeHandler: ToolHandler = async (_input, context) => {
-  if (!context.setPermissionMode || !context.getPermissionMode) {
+  const setPermissionMode = context.setPermissionMode;
+  const getPermissionMode = context.getPermissionMode;
+  if (!setPermissionMode || !getPermissionMode) {
     throw new Error("EnterPlanMode is not available in this environment");
   }
-  if (context.getPermissionMode() === "plan") {
-    const existing = context.getPlanFilePath?.();
-    return existing
-      ? `Already in plan mode. Plan file: ${existing}`
-      : "Already in plan mode. Write, Edit (plan file only), and Bash remain restricted until ExitPlanMode.";
-  }
 
-  const planPath = await ensurePlanFile(context.sessionId);
-  context.setPlanFilePath?.(planPath);
-  context.setPermissionMode("plan");
+  const { entered, planPath } = await enterPlanModeSession({
+    sessionId: context.sessionId,
+    currentMode: getPermissionMode(),
+    setPermissionMode: (mode, path) => {
+      context.setPlanFilePath?.(path);
+      setPermissionMode(mode);
+    },
+  });
+
+  if (!entered) {
+    return `Already in plan mode. Plan file: ${planPath}`;
+  }
 
   return [
     "Entered plan mode.",

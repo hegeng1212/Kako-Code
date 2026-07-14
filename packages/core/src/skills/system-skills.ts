@@ -19,6 +19,12 @@ export interface SystemSkillEntry {
 
 export const SYSTEM_SKILL_REGISTRY: SystemSkillEntry[] = [
   {
+    name: "plan",
+    slashOnly: true,
+    handler: "skill",
+    description: "View the session plan, enter plan mode, or open the plan in VS Code",
+  },
+  {
     name: "workflows",
     slashOnly: true,
     handler: "skill",
@@ -52,6 +58,10 @@ export function getSystemSkillHandler(name: string): SystemSkillHandler | undefi
   return getSystemSkillEntry(name)?.handler;
 }
 
+export function isSlashOnlySystemSkill(name: string): boolean {
+  return getSystemSkillEntry(name)?.slashOnly === true;
+}
+
 export function skillNamesForToolAllowlist(skills: SkillDefinition[]): string[] {
   return skills.map((skill) => skill.name);
 }
@@ -72,7 +82,9 @@ export async function loadSystemSkills(): Promise<SkillDefinition[]> {
         description: parsed.description || entry.description,
       });
     } catch {
-      // Bundled file missing in this install — skip.
+      process.stderr.write(
+        `[kako] warning: bundled system skill file missing: ${entry.name} (${skillFile})\n`,
+      );
     }
   }
   return skills;
@@ -82,6 +94,7 @@ export function mergeSkillsForAgent(
   discovered: SkillDefinition[],
   bundledSkills: SkillDefinition[],
   systemSkills: SkillDefinition[],
+  options?: { forCatalog?: boolean },
 ): SkillDefinition[] {
   const byName = new Map<string, SkillDefinition>();
 
@@ -105,7 +118,21 @@ export function mergeSkillsForAgent(
       byName.set(skill.name, skill);
     }
   }
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const merged = [...byName.values()];
+  const sorted = merged.sort((a, b) => a.name.localeCompare(b.name));
+  if (options?.forCatalog) return sorted;
+  return sorted.filter((skill) => !isSlashOnlySystemSkill(skill.name));
+}
+
+/** Slash-only system skills — built-in slash commands, not loaded from skills/. */
+export async function loadSlashOnlyCatalogSkills(): Promise<SkillDefinition[]> {
+  return SYSTEM_SKILL_REGISTRY.filter((entry) => entry.slashOnly).map((entry) => ({
+    name: entry.name,
+    description: entry.description,
+    path: "",
+    skillMdPath: "",
+    instructions: "",
+  }));
 }
 
 export async function isSlashInvokableSkill(name: string, cwd: string): Promise<boolean> {

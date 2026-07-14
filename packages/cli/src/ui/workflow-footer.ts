@@ -33,3 +33,11 @@ export function renderWorkflowWaitingLine(count: number): string {
       : `Waiting for ${count} dynamic workflows to finish`;
   return `${ansi.text}*${ansi.reset} ${ansi.muted}${label}${ansi.reset}`;
 }
+
+export function renderBackgroundAgentWaitingLine(count: number): string {
+  const label =
+    count === 1
+      ? "Waiting for 1 background agent to finish"
+      : `Waiting for ${count} background agents to finish`;
+  return `${ansi.text}*${ansi.reset} ${ansi.muted}${label}${ansi.reset}`;
+}

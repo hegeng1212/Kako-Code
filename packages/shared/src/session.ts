@@ -39,11 +39,29 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   lastSessionId?: SessionId;
+  /** ISO time when the user confirmed trust for this workspace; absent = not trusted. */
+  trustedAt?: string;
 }
 
 export interface ProjectIndexFile {
   version: number;
   projects: Project[];
+  /**
+   * Once true, legacy trustedAt backfill has run.
+   * Untrusted projects must not be auto-trusted on later startups.
+   */
+  workspaceTrustMigrated?: boolean;
+}
+
+export type AgentSessionState = "done" | "working" | "blocked" | "failed";
+
+export interface SessionAgentState {
+  state: AgentSessionState;
+  detail: string;
+  tempo: "active" | "idle" | "blocked";
+  needs?: string;
+  result?: string;
+  since: string;
 }
 
 /** Persisted session metadata alongside transcript. */
@@ -58,6 +76,14 @@ export interface SessionMeta {
   updatedAt: string;
   /** Session capability level for security policy. */
   capability?: SessionCapability;
+  /** Parent session when this is a sub-agent child session. */
+  parentSessionId?: SessionId;
+  /** Compact lowercase label for background jobs (2–4 words). */
+  jobLabel?: string;
+  /** Harness session-state classifier output. */
+  agentState?: SessionAgentState;
+  /** Plan markdown file path when this session has entered plan mode. */
+  planFilePath?: string;
 }
 
 export type SystemSkillHandler = "skill" | "dynamic-workflow";
@@ -69,6 +95,9 @@ export type SlashResult =
   | { type: "message"; text: string }
   | { type: "skill-slash"; name: string; args: string; handler: SystemSkillHandler; displayText: string }
   | { type: "workflows-panel" }
+  | { type: "plan-enter"; question?: string; displayText: string }
+  | { type: "plan-view"; displayText: string }
+  | { type: "plan-open"; displayText: string }
   | { type: "error"; message: string };
 
 export interface SlashCommandContext {

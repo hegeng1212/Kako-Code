@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { McpApprovalMode, McpServerConfig } from "@kako/shared";
 import { IconChevronDown } from "./RowIcons";
+import { useDropdownPlacement } from "./use-dropdown-placement.js";
 
 export type McpApprovalSelectValue = McpApprovalMode | "";
 
@@ -137,6 +138,9 @@ export function McpToolApprovalSelect({
 }: McpToolApprovalSelectProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const dropUp = useDropdownPlacement(open, triggerRef, listRef);
   const selected =
     MCP_TOOL_APPROVAL_OPTIONS.find((opt) => opt.value === value) ??
     MCP_TOOL_APPROVAL_OPTIONS[0];
@@ -158,12 +162,14 @@ export function McpToolApprovalSelect({
       className={[
         "mcp-approval-menu",
         open ? "mcp-approval-menu--open" : "",
+        dropUp ? "mcp-approval-menu--dropup" : "",
         disabled ? "mcp-approval-menu--disabled" : "",
       ]
         .filter(Boolean)
         .join(" ")}
     >
       <button
+        ref={triggerRef}
         id={id}
         type="button"
         className={`mcp-approval-menu__trigger mcp-approval-menu__trigger--${tone}`}
@@ -178,7 +184,7 @@ export function McpToolApprovalSelect({
         <IconChevronDown className="mcp-approval-menu__chevron" />
       </button>
       {open && (
-        <ul className="mcp-approval-menu__list" role="listbox" aria-labelledby={id}>
+        <ul ref={listRef} className="mcp-approval-menu__list" role="listbox" aria-labelledby={id}>
           {MCP_TOOL_APPROVAL_OPTIONS.map((opt) => {
             const optionTone = approvalSelectTone(opt.value);
             const active = value === opt.value;

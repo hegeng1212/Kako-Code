@@ -22,6 +22,9 @@ Slash commands:
   /resume <id>       Switch to an existing session
   /title <text>      Set session title
   /workflows         Monitor dynamic workflows (alias: /workflow)
+  /plan               View current session plan (or enter plan mode)
+  /plan <question>    Enter plan mode with a design question
+  /plan open          Open plan file in VS Code
 `.trim();
 
 interface SlashConfig {
@@ -131,6 +134,21 @@ export async function handleSlashCommand(
     case "workflows":
     case "workflow":
       return { type: "workflows-panel" };
+    case "plan": {
+      if (arg.toLowerCase() === "open") {
+        return { type: "plan-open", displayText: trimmed };
+      }
+      if (!arg) {
+        return { type: "plan-view", displayText: trimmed };
+      }
+      return {
+        type: "plan-enter",
+        question: arg,
+        displayText: trimmed,
+      };
+    }
+    case "init":
+      return { type: "message", text: arg ? `init ${arg}` : "init" };
     default: {
       const yamlResult = await resolveYamlSlashCommand(cmd, arg, ctx.cwd);
       if (yamlResult) return yamlResult;

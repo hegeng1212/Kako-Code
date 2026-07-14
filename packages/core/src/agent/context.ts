@@ -1,14 +1,14 @@
 import { access } from "node:fs/promises";
 import { release } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentDefinition, LLMMessage, SessionCapability, SkillMetadata, TranscriptMessage } from "@kako/shared";
+import type { AgentDefinition, LLMContentBlock, LLMMessage, SessionCapability, TranscriptMessage } from "@kako/shared";
 import { buildUserContentBlocks } from "../media/attachments.js";
 import {
   attachmentIncludesDocument,
   formatAttachmentSystemPromptAddendum,
 } from "../media/attachment-reminders.js";
 import { mergeTextWithBlocks } from "../llm/content-blocks.js";
-import { formatSkillsIndex } from "../skills/loader.js";
+import { formatSkillsIndex, type SkillCatalogPartition } from "../skills/loader.js";
 import { formatSubagentSystemReminder } from "./subagent-catalog.js";
 
 export interface EnvironmentInfo {
@@ -25,7 +25,7 @@ export interface MessageBuildOptions {
   workspaceKakoMd?: string;
   globalContext?: string;
   sessionSummary?: string;
-  availableSkills?: SkillMetadata[];
+  availableSkills?: SkillCatalogPartition;
   environment: EnvironmentInfo;
   now?: Date;
   /** Loaded sub-agent definitions for Agent tool catalog in system prompt. */
@@ -138,6 +138,23 @@ export function buildSystemPromptBase(
   return system;
 }
 
+function parseStoredLlmBlocks(metadata: Record<string, unknown> | undefined): LLMContentBlock[] | undefined {
+  const raw = metadata?.llmBlocks;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const blocks: LLMContentBlock[] = [];
+  for (const item of raw) {
+    if (
+      item &&
+      typeof item === "object" &&
+      (item as { type?: string }).type === "text" &&
+      typeof (item as { text?: string }).text === "string"
+    ) {
+      blocks.push({ type: "text", text: (item as { text: string }).text });
+    }
+  }
+  return blocks.length ? blocks : undefined;
+}
+
 export async function buildMessages(options: MessageBuildOptions): Promise<LLMMessage[]> {
   const now = options.now ?? new Date();
   let system = buildSystemPromptBase(options.definition, {
@@ -149,17 +166,21 @@ export async function buildMessages(options: MessageBuildOptions): Promise<LLMMe
   if (options.securityPolicySection) {
     system += options.securityPolicySection;
   }
-  if (options.availableSkills?.length) {
-    system += formatSkillsIndex(options.availableSkills);
+  if (options.availableSkills) {
+    const { defaults, user } = options.availableSkills;
+    if (defaults.length || user.length) {
+      system += formatSkillsIndex(options.availableSkills);
+    }
   }
 
   const messages: LLMMessage[] = [{ role: "system", content: system }];
 
   for (const msg of options.transcript) {
     if (msg.role === "user") {
+      const llmBlocks = parseStoredLlmBlocks(msg.metadata);
       const llmText =
         typeof msg.metadata?.llmText === "string" ? msg.metadata.llmText : msg.content;
-      const body = await buildUserContentBlocks(llmText, msg.attachments);
+      const body = llmBlocks ?? (await buildUserContentBlocks(llmText, msg.attachments));
       const hasDocumentAttachments = attachmentIncludesDocument(msg.attachments);
       const reminder = hasDocumentAttachments
         ? ""
@@ -167,7 +188,9 @@ export async function buildMessages(options: MessageBuildOptions): Promise<LLMMe
       messages.push({
         role: "user",
         content: reminder
-          ? mergeTextWithBlocks(reminder, body)
+          ? Array.isArray(body)
+            ? [{ type: "text", text: `${reminder}\n\n` }, ...body]
+            : mergeTextWithBlocks(reminder, body)
           : body,
       });
     } else if (msg.role === "assistant") {

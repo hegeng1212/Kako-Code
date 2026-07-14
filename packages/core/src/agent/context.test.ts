@@ -173,6 +173,54 @@ describe("buildMessages", () => {
     }
   });
 
+  it("injects skill catalog after subagent catalog with defaults before user skills", async () => {
+    const messages = await buildMessages({
+      definition: baseDefinition,
+      transcript: [transcriptMsg({ role: "user", content: "hi" })],
+      environment,
+      availableSkills: {
+        defaults: [
+          {
+            name: "init",
+            description: "Initialize KAKO.md",
+            path: "/init",
+            skillMdPath: "/init/SKILL.md",
+          },
+        ],
+        user: [
+          {
+            name: "custom-skill",
+            description: "User skill",
+            path: "/custom",
+            skillMdPath: "/custom/SKILL.md",
+          },
+        ],
+      },
+      now: new Date("2026-07-06T12:00:00"),
+    });
+    const system = String(messages[0]?.content);
+    expect(system).toContain("The following skills are available for use with the Skill tool:");
+    const initIdx = system.indexOf("- init:");
+    const customIdx = system.indexOf("- custom-skill:");
+    expect(initIdx).toBeGreaterThan(-1);
+    expect(customIdx).toBeGreaterThan(initIdx);
+    expect(system.indexOf("Available agent types")).toBeLessThan(initIdx);
+  });
+
+  it("builds init skill pivot user message with core prompt", async () => {
+    const { buildInitSkillActivatedMessages } = await import("../tools/builtin/skill.js");
+    const messages = buildInitSkillActivatedMessages({
+      systemPromptBase: "You are Kako.",
+      transcript: [{ role: "user", content: "init" }],
+      now: new Date("2026-07-13T12:00:00"),
+    });
+    const followUp = messages[messages.length - 1];
+    expect(followUp?.role).toBe("user");
+    expect(String(followUp?.content)).toContain("create a KAKO.md file");
+    expect(String(followUp?.content)).toContain("already been initialized");
+    expect(String(followUp?.content)).not.toContain("CLAUDE.md");
+  });
+
   it("replays assistant tool_calls before tool results", async () => {
     const messages = await buildMessages({
       definition: baseDefinition,

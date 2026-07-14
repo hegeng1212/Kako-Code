@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { bashToolDefinition } from "../tools/builtin/bash.js";
+import { globToolDefinition } from "../tools/builtin/glob.js";
+import { grepToolDefinition } from "../tools/builtin/grep.js";
 import { writeToolDefinition } from "../tools/builtin/write.js";
 import { classifyBashCommand } from "./bash-policy.js";
 import { normalizeSecurityPolicy } from "./policy-store.js";
@@ -67,6 +69,26 @@ describe("risk-evaluator", () => {
     );
     expect(assessment.workspacePaths).toContain("/tmp/a.txt");
     expect(assessment.level).toBe("medium");
+  });
+
+  it("extracts workspace scope for Glob defaulting to cwd", () => {
+    const assessment = evaluateToolRisk(
+      { id: "1", name: "Glob", input: { pattern: "*" } },
+      globToolDefinition,
+      "/tmp/project",
+      policyFor("/tmp/project"),
+    );
+    expect(assessment.workspacePaths).toEqual(["/tmp/project"]);
+  });
+
+  it("extracts workspace scope for Grep with explicit path", () => {
+    const assessment = evaluateToolRisk(
+      { id: "1", name: "Grep", input: { pattern: "foo", path: "src" } },
+      grepToolDefinition,
+      "/tmp/project",
+      policyFor("/tmp/project"),
+    );
+    expect(assessment.workspacePaths).toEqual(["/tmp/project/src"]);
   });
 
   it("flags WebFetch as requiring network", () => {

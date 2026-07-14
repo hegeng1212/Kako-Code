@@ -16,6 +16,7 @@ export function registerBackgroundTask(
   id: string,
   kind: BackgroundTaskKind,
   abort: () => void | Promise<void>,
+  meta?: Pick<BackgroundTask, "description" | "subagentName" | "childSessionId">,
 ): BackgroundTask {
   const task: BackgroundTask = {
     id,
@@ -24,6 +25,7 @@ export function registerBackgroundTask(
     startedAt: new Date().toISOString(),
     stopped: false,
     abort,
+    ...meta,
   };
   sessionMap(sessionId).set(id, task);
   return task;

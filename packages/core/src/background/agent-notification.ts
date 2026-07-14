@@ -1,3 +1,5 @@
+import { getSessionMemoryDir } from "../config/paths.js";
+
 export type AgentTaskStatus = "completed" | "error" | "stopped";
 
 export interface AgentTaskRecord {
@@ -19,18 +21,24 @@ function formatDuration(ms: number): string {
   return `${sec}s`;
 }
 
+export function agentFinishedTimelineLine(record: AgentTaskRecord): string {
+  const desc = record.description;
+  if (record.status === "error") {
+    return `Agent "${desc}" failed`;
+  }
+  if (record.status === "stopped") {
+    return `Agent "${desc}" stopped`;
+  }
+  return `Agent "${desc}" finished`;
+}
+
 export function agentCompletedSummary(record: AgentTaskRecord): string {
   const elapsed = formatDuration(
     (record.completedAt ? new Date(record.completedAt).getTime() : Date.now()) -
       new Date(record.startedAt).getTime(),
   );
-  if (record.status === "error") {
-    return `Background agent "${record.description}" failed · ${elapsed}`;
-  }
-  if (record.status === "stopped") {
-    return `Background agent "${record.description}" stopped · ${elapsed}`;
-  }
-  return `Background agent "${record.description}" completed · ${elapsed}`;
+  const line = agentFinishedTimelineLine(record);
+  return `${line} · ${elapsed}`;
 }
 
 export function buildAgentTaskNotificationMessage(record: AgentTaskRecord): string {
@@ -57,13 +65,17 @@ export function formatBackgroundAgentLaunchResult(input: {
   taskId: string;
   description: string;
   subagentName: string;
+  childSessionId?: string;
 }): string {
+  const transcriptPath = input.childSessionId
+    ? `${getSessionMemoryDir(input.childSessionId)}/transcript.jsonl`
+    : "(child session pending)";
   return [
-    "Agent launched in background.",
-    `Task ID: ${input.taskId}`,
+    "Async agent launched successfully.",
+    `agentId: ${input.taskId}`,
     `Subagent: ${input.subagentName}`,
-    `Description: ${input.description}`,
-    "",
-    "You will be notified when it completes. Use TaskStop to cancel early.",
+    "The agent is working in the background. You will receive a notification when it completes.",
+    `transcript: ${transcriptPath}`,
+    "Do not Read or tail this file via shell — you will be notified when the agent completes.",
   ].join("\n");
 }

@@ -106,24 +106,6 @@ interface ToolDefinition {
 
 ### 搜索
 
-#### Glob
-
-按 glob 模式查找文件。
-
-| 属性 | 值 |
-|------|-----|
-| 确认 | 否 |
-| Phase | 1 |
-
-```json
-{
-  "pattern": { "type": "string", "description": "glob 模式，如 **/*.ts" },
-  "path": { "type": "string", "description": "搜索根目录，默认 cwd" }
-}
-```
-
----
-
 #### Grep
 
 在文件中搜索正则模式。

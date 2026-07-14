@@ -14,11 +14,18 @@ import {
   isFileWriteTool,
   isPlanFileTool,
   isPlanToolToggleLine,
+  isSkillTool,
+  isSkillToolToggleLine,
+  isAgentTool,
+  renderAgentToolLines,
   isWorkflowTool,
+  isDynamicWorkflowSkillName,
+  workflowDisplayName,
   renderActivitySummaryLine,
   renderBashOutputLines,
   renderEditToolLines,
   renderPlanPreviewHint,
+  renderSkillToolLines,
   renderToolCallErrorLines,
   renderToolCallStatusLine,
   renderToolInvocationLine,
@@ -29,7 +36,8 @@ import {
   shouldShowFileBodyInChat,
   type ToolCallTimelineEntry,
 } from "./tool-call-display.js";
-import { renderPlanBoxLines } from "./plan-box.js";
+import { toolCallWaitingPhrase } from "./tool-call-phrases.js";
+import { renderPlanBoxLines, renderCurrentPlanTreeLine, renderPlanPathLine } from "./plan-box.js";
 import { wrapContentLines } from "./text-wrap.js";
 import { renderPulsingPrefix } from "./stream-pulse.js";
 import { extractDisplayFilePaths, formatFileBranchLabel } from "./file-path-display.js";
@@ -59,6 +67,12 @@ export interface ChoiceGroupTimelineEntry {
   items: ChoiceGroupItem[];
 }
 
+export interface PlanPreviewTimelineEntry {
+  type: "plan-preview";
+  planPath: string;
+  planText: string;
+}
+
 export interface ChoiceTimelineEntry {
   type: "choice";
   id: string;
@@ -81,6 +95,7 @@ export type TurnTimelineEntry =
     }
   | { type: "answer"; text: string }
   | { type: "event"; lines: string[] }
+  | PlanPreviewTimelineEntry
   | ToolCallTimelineEntry
   | ChoiceTimelineEntry
   | ChoiceGroupTimelineEntry;
@@ -108,6 +123,11 @@ export interface ChatTurn {
   expandedChoices: Set<string>;
   /** Animation frame for streaming icon pulse (0–3). */
   pulseFrame: number;
+  /** Plan mode turn — uses fixed "Worked" verb and optional recap. */
+  planMode?: boolean;
+  /** Harness-only turn (/plan enter, shift+tab) — no done duration line. */
+  harnessOnly?: boolean;
+  recapText?: string;
 }
 
 export interface RenderLine {
@@ -123,6 +143,8 @@ export interface RenderLine {
       | "plan-tool-toggle"
       | "write-tool-toggle"
       | "edit-tool-toggle"
+      | "skill-tool-toggle"
+      | "agent-tool-toggle"
       | "choice-toggle";
     toolId?: string;
     groupId?: string;
@@ -158,6 +180,98 @@ function gap(): string {
 }
 
 type ThinkingEntry = Extract<TurnTimelineEntry, { type: "thinking" }>;
+
+type ActivityBatchItem =
+  | { type: "thinking"; entry: ThinkingEntry; index: number }
+  | { type: "tool"; entry: ToolCallTimelineEntry }
+  | { type: "event"; lines: string[] };
+
+function activityGroupId(turnId: string, batchStart: number): string {
+  return `${turnId}:activity:${batchStart}`;
+}
+
+function activityBranchPrefix(isLast: boolean): string {
+  return isLast ? "└ " : "│ ";
+}
+
+function activityBodyPrefix(parentIsLast: boolean): string {
+  return parentIsLast ? "   " : "│  ";
+}
+
+function renderActivityExpandedTree(
+  items: ActivityBatchItem[],
+  width: number,
+  now: number,
+): string[] {
+  const lines: string[] = [];
+  const baseIndent = treeBranchIndent(BODY_START);
+  const visibleItems = items.filter(
+    (item) => item.type !== "tool" || !isPlanFileTool(item.entry),
+  );
+
+  for (let i = 0; i < visibleItems.length; i++) {
+    const item = visibleItems[i]!;
+    const isLast = i === visibleItems.length - 1;
+    const branch = activityBranchPrefix(isLast);
+    const bodyPrefix = activityBodyPrefix(isLast);
+    const contentIndent = baseIndent + branch.length;
+    const wrapWidth = Math.max(20, width - contentIndent - 2);
+
+    if (item.type === "thinking") {
+      const secs = thoughtEntrySeconds(item.entry, now);
+      lines.push(
+        indent(
+          `${ansi.muted}${branch}Thought for ${formatDurationSeconds(secs)}${ansi.reset}`,
+          baseIndent,
+        ),
+      );
+      const plain = item.entry.text.trim() || "(no thinking content)";
+      for (const [j, line] of wrapContentLines(plain, wrapWidth).entries()) {
+        const marker = j === 0 ? "∴ " : "  ";
+        lines.push(
+          indent(
+            `${ansi.muted}${bodyPrefix}${marker}${line}${ansi.reset}`,
+            baseIndent,
+          ),
+        );
+      }
+      continue;
+    }
+
+    if (item.type === "tool") {
+      if (item.entry.status === "waiting") {
+        const dots = ["", ".", "..", "..."][item.entry.dotFrame % 4]!;
+        lines.push(
+          indent(
+            `${ansi.muted}${branch}${ansi.red}Waiting${dots}${ansi.reset} ${ansi.muted}${toolCallWaitingPhrase(item.entry.name, item.entry.detail)}${ansi.reset}`,
+            baseIndent,
+          ),
+        );
+        continue;
+      }
+      lines.push(
+        indent(`${ansi.muted}${branch}${ansi.reset}${renderToolInvocationLine(item.entry)}`, baseIndent),
+      );
+      const outputLines = isExecutionBashEntry(item.entry)
+        ? renderBashOutputLines(item.entry, width, contentIndent)
+        : renderToolOutputLines(item.entry, width, contentIndent);
+      for (const line of outputLines) {
+        lines.push(indent(`${ansi.muted}${bodyPrefix}${ansi.reset}${line}`, baseIndent));
+      }
+      continue;
+    }
+
+    if (item.type === "event") {
+      for (let j = 0; j < item.lines.length; j++) {
+        const line = item.lines[j]!;
+        const eventBranch = j === item.lines.length - 1 ? branch : "│ ";
+        lines.push(indent(`${ansi.muted}${eventBranch}${ansi.reset}${line}`, baseIndent));
+      }
+    }
+  }
+
+  return lines;
+}
 
 function thoughtEntrySeconds(entry: ThinkingEntry, now = Date.now(), live = false): number {
   const end = entry.endedAt ?? (live ? now : entry.lastChunkAt);
@@ -264,11 +378,25 @@ export function pickDoneVerb(): string {
 
 export function renderDoneStatus(turn: ChatTurn, now = Date.now()): string {
   if (!turn.finishedAt) return "";
-  const verb = turn.doneVerb ?? "Worked";
+  const verb = turn.planMode ? "Worked" : (turn.doneVerb ?? "Worked");
   return indent(
     `${ansi.muted}* ${verb} for ${formatDurationSeconds(turnElapsedSeconds(turn, now))}${ansi.reset}`,
     LINE_INDENT,
   );
+}
+
+export function renderRecapLine(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  return indent(`${ansi.muted}* recap: ${trimmed}${ansi.reset}`, LINE_INDENT);
+}
+
+function extractRecapText(answerText: string): string {
+  const trimmed = answerText.trim();
+  if (!trimmed) return "";
+  const firstLine = trimmed.split("\n").find((line) => line.trim())?.trim() ?? trimmed;
+  const sentence = firstLine.split(/(?<=[.!?。！？])\s+/)[0]?.trim() ?? firstLine;
+  return sentence.length > 120 ? `${sentence.slice(0, 117)}…` : sentence;
 }
 
 export function renderThoughtBodyForEntry(entry: ThinkingEntry, width: number): string[] {
@@ -358,7 +486,11 @@ export function padUserMessageLine(promptLine: string, cols: number): string {
   return `${inner}${" ".repeat(pad)}${ansi.reset}`;
 }
 
-export function renderUserMessage(userText: string, cols: number): string[] {
+export function renderUserMessage(
+  userText: string,
+  cols: number,
+  options?: { trailingGap?: boolean },
+): string[] {
   const imageLabels = extractImageLabelsInOrder(userText);
   const filePaths = extractDisplayFilePaths(userText);
   const logicalLines = userText.length ? userText.split("\n") : [""];
@@ -382,7 +514,9 @@ export function renderUserMessage(userText: string, cols: number): string[] {
       ),
     );
   }
-  lines.push(gap());
+  if (options?.trailingGap !== false) {
+    lines.push(gap());
+  }
   return lines;
 }
 
@@ -477,6 +611,9 @@ function renderWorkflowToolEntry(
   entry: ToolCallTimelineEntry,
   thoughtSeconds?: number,
 ): RenderLine[] {
+  if (isDynamicWorkflowSkillName(workflowDisplayName(entry))) {
+    return renderSkillToolEntry(turn, entry, thoughtSeconds);
+  }
   const out: RenderLine[] = [...timelineBlockGaps()];
   if (thoughtSeconds != null) {
     out.push({
@@ -486,8 +623,35 @@ function renderWorkflowToolEntry(
       ),
     });
   }
-  for (const line of renderWorkflowToolLines(entry)) {
-    out.push({ text: indent(line, BODY_START) });
+  const lines = renderWorkflowToolLines(entry);
+  for (let i = 0; i < lines.length; i++) {
+    out.push({
+      text: indent(lines[i]!, i === 0 ? BODY_START : treeBranchIndent(BODY_START)),
+      meta:
+        i === 0 && entry.status === "success"
+          ? { turnId: turn.id, kind: "skill-tool-toggle", toolId: entry.id }
+          : undefined,
+    });
+  }
+  out.push(...timelineBlockGaps());
+  return out;
+}
+
+function renderPlanPreviewEntry(entry: PlanPreviewTimelineEntry, width: number): RenderLine[] {
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  out.push({
+    text: indent(renderCurrentPlanTreeLine(), treeBranchIndent(BODY_START)),
+  });
+  out.push({
+    text: indent(renderPlanPathLine(entry.planPath), treeBranchIndent(BODY_START)),
+  });
+  const boxLines = renderPlanBoxLines({
+    planText: entry.planText,
+    width,
+    indent: BODY_START,
+  });
+  for (const line of boxLines) {
+    out.push({ text: line });
   }
   out.push(...timelineBlockGaps());
   return out;
@@ -512,7 +676,7 @@ function renderPlanToolEntry(
   if (!boxCollapsed && entry.output?.trim()) {
     const boxLines = renderPlanBoxLines({
       planText: entry.output,
-      width: width - BODY_START,
+      width,
       indent: BODY_START,
     });
     for (const line of boxLines) {
@@ -530,7 +694,7 @@ function renderWriteToolEntry(
   width: number,
   thoughtSeconds?: number,
 ): RenderLine[] {
-  const collapsed = turn.expandedToolGroups.has(`write:${entry.id}`);
+  const fullExpanded = turn.expandedToolGroups.has(`write:${entry.id}`);
   const contentIndent = fileToolContentIndent(entry, BODY_START);
   const out: RenderLine[] = [...timelineBlockGaps()];
   if (thoughtSeconds != null) {
@@ -541,15 +705,10 @@ function renderWriteToolEntry(
       ),
     });
   }
-  const lines = renderWriteToolLines(entry, width, contentIndent, collapsed);
+  const lines = renderWriteToolLines(entry, width, contentIndent, fullExpanded);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    let text: string;
-    if (i === 0 || i === 1) {
-      text = indent(line, BODY_START);
-    } else {
-      text = line;
-    }
+    const text = i === 0 ? indent(line, BODY_START) : line;
     out.push({
       text,
       meta:
@@ -575,7 +734,7 @@ function renderEditToolEntry(
   width: number,
   thoughtSeconds?: number,
 ): RenderLine[] {
-  const collapsed = turn.expandedToolGroups.has(`edit:${entry.id}`);
+  const fullExpanded = turn.expandedToolGroups.has(`edit:${entry.id}`);
   const contentIndent = fileToolContentIndent(entry, BODY_START);
   const out: RenderLine[] = [...timelineBlockGaps()];
   if (thoughtSeconds != null) {
@@ -586,15 +745,10 @@ function renderEditToolEntry(
       ),
     });
   }
-  const lines = renderEditToolLines(entry, width, contentIndent, collapsed);
+  const lines = renderEditToolLines(entry, width, contentIndent, fullExpanded);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    let text: string;
-    if (i === 0 || i === 1) {
-      text = indent(line, BODY_START);
-    } else {
-      text = line;
-    }
+    const text = i === 0 ? indent(line, BODY_START) : line;
     out.push({
       text,
       meta:
@@ -614,112 +768,369 @@ function renderEditToolEntry(
   return out;
 }
 
-function renderActivityGroup(
+function renderAgentToolEntry(
   turn: ChatTurn,
-  entries: ToolCallTimelineEntry[],
-  timelineStartIndex: number,
-  width: number,
+  entry: ToolCallTimelineEntry,
   thoughtSeconds?: number,
 ): RenderLine[] {
-  const groupId = toolGroupId(turn.id, timelineStartIndex);
-  const expanded = turn.expandedToolGroups.has(groupId);
-  const stats = collectActivityStats(entries);
   const out: RenderLine[] = [...timelineBlockGaps()];
-  out.push({
-    text: indent(renderActivitySummaryLine(thoughtSeconds, stats, expanded, entries), BODY_START),
-    meta: { turnId: turn.id, kind: "tool-group-toggle", groupId },
-  });
-  if (expanded) {
-    const branchIndent = treeBranchIndent(BODY_START, 0);
-    for (const entry of entries) {
-      if (isPlanFileTool(entry)) continue;
+  if (thoughtSeconds != null) {
+    out.push({
+      text: indent(
+        `${ansi.muted}Thought for ${formatDurationSeconds(thoughtSeconds)}${ansi.reset}`,
+        LINE_INDENT,
+      ),
+    });
+  }
+  const lines = renderAgentToolLines(entry);
+  for (let i = 0; i < lines.length; i++) {
+    out.push({
+      text: indent(lines[i]!, i === 0 ? BODY_START : treeBranchIndent(BODY_START)),
+      meta:
+        i === 0
+          ? { turnId: turn.id, kind: "agent-tool-toggle", toolId: entry.id }
+          : undefined,
+    });
+  }
+  if (entry.agentExpanded && entry.output?.trim()) {
+    const wrapWidth = 72;
+    for (const line of wrapContentLines(entry.output.trim(), wrapWidth)) {
       out.push({
-        text: indent(renderToolInvocationLine(entry), branchIndent),
+        text: indent(`${ansi.muted}${line}${ansi.reset}`, treeBranchIndent(BODY_START, 1)),
       });
-      const outputLines = isExecutionBashEntry(entry)
-        ? renderBashOutputLines(entry, width, treeBranchIndent(BODY_START, 0))
-        : renderToolOutputLines(entry, width, treeBranchIndent(BODY_START, 0));
-      for (const line of outputLines) {
-        out.push({ text: indent(line, treeBranchIndent(BODY_START)) });
-      }
     }
   }
   out.push(...timelineBlockGaps());
   return out;
 }
 
-function renderToolRun(
+function renderSkillToolEntry(
   turn: ChatTurn,
-  entries: ToolCallTimelineEntry[],
-  timelineStartIndex: number,
-  width: number,
-  precedingThinking?: ThinkingEntry,
+  entry: ToolCallTimelineEntry,
+  thoughtSeconds?: number,
 ): RenderLine[] {
-  let thoughtSeconds = precedingThinking
-    ? thoughtEntrySeconds(precedingThinking)
-    : undefined;
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  if (thoughtSeconds != null) {
+    out.push({
+      text: indent(
+        `${ansi.muted}Thought for ${formatDurationSeconds(thoughtSeconds)}${ansi.reset}`,
+        LINE_INDENT,
+      ),
+    });
+  }
+  const lines = renderSkillToolLines(entry);
+  for (let i = 0; i < lines.length; i++) {
+    out.push({
+      text: indent(lines[i]!, i === 0 ? BODY_START : treeBranchIndent(BODY_START)),
+      meta:
+        i === 0
+          ? { turnId: turn.id, kind: "skill-tool-toggle", toolId: entry.id }
+          : undefined,
+    });
+  }
+  out.push(...timelineBlockGaps());
+  return out;
+}
+
+function isMcpTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
+  return entry.name.startsWith("mcp/");
+}
+
+function isCompactActivityTool(entry: ToolCallTimelineEntry): boolean {
+  return (
+    (entry.status === "success" || entry.status === "waiting") &&
+    !isMcpTool(entry) &&
+    !isPlanFileTool(entry) &&
+    !isFileWriteTool(entry) &&
+    !isFileEditTool(entry) &&
+    !isWorkflowTool(entry) &&
+    !isSkillTool(entry) &&
+    !isAgentTool(entry)
+  );
+}
+
+function isStandaloneTool(entry: ToolCallTimelineEntry): boolean {
+  return entry.status === "waiting" || entry.status === "error" || !isCompactActivityTool(entry);
+}
+
+function nextSignificantTimelineIndex(timeline: TurnTimelineEntry[], start: number): number {
+  for (let j = start; j < timeline.length; j++) {
+    const entry = timeline[j]!;
+    if (entry.type === "thinking" && entry.text.trim()) return j;
+    if (entry.type === "tool") return j;
+    if (entry.type === "answer" && entry.text.trim()) return j;
+    if (entry.type === "choice" || entry.type === "choice-group" || entry.type === "plan-preview") {
+      return j;
+    }
+    if (entry.type === "event") return j;
+  }
+  return -1;
+}
+
+/** Short narration before more tools in the same burst — hidden and splits activity batches. */
+function isTransitionalAnswer(timeline: TurnTimelineEntry[], index: number): boolean {
+  const entry = timeline[index];
+  if (entry?.type !== "answer" || !entry.text.trim()) return false;
+
+  const nextIdx = nextSignificantTimelineIndex(timeline, index + 1);
+  if (nextIdx < 0) return false;
+
+  const next = timeline[nextIdx]!;
+  if (next.type === "thinking") return false;
+  if (next.type === "tool" && isStandaloneTool(next)) return false;
+  if (next.type === "choice" || next.type === "choice-group") return false;
+  if (next.type === "event") return false;
+  if (next.type === "tool" && isCompactActivityTool(next)) return true;
+  if (next.type === "answer") return isTransitionalAnswer(timeline, nextIdx);
+  return false;
+}
+
+function isPrimaryBreaker(
+  entry: TurnTimelineEntry,
+  timeline: TurnTimelineEntry[],
+  index: number,
+): boolean {
+  if (entry.type === "choice" || entry.type === "choice-group" || entry.type === "plan-preview") {
+    return true;
+  }
+  if (entry.type === "tool" && isStandaloneTool(entry)) {
+    return true;
+  }
+  if (entry.type === "answer" && entry.text.trim()) {
+    return !isTransitionalAnswer(timeline, index);
+  }
+  return false;
+}
+
+/** Foldable only when adjacent in the timeline — thinking and compact tools. */
+function isSystemEntry(entry: TurnTimelineEntry): boolean {
+  if (entry.type === "thinking" && entry.text.trim()) return true;
+  if (entry.type === "tool" && isCompactActivityTool(entry)) return true;
+  return false;
+}
+
+function canStartActivityBatch(entry: TurnTimelineEntry): boolean {
+  return isSystemEntry(entry);
+}
+
+/** Collect thinking + compact tools; events merge only after thinking in the same batch. */
+function collectActivityBatch(
+  timeline: TurnTimelineEntry[],
+  start: number,
+): { items: ActivityBatchItem[]; end: number } {
+  const items: ActivityBatchItem[] = [];
+  let hasThinkingInBatch = false;
+  let i = start;
+
+  while (i < timeline.length) {
+    const entry = timeline[i]!;
+
+    if (entry.type === "thinking" && entry.text.trim()) {
+      hasThinkingInBatch = true;
+      items.push({ type: "thinking", entry, index: i });
+      i++;
+      continue;
+    }
+
+    if (entry.type === "tool" && isCompactActivityTool(entry)) {
+      items.push({ type: "tool", entry });
+      i++;
+      continue;
+    }
+
+    if (entry.type === "event" && hasThinkingInBatch) {
+      items.push({ type: "event", lines: entry.lines });
+      i++;
+      continue;
+    }
+
+    break;
+  }
+
+  return { items, end: i };
+}
+
+function renderActivityBatchItems(
+  turn: ChatTurn,
+  batchItems: ActivityBatchItem[],
+  batchStart: number,
+  width: number,
+  now: number,
+  isActive: boolean,
+): RenderLine[] {
+  const tools = batchItems
+    .filter((item): item is Extract<ActivityBatchItem, { type: "tool" }> => item.type === "tool")
+    .map((item) => item.entry);
+  const groupId = activityGroupId(turn.id, batchStart);
+
+  if (tools.length > 0) {
+    return renderActivityGroup(turn, batchItems, batchStart, width, now, groupId);
+  }
 
   const out: RenderLine[] = [];
-  let k = 0;
-  while (k < entries.length) {
-    const entry = entries[k]!;
-    if (isWorkflowTool(entry)) {
-      out.push(...renderWorkflowToolEntry(turn, entry, thoughtSeconds));
-      thoughtSeconds = undefined;
-      k++;
-      continue;
-    }
-
-    if (entry.status === "waiting" || entry.status === "error") {
-      out.push(...renderToolEntry(turn, entry, width));
-      k++;
-      continue;
-    }
-
-    if (isPlanFileTool(entry)) {
-      out.push(...renderPlanToolEntry(turn, entry, width));
-      k++;
-      continue;
-    }
-
-    if (isFileWriteTool(entry)) {
-      out.push(...renderWriteToolEntry(turn, entry, width, thoughtSeconds));
-      thoughtSeconds = undefined;
-      k++;
-      continue;
-    }
-
-    if (isFileEditTool(entry)) {
-      out.push(...renderEditToolEntry(turn, entry, width, thoughtSeconds));
-      thoughtSeconds = undefined;
-      k++;
-      continue;
-    }
-
-    let m = k;
-    while (m < entries.length) {
-      const next = entries[m]!;
-      if (
-        next.status !== "success" ||
-        isPlanFileTool(next) ||
-        isFileWriteTool(next) ||
-        isFileEditTool(next) ||
-        isWorkflowTool(next)
-      ) {
-        break;
+  for (const item of batchItems) {
+    if (item.type === "thinking") {
+      out.push(...renderThinkingEntry(turn, item.entry, item.index, width, now, isActive));
+    } else if (item.type === "event") {
+      for (const text of item.lines) {
+        out.push({ text: indent(text, LINE_INDENT) });
       }
-      m++;
     }
-    const activityBatch = entries.slice(k, m);
-    if (activityBatch.length > 0) {
-      out.push(
-        ...renderActivityGroup(turn, activityBatch, timelineStartIndex + k, width, thoughtSeconds),
-      );
-      // Only attach thought duration to the first activity batch in a run.
-      precedingThinking = undefined;
-    }
-    k = m;
   }
+  return out;
+}
+
+function sumThinkingSeconds(entries: ThinkingEntry[], now: number): number | undefined {
+  const total = entries.reduce((sum, entry) => sum + thoughtEntrySeconds(entry, now), 0);
+  return total > 0 ? total : undefined;
+}
+
+function renderStandaloneTool(
+  turn: ChatTurn,
+  entry: ToolCallTimelineEntry,
+  width: number,
+): RenderLine[] {
+  if (entry.status === "waiting" || entry.status === "error") {
+    return renderToolEntry(turn, entry, width);
+  }
+  if (isWorkflowTool(entry)) return renderWorkflowToolEntry(turn, entry);
+  if (isPlanFileTool(entry)) return renderPlanToolEntry(turn, entry, width);
+  if (isFileWriteTool(entry)) return renderWriteToolEntry(turn, entry, width);
+  if (isFileEditTool(entry)) return renderEditToolEntry(turn, entry, width);
+  if (isSkillTool(entry)) return renderSkillToolEntry(turn, entry);
+  if (isAgentTool(entry)) return renderAgentToolEntry(turn, entry);
+  return renderToolEntry(turn, entry, width);
+}
+
+function renderTimelineToLines(
+  turn: ChatTurn,
+  width: number,
+  now: number,
+  isActive: boolean,
+): RenderLine[] {
+  const streamingAnswerIdx =
+    isActive && turn.phase !== "done" ? lastAnswerTimelineIndex(turn.timeline) : -1;
+  const out: RenderLine[] = turn.userText.trim()
+    ? renderUserMessage(turn.userText, width, {
+        trailingGap: !turn.harnessOnly,
+      }).map((text) => ({ text }))
+    : [];
+
+  const timeline = turn.timeline;
+  let i = 0;
+  while (i < timeline.length) {
+    const entry = timeline[i]!;
+
+    if (canStartActivityBatch(entry)) {
+      const batchStart = i;
+      const { items: batchItems, end } = collectActivityBatch(timeline, i);
+      i = end;
+      out.push(...renderActivityBatchItems(turn, batchItems, batchStart, width, now, isActive));
+      continue;
+    }
+
+    if (entry.type === "thinking") {
+      out.push(...renderThinkingEntry(turn, entry, i, width, now, isActive));
+      i++;
+      continue;
+    }
+    if (entry.type === "answer") {
+      if (isTransitionalAnswer(timeline, i)) {
+        i++;
+        continue;
+      }
+      for (const text of renderAnswerTextLines(entry.text, width, {
+        pulseFrame: turn.pulseFrame,
+        pulseLive: isActive && turn.phase !== "done" && i === streamingAnswerIdx,
+      })) {
+        out.push({ text });
+      }
+      i++;
+      continue;
+    }
+    if (entry.type === "choice-group") {
+      out.push(...renderChoiceGroupEntry(entry));
+      i++;
+      continue;
+    }
+    if (entry.type === "choice") {
+      out.push(...renderChoiceEntry(turn, entry));
+      i++;
+      continue;
+    }
+    if (entry.type === "event") {
+      for (const text of entry.lines) {
+        out.push({ text: indent(text, LINE_INDENT) });
+      }
+      i++;
+      continue;
+    }
+    if (entry.type === "plan-preview") {
+      out.push(...renderPlanPreviewEntry(entry, width));
+      i++;
+      continue;
+    }
+    if (entry.type === "tool" && isPrimaryBreaker(entry, timeline, i)) {
+      out.push(...renderStandaloneTool(turn, entry, width));
+      i++;
+      continue;
+    }
+
+    i++;
+  }
+
+  const last = timeline[timeline.length - 1];
+  if (last?.type !== "answer" && turn.answerText.trim()) {
+    for (const text of renderAnswerLines(turn, width, {
+      pulseLive: isActive && turn.phase !== "done",
+    })) {
+      out.push({ text });
+    }
+  }
+
+  if (turn.phase === "done" && turn.finishedAt && !turn.harnessOnly) {
+    out.push({ text: gap() });
+    out.push({ text: renderDoneStatus(turn, now) });
+    if (turn.planMode && turn.recapText) {
+      out.push({ text: renderRecapLine(turn.recapText) });
+    }
+    out.push({ text: gap() });
+  }
+
+  return out;
+}
+
+function renderActivityGroup(
+  turn: ChatTurn,
+  items: ActivityBatchItem[],
+  timelineStartIndex: number,
+  width: number,
+  now: number,
+  groupIdOverride?: string,
+): RenderLine[] {
+  const groupId = groupIdOverride ?? toolGroupId(turn.id, timelineStartIndex);
+  const expanded = turn.expandedToolGroups.has(groupId);
+  const tools = items
+    .filter((item): item is Extract<ActivityBatchItem, { type: "tool" }> => item.type === "tool")
+    .map((item) => item.entry);
+  const thinkingEntries = items
+    .filter(
+      (item): item is Extract<ActivityBatchItem, { type: "thinking" }> => item.type === "thinking",
+    )
+    .map((item) => item.entry);
+  const thoughtSeconds = sumThinkingSeconds(thinkingEntries, now);
+  const stats = collectActivityStats(tools);
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  out.push({
+    text: indent(renderActivitySummaryLine(thoughtSeconds, stats, expanded, tools), BODY_START),
+    meta: { turnId: turn.id, kind: "tool-group-toggle", groupId },
+  });
+  if (expanded) {
+    for (const text of renderActivityExpandedTree(items, width, now)) {
+      out.push({ text });
+    }
+  }
+  out.push(...timelineBlockGaps());
   return out;
 }
 
@@ -790,78 +1201,7 @@ export function renderTurnToLines(
   const now = typeof nowOrOpts === "number" ? nowOrOpts : (nowOrOpts.now ?? Date.now());
   const opts = typeof nowOrOpts === "number" ? maybeOpts : nowOrOpts;
   const isActive = opts?.isActive ?? false;
-  const streamingAnswerIdx =
-    isActive && turn.phase !== "done" ? lastAnswerTimelineIndex(turn.timeline) : -1;
-
-  const out: RenderLine[] = renderUserMessage(turn.userText, width).map((text) => ({
-    text,
-  }));
-
-  for (let i = 0; i < turn.timeline.length; ) {
-    const entry = turn.timeline[i]!;
-    if (entry.type === "thinking") {
-      const next = turn.timeline[i + 1];
-      if (next?.type === "tool") {
-        i++;
-        continue;
-      }
-      out.push(...renderThinkingEntry(turn, entry, i, width, now, isActive));
-      i++;
-      continue;
-    }
-    if (entry.type === "event") {
-      for (const text of entry.lines) {
-        out.push({ text: indent(text, LINE_INDENT) });
-      }
-      i++;
-      continue;
-    }
-    if (entry.type === "choice-group") {
-      out.push(...renderChoiceGroupEntry(entry));
-      i++;
-      continue;
-    }
-    if (entry.type === "choice") {
-      out.push(...renderChoiceEntry(turn, entry));
-      i++;
-      continue;
-    }
-    if (entry.type === "tool") {
-      let j = i;
-      while (j < turn.timeline.length && turn.timeline[j]?.type === "tool") j++;
-      const toolRun = turn.timeline.slice(i, j) as ToolCallTimelineEntry[];
-      const prev = i > 0 ? turn.timeline[i - 1] : undefined;
-      const precedingThinking =
-        prev?.type === "thinking" ? (prev as ThinkingEntry) : undefined;
-      out.push(...renderToolRun(turn, toolRun, i, width, precedingThinking));
-      i = j;
-      continue;
-    }
-    for (const text of renderAnswerTextLines(entry.text, width, {
-      pulseFrame: turn.pulseFrame,
-      pulseLive: isActive && i === streamingAnswerIdx,
-    })) {
-      out.push({ text });
-    }
-    i++;
-  }
-
-  const last = turn.timeline[turn.timeline.length - 1];
-  if (last?.type !== "answer" && turn.answerText.trim()) {
-    for (const text of renderAnswerLines(turn, width, {
-      pulseLive: isActive && turn.phase !== "done",
-    })) {
-      out.push({ text });
-    }
-  }
-
-  if (turn.phase === "done" && turn.finishedAt) {
-    out.push({ text: gap() });
-    out.push({ text: renderDoneStatus(turn, now) });
-    out.push({ text: gap() });
-  }
-
-  return out;
+  return renderTimelineToLines(turn, width, now, isActive);
 }
 
 export function renderGeneratingStatus(

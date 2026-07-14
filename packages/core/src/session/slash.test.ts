@@ -99,12 +99,38 @@ describe("handleSlashCommand", () => {
     }
   });
 
-  it("returns skill-slash for /init with skill handler", async () => {
+  it("returns plan-view for bare /plan", async () => {
+    const result = await handleSlashCommand("/plan", ctx);
+    expect(result).toEqual({
+      type: "plan-view",
+      displayText: "/plan",
+    });
+  });
+
+  it("returns plan-enter with question for /plan foo", async () => {
+    const result = await handleSlashCommand("/plan design API", ctx);
+    expect(result).toEqual({
+      type: "plan-enter",
+      question: "design API",
+      displayText: "/plan design API",
+    });
+  });
+
+  it("returns plan-open for /plan open", async () => {
+    const result = await handleSlashCommand("/plan open", ctx);
+    expect(result).toEqual({
+      type: "plan-open",
+      displayText: "/plan open",
+    });
+  });
+
+  it("returns message for /init so the model can invoke Skill(init)", async () => {
     const result = await handleSlashCommand("/init", ctx);
-    expect(result.type).toBe("skill-slash");
-    if (result.type === "skill-slash") {
-      expect(result.name).toBe("init");
-      expect(result.handler).toBe("skill");
-    }
+    expect(result).toEqual({ type: "message", text: "init" });
+  });
+
+  it("passes args through /init", async () => {
+    const result = await handleSlashCommand("/init focus on tests", ctx);
+    expect(result).toEqual({ type: "message", text: "init focus on tests" });
   });
 });

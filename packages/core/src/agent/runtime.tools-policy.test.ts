@@ -46,8 +46,8 @@ describe("tool exposure policy", () => {
       async () => "ok",
     );
 
-    const allowed = resolveAllowedToolNames(["Read", "Glob", "Grep"], registry);
-    expect(allowed).toEqual(["Read"]);
+    const allowed = resolveAllowedToolNames(["Read", "Grep", "Glob"], registry);
+    expect(allowed).toEqual(["Read", "Grep", "Glob"]);
     expect(allowed).not.toContain("AskUserQuestion");
     expect(allowed).not.toContain("CronCreate");
     expect(allowed).not.toContain("mcp/demo/tool");

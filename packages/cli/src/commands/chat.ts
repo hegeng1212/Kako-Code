@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import {
-  agentCompletedSummary,
   buildAgentTaskNotificationMessage,
   buildTaskNotificationMessage,
   checkProviderReadiness,
@@ -22,11 +21,11 @@ import {
   loadProviderRegistry,
   loadSkill,
   prepareWorkflowConfirm,
-  planFilePathForSession,
   readPlanFile,
+  resolvePlanFileForSession,
   registerAgentCompleteHandler,
   registerWorkflowCompleteHandler,
-  resolveSkillSlashLlmText,
+  resolveSkillSlashUserContent,
   resolveUserTurnInput,
   sessionManager,
   TurnAbortedError,
@@ -34,7 +33,6 @@ import {
   truncateSessionTranscript,
   unregisterAgentCompleteHandler,
   unregisterWorkflowCompleteHandler,
-  workflowCompletedSummary,
   type AgentTaskRecord,
   type WorkflowRunRecord,
 } from "@kako/core";
@@ -44,7 +42,14 @@ import { initTerminalTheme } from "../ui/ansi.js";
 import { guideProviderSetup } from "../ui/setup-guide.js";
 import { createAskUserQuestionPrompt } from "../ui/ask-user-question.js";
 import { isPlanFileDetail } from "../ui/tool-call-phrases.js";
+import {
+  renderAgentFinishedEventLine,
+  renderWorkflowFinishedEventLine,
+} from "../ui/tool-call-display.js";
+import { formatPlanPathForDisplay } from "../ui/plan-box.js";
+import { openFileInEditor } from "../ui/open-editor.js";
 import { ChatLayout, ExitRequestedError } from "../ui/terminal-layout.js";
+import { promptWorkspaceTrust } from "../ui/workspace-trust.js";
 import {
   loadCliUsage,
   recordCliLaunch,
@@ -69,6 +74,18 @@ export async function runChat(cwdArg: string): Promise<void> {
   if (!readiness.ready) {
     await guideProviderSetup(readiness);
     registry = await loadProviderRegistry();
+  }
+
+  await sessionManager.ensureProjectsTrustMigrated();
+  const existingProject = await sessionManager.findProject(cwd);
+  let forceStandardWelcome = false;
+  if (!existingProject || !sessionManager.isProjectTrusted(existingProject)) {
+    const decision = await promptWorkspaceTrust(cwd);
+    if (decision !== "trust") {
+      return;
+    }
+    await sessionManager.markProjectTrusted(cwd);
+    forceStandardWelcome = true;
   }
 
   const definition = await loadAgent("main", cwd);
@@ -102,7 +119,9 @@ export async function runChat(cwdArg: string): Promise<void> {
   let pendingTaskNotification: PendingTaskNotification | null = null;
 
   const usage = await loadCliUsage();
-  const headerMode: ChatHeaderMode = resolveChatHeaderMode(usage);
+  const headerMode: ChatHeaderMode = forceStandardWelcome
+    ? "standard"
+    : resolveChatHeaderMode(usage);
   await recordCliLaunch();
 
   layout = new ChatLayout(welcomeOpts, footer, headerMode);
@@ -124,11 +143,12 @@ export async function runChat(cwdArg: string): Promise<void> {
 
   const runTaskNotificationTurn = async (
     llmText: string,
-    displayText: string,
+    eventLine: string,
   ): Promise<void> => {
-    const userTurn = await resolveUserTurnInput(session.id, displayText, []);
+    const userTurn = await resolveUserTurnInput(session.id, "", []);
     userTurn.llmText = llmText;
-    layout.beginTurn(displayText);
+    layout.beginTurn("");
+    layout.appendTurnTimeline(eventLine);
     try {
       await harness.runtime.runTurn(session, userTurn);
     } catch (err) {
@@ -148,38 +168,38 @@ export async function runChat(cwdArg: string): Promise<void> {
     if (pending.kind === "workflow") {
       await runTaskNotificationTurn(
         buildTaskNotificationMessage(pending.record, { sessionId: session.id, cwd }),
-        workflowCompletedSummary(pending.record),
+        renderWorkflowFinishedEventLine(pending.record),
       );
       return;
     }
     await runTaskNotificationTurn(
       buildAgentTaskNotificationMessage(pending.record),
-      agentCompletedSummary(pending.record),
+      renderAgentFinishedEventLine(pending.record.description),
     );
   };
 
   const handleWorkflowComplete = async (record: WorkflowRunRecord): Promise<void> => {
     refreshWorkflowUi(session.id);
     if (layout.isTurnInProgress()) {
-      layout.appendWorkflowCompletedEvent(workflowCompletedSummary(record));
+      layout.appendWorkflowCompletedEvent(renderWorkflowFinishedEventLine(record));
       pendingTaskNotification = { kind: "workflow", record };
       return;
     }
     await runTaskNotificationTurn(
       buildTaskNotificationMessage(record, { sessionId: session.id, cwd }),
-      workflowCompletedSummary(record),
+      renderWorkflowFinishedEventLine(record),
     );
   };
 
   const handleAgentComplete = async (record: AgentTaskRecord): Promise<void> => {
     if (layout.isTurnInProgress()) {
-      layout.appendWorkflowCompletedEvent(agentCompletedSummary(record));
+      layout.appendTurnTimeline(renderAgentFinishedEventLine(record.description));
       pendingTaskNotification = { kind: "agent", record };
       return;
     }
     await runTaskNotificationTurn(
       buildAgentTaskNotificationMessage(record),
-      agentCompletedSummary(record),
+      renderAgentFinishedEventLine(record.description),
     );
   };
 
@@ -199,7 +219,7 @@ export async function runChat(cwdArg: string): Promise<void> {
     cwd,
     confirm: async (toolCall): Promise<ToolConfirmResult> => {
       if (toolCall.name === "ExitPlanMode") {
-        const planPath = planFilePathForSession(session.id);
+        const planPath = await resolvePlanFileForSession(session.id);
         const planText = await readPlanFile(planPath);
         const decision = await layout.readPlanReview({ planPath, planText });
         if (decision.action === "cancel") {
@@ -264,7 +284,7 @@ export async function runChat(cwdArg: string): Promise<void> {
     onAnswerRollback: (chars) => layout.rollbackAnswer(chars),
     onStreamUsage: (usage) => layout.setTurnTokens(usage.outputTokens),
     onToolStart: (name, toolInput) => {
-      if (name === "AskUserQuestion" || name === "Skill") return;
+      if (name === "AskUserQuestion") return;
       layout.beginToolCall(name, summarizeInput(name, toolInput), toolInput);
       if (name === "Write" && toolInput) {
         const writePath = String(toolInput.file_path ?? toolInput.path ?? "").trim();
@@ -281,7 +301,7 @@ export async function runChat(cwdArg: string): Promise<void> {
       }
     },
     onToolEnd: (name, status, error, output, input) => {
-      if (name === "AskUserQuestion" || name === "Skill") return;
+      if (name === "AskUserQuestion") return;
       let displayOutput = output;
       if (status === "success" && (name === "Write" || name === "Edit") && input) {
         const detail = summarizeInput(name, input);
@@ -300,6 +320,13 @@ export async function runChat(cwdArg: string): Promise<void> {
         }
       }
       layout.finishToolCall(name, status, error, displayOutput);
+      if (name === "Agent" && status === "success" && input?.run_in_background !== true) {
+        const description =
+          typeof input.description === "string" ? input.description.trim() : "";
+        if (description) {
+          layout.appendTurnTimeline(renderAgentFinishedEventLine(description));
+        }
+      }
       if (name === "Workflow") {
         refreshWorkflowUi(session.id);
       }
@@ -318,7 +345,8 @@ export async function runChat(cwdArg: string): Promise<void> {
   syncSessionPermissionMode = async (mode: PermissionMode): Promise<void> => {
     layout.setPermissionMode(mode);
     if (mode === "plan") {
-      const planPath = await ensurePlanFile(session.id);
+      const meta = await sessionManager.getSessionMeta(session.id);
+      const planPath = await ensurePlanFile(session.id, meta?.title);
       harness.runtime.setSessionPermissionMode("plan", planPath);
       return;
     }
@@ -326,7 +354,14 @@ export async function runChat(cwdArg: string): Promise<void> {
   };
 
   layout.setPermissionModeChangeHandler((mode) => {
-    void syncSessionPermissionMode(mode);
+    const wasPlan = layout.getPermissionMode() === "plan";
+    void syncSessionPermissionMode(mode).then(() => {
+      if (mode === "plan" && !wasPlan) {
+        layout.beginTurn("/plan");
+        layout.appendPlanEnabledEvent();
+        layout.finishHarnessTurn();
+      }
+    });
   });
 
   const slashCtx = (): SlashCommandContext => ({
@@ -389,7 +424,11 @@ export async function runChat(cwdArg: string): Promise<void> {
       if (!trimmed) continue;
 
       const submitLine = line.trimEnd();
-      const slashLine = line.split("\n")[0]?.trim() ?? "";
+      let slashLine = line.split("\n")[0]?.trim() ?? "";
+      const barePlanMatch = trimmed.match(/^plan(?:\s+(.*))?$/i);
+      if (barePlanMatch && !trimmed.startsWith("/")) {
+        slashLine = barePlanMatch[1] ? `/plan ${barePlanMatch[1]}` : "/plan";
+      }
 
       const result = await handleSlashCommand(slashLine, slashCtx());
 
@@ -425,8 +464,83 @@ export async function runChat(cwdArg: string): Promise<void> {
         case "workflows-panel":
           await layout.openWorkflowsPanel(session.id);
           continue;
+        case "plan-view": {
+          const meta = await sessionManager.getSessionMeta(session.id);
+          const planPath = await resolvePlanFileForSession(session.id, {
+            topicHint: meta?.title,
+          });
+          const planText = await readPlanFile(planPath);
+          layout.beginTurn(result.displayText);
+          if (!planText.trim()) {
+            const alreadyPlan = layout.getPermissionMode() === "plan";
+            if (!alreadyPlan) {
+              await syncSessionPermissionMode("plan");
+              layout.appendPlanEnabledEvent();
+            }
+            layout.finishHarnessTurn();
+            await refreshInputHistory();
+            continue;
+          }
+          layout.appendPlanPreviewEvent(planPath, planText);
+          layout.finishHarnessTurn();
+          await refreshInputHistory();
+          continue;
+        }
+        case "plan-open": {
+          const meta = await sessionManager.getSessionMeta(session.id);
+          const planPath = await ensurePlanFile(session.id, meta?.title);
+          const opened = await openFileInEditor(planPath);
+          layout.beginTurn(result.displayText);
+          if (opened) {
+            layout.appendTurnTimeline(
+              `└ Opened ${formatPlanPathForDisplay(planPath)} in editor`,
+            );
+          } else {
+            layout.appendTurnTimeline(
+              "└ Could not open editor (install VS Code, Cursor, or set $EDITOR)",
+            );
+          }
+          layout.finishHarnessTurn();
+          await refreshInputHistory();
+          continue;
+        }
+        case "plan-enter": {
+          const alreadyPlan = layout.getPermissionMode() === "plan";
+          if (!alreadyPlan) {
+            await syncSessionPermissionMode("plan");
+          }
+          layout.beginTurn(result.displayText);
+          if (!alreadyPlan) {
+            layout.appendPlanEnabledEvent();
+          }
+          if (result.question) {
+            const userTurn = await resolveUserTurnInput(
+              session.id,
+              result.question,
+              layout.consumePendingAttachments(result.question),
+            );
+            userTurn.cliInput = true;
+            const transcriptCountBefore = await getTranscriptLength(session.id);
+            try {
+              await harness.runtime.runTurn(session, userTurn);
+            } catch (err) {
+              if (err instanceof ExitRequestedError) break chatLoop;
+              if (err instanceof TurnAbortedError) {
+                // finalizeActiveTurn discards or restores the prompt; stay in chat.
+              } else {
+                throw err;
+              }
+            } finally {
+              if ((await finalizeActiveTurn(transcriptCountBefore)) === "exit") break chatLoop;
+            }
+          } else {
+            layout.finishHarnessTurn();
+            await refreshInputHistory();
+          }
+          continue;
+        }
         case "skill-slash": {
-          const llmText = await resolveSkillSlashLlmText(
+          const slashContent = await resolveSkillSlashUserContent(
             result.name,
             result.args,
             result.handler,
@@ -437,7 +551,11 @@ export async function runChat(cwdArg: string): Promise<void> {
             result.displayText,
             layout.consumePendingAttachments(result.displayText),
           );
-          userTurn.llmText = llmText;
+          if (slashContent.mode === "blocks") {
+            userTurn.llmBlocks = slashContent.blocks;
+          } else {
+            userTurn.llmText = slashContent.text;
+          }
           userTurn.cliInput = true;
           const transcriptCountBefore = await getTranscriptLength(session.id);
           layout.beginTurn(result.displayText);
@@ -454,8 +572,12 @@ export async function runChat(cwdArg: string): Promise<void> {
           try {
             await harness.runtime.runTurn(session, userTurn, runOptions);
           } catch (err) {
-            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break chatLoop;
-            throw err;
+            if (err instanceof ExitRequestedError) break chatLoop;
+            if (err instanceof TurnAbortedError) {
+              // finalizeActiveTurn discards or restores the prompt; stay in chat.
+            } else {
+              throw err;
+            }
           } finally {
             if ((await finalizeActiveTurn(transcriptCountBefore)) === "exit") break chatLoop;
           }
@@ -473,8 +595,12 @@ export async function runChat(cwdArg: string): Promise<void> {
           try {
             await harness.runtime.runTurn(session, userTurn);
           } catch (err) {
-            if (err instanceof ExitRequestedError || err instanceof TurnAbortedError) break chatLoop;
-            throw err;
+            if (err instanceof ExitRequestedError) break chatLoop;
+            if (err instanceof TurnAbortedError) {
+              // finalizeActiveTurn discards or restores the prompt; stay in chat.
+            } else {
+              throw err;
+            }
           } finally {
             if ((await finalizeActiveTurn(transcriptCountBefore)) === "exit") break chatLoop;
           }

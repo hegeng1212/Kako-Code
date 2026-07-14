@@ -157,16 +157,20 @@ function splitWords(text: string): string[] {
 }
 
 /** Word-wrap inline parts to terminal width, preserving styles. */
-export function wrapInlineParts(parts: InlinePart[], width: number): string[] {
+export function wrapInlineParts(
+  parts: InlinePart[],
+  width: number,
+  renderPart: (part: InlinePart) => string = renderInlinePart,
+): string[] {
   if (width < 1) {
-    return [parts.map(renderInlinePart).join("")];
+    return [parts.map(renderPart).join("")];
   }
 
   const lines: InlinePart[][] = [[]];
   let lineWidth = 0;
 
   const pushPart = (part: InlinePart, leadingSpace = false): void => {
-    const rendered = renderInlinePart(part);
+    const rendered = renderPart(part);
     const partWidth = displayWidth(stripAnsi(rendered));
     let needsSpace = leadingSpace;
 
@@ -208,7 +212,7 @@ export function wrapInlineParts(parts: InlinePart[], width: number): string[] {
     }
   }
 
-  return lines.map((lineParts) => lineParts.map(renderInlinePart).join(""));
+  return lines.map((lineParts) => lineParts.map(renderPart).join(""));
 }
 
 export function wrapMarkdownParagraph(text: string, width: number): string[] {

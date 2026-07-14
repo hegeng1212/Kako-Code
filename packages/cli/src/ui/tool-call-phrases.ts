@@ -44,6 +44,98 @@ export function shellCommandStat(count: number): string {
   return count === 1 ? "ran 1 shell command" : `ran ${count} shell commands`;
 }
 
+interface AggregatedStat {
+  key: string;
+  amount: number;
+  order: number;
+}
+
+function parseStatContribution(phrase: string): { key: string; amount: number } {
+  if (phrase === "read 1 file" || phrase === "read file") {
+    return { key: "read:file", amount: 1 };
+  }
+  const readFiles = /^read (\d+) files$/.exec(phrase);
+  if (readFiles) return { key: "read:file", amount: Number(readFiles[1]) };
+
+  if (phrase === "wrote 1 file") return { key: "wrote:file", amount: 1 };
+  const wroteFiles = /^wrote (\d+) files$/.exec(phrase);
+  if (wroteFiles) return { key: "wrote:file", amount: Number(wroteFiles[1]) };
+
+  if (phrase === "edited 1 file") return { key: "edited:file", amount: 1 };
+  const editedFiles = /^edited (\d+) files$/.exec(phrase);
+  if (editedFiles) return { key: "edited:file", amount: Number(editedFiles[1]) };
+
+  const listedDirs = /^listed (\d+) (directory|directories)$/.exec(phrase);
+  if (listedDirs) return { key: "list:dir", amount: Number(listedDirs[1]) };
+
+  const foundMatches = /^found (\d+) (match|matches)$/.exec(phrase);
+  if (foundMatches) return { key: "found:match", amount: Number(foundMatches[1]) };
+
+  const foundPaths = /^found (\d+) (path|paths)$/.exec(phrase);
+  if (foundPaths) return { key: "found:path", amount: Number(foundPaths[1]) };
+
+  if (phrase === "searched content") return { key: "search:content", amount: 1 };
+  if (phrase === "searched files") return { key: "search:files", amount: 1 };
+
+  const calledMcp = /^called (.+)$/.exec(phrase);
+  if (calledMcp) return { key: `called:${calledMcp[1]}`, amount: 1 };
+
+  if (phrase === "ran 1 shell command") return { key: "bash:exec", amount: 1 };
+  const ranShell = /^ran (\d+) shell commands$/.exec(phrase);
+  if (ranShell) return { key: "bash:exec", amount: Number(ranShell[1]) };
+
+  return { key: phrase, amount: 1 };
+}
+
+function formatAggregatedStat(key: string, amount: number): string {
+  switch (key) {
+    case "read:file":
+      return amount === 1 ? "read 1 file" : `read ${amount} files`;
+    case "wrote:file":
+      return amount === 1 ? "wrote 1 file" : `wrote ${amount} files`;
+    case "edited:file":
+      return amount === 1 ? "edited 1 file" : `edited ${amount} files`;
+    case "list:dir":
+      return `listed ${amount} ${amount === 1 ? "directory" : "directories"}`;
+    case "found:match":
+      return `found ${amount} ${amount === 1 ? "match" : "matches"}`;
+    case "found:path":
+      return `found ${amount} ${amount === 1 ? "path" : "paths"}`;
+    case "search:content":
+      return amount === 1 ? "searched content" : `searched content ${amount} times`;
+    case "search:files":
+      return amount === 1 ? "searched files" : `searched files ${amount} times`;
+    case "bash:exec":
+      return shellCommandStat(amount);
+    default:
+      if (key.startsWith("called:")) {
+        const tool = key.slice("called:".length);
+        return amount === 1 ? `called ${tool}` : `called ${tool} ${amount} times`;
+      }
+      return amount === 1 ? key : `${key} (${amount} times)`;
+  }
+}
+
+/** Merge duplicate activity summary fragments, e.g. read 1 file + read 1 file → read 2 files. */
+export function mergeActivityStatPhrases(phrases: string[]): string[] {
+  const totals = new Map<string, AggregatedStat>();
+  let order = 0;
+
+  for (const phrase of phrases) {
+    const { key, amount } = parseStatContribution(phrase);
+    const existing = totals.get(key);
+    if (existing) {
+      existing.amount += amount;
+      continue;
+    }
+    totals.set(key, { key, amount, order: order++ });
+  }
+
+  return [...totals.values()]
+    .sort((a, b) => a.order - b.order)
+    .map((entry) => formatAggregatedStat(entry.key, entry.amount));
+}
+
 export function workflowNameFromDetail(detail: string): string {
   const match = detail.trim().match(/^dynamic workflow:\s*(.+)$/i);
   return match?.[1]?.trim() || detail.trim() || "workflow";
@@ -93,21 +185,19 @@ export function toolCallStatPhrase(
       return "wrote 1 file";
     case "Edit":
       return "edited 1 file";
-    case "Glob": {
-      if (output) {
-        const count = output.trim().split("\n").filter(Boolean).length;
-        if (count > 0) {
-          return `found ${count} ${count === 1 ? "match" : "matches"}`;
-        }
-      }
-      return "searched files";
-    }
     case "Grep": {
       if (output) {
         const count = output.trim().split("\n").filter(Boolean).length;
         if (count > 0) return `found ${count} ${count === 1 ? "match" : "matches"}`;
       }
       return "searched content";
+    }
+    case "Glob": {
+      if (output) {
+        const count = output.trim().split("\n").filter(Boolean).length;
+        if (count > 0) return `found ${count} ${count === 1 ? "file" : "files"}`;
+      }
+      return "searched files";
     }
     case "Bash": {
       const cmd = target.toLowerCase();
@@ -270,6 +360,16 @@ export function toolCallSuccessPhrase(name: string, detail: string): string {
       }
       return target ? `Ran ${name} ${target}` : `Ran ${name}`;
   }
+}
+
+/** Neutral timeline label — same wording for success and failure; dot color shows status. */
+export function toolCallTimelinePhrase(name: string, detail: string): string {
+  if (name === "Skill") return "use skill";
+  const stat = toolCallStatPhrase(name, detail);
+  if (stat) return stat;
+  const success = toolCallSuccessPhrase(name, detail);
+  if (!success) return name;
+  return `${success.charAt(0).toLowerCase()}${success.slice(1)}`;
 }
 
 /** Contextual English phrase for a failed tool call. */

@@ -2,17 +2,24 @@ import { describe, expect, it } from "vitest";
 import { stripAnsi } from "./ansi.js";
 import {
   completeSlashSuggestion,
+  computeInputRowsScreenStart,
   filterSlashSuggestions,
   planSlashSuggestFooter,
   renderSlashSuggestLines,
   renderSlashInputText,
   resolveSlashSubmitValue,
+  slashMenuPrefixRowCount,
   slashSuggestQuery,
   shouldShowSlashMenu,
 } from "./slash-suggest.js";
 import type { SystemSkillEntry } from "@kako/core";
 
 const SKILLS: SystemSkillEntry[] = [
+  {
+    name: "plan",
+    handler: "skill",
+    description: "Enable plan mode or view the current session plan",
+  },
   {
     name: "workflows",
     handler: "skill",
@@ -38,7 +45,8 @@ describe("slash suggest", () => {
     expect(filterSlashSuggestions("w", SKILLS).map((s) => s.name)).toEqual([
       "workflows",
     ]);
-    expect(filterSlashSuggestions("", SKILLS)).toHaveLength(3);
+    expect(filterSlashSuggestions("", SKILLS)).toHaveLength(4);
+    expect(filterSlashSuggestions("pl", SKILLS).map((s) => s.name)).toEqual(["plan"]);
   });
 
   it("parses slash query before the first space", () => {
@@ -52,22 +60,42 @@ describe("slash suggest", () => {
   });
 
   it("completes slash command token with trailing space on Tab", () => {
-    expect(completeSlashSuggestion("/de", SKILLS[1]!)).toBe("/deep-research ");
-    expect(completeSlashSuggestion("/deep-research topic", SKILLS[1]!)).toBe(
+    expect(completeSlashSuggestion("/de", SKILLS[2]!)).toBe("/deep-research ");
+    expect(completeSlashSuggestion("/deep-research topic", SKILLS[2]!)).toBe(
       "/deep-research topic",
     );
   });
 
+  it("offsets input cursor below slash menu rows", () => {
+    expect(slashMenuPrefixRowCount(4)).toBe(6);
+    expect(slashMenuPrefixRowCount(0)).toBe(0);
+    expect(
+      computeInputRowsScreenStart({
+        footerTop: 20,
+        slashSuggestLineCount: 4,
+        inputRowOffset: 1,
+      }),
+    ).toBe(27);
+    expect(
+      computeInputRowsScreenStart({
+        footerTop: 20,
+        slashSuggestLineCount: 0,
+        inputRowOffset: 1,
+      }),
+    ).toBe(21);
+  });
+
   it("submits selected slash command on Enter", () => {
-    expect(resolveSlashSubmitValue("/", SKILLS, 0)).toBe("/workflows");
-    expect(resolveSlashSubmitValue("/", SKILLS, 1)).toBe("/deep-research");
-    expect(resolveSlashSubmitValue("/", SKILLS, 2)).toBe("/init");
-    expect(resolveSlashSubmitValue("/de args", SKILLS, 1)).toBe("/deep-research args");
+    expect(resolveSlashSubmitValue("/", SKILLS, 0)).toBe("/plan");
+    expect(resolveSlashSubmitValue("/", SKILLS, 1)).toBe("/workflows");
+    expect(resolveSlashSubmitValue("/", SKILLS, 2)).toBe("/deep-research");
+    expect(resolveSlashSubmitValue("/", SKILLS, 3)).toBe("/init");
+    expect(resolveSlashSubmitValue("/de args", SKILLS, 2)).toBe("/deep-research args");
   });
 
   it("wraps long descriptions with continuation indent", () => {
     const lines = renderSlashSuggestLines({
-      skills: [SKILLS[1]!],
+      skills: [SKILLS[2]!],
       selectedIndex: 0,
       cols: 48,
     });
@@ -96,11 +124,11 @@ describe("slash suggest", () => {
       selectedIndex: 1,
       cols: 120,
     });
-    expect(lines[0]).toContain("/workflows");
+    expect(lines[0]).toContain("/plan");
     expect(lines[0]).toContain("\x1b[38;5;245m");
-    const deepLine = lines.find((line) => stripAnsi(line).includes("/deep-research"));
-    expect(deepLine).toBeDefined();
-    expect(deepLine).toContain("\x1b[38;5;117m");
+    const workflowsLine = lines.find((line) => stripAnsi(line).includes("/workflows"));
+    expect(workflowsLine).toBeDefined();
+    expect(workflowsLine).toContain("\x1b[38;5;117m");
     const initLine = lines.find((line) => stripAnsi(line).includes("/init"));
     expect(initLine).toBeDefined();
     expect(initLine).toContain("\x1b[38;5;245m");
