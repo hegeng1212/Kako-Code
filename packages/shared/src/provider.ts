@@ -43,6 +43,10 @@ export interface ProviderProfile {
   defaultModel?: string;
   /** Display-only alias shown in the UI; falls back to defaultModel when empty. */
   modelAlias?: string;
+  /** Default context window tokens for models on this provider when not overridden. */
+  contextWindow?: number;
+  /** Per-model context window overrides (model id → tokens). */
+  modelContextWindows?: Record<string, number>;
   enabled: boolean;
   /** Built-in preset key, if created from a template. */
   preset?: string;

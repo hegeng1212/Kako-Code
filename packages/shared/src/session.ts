@@ -64,6 +64,16 @@ export interface SessionAgentState {
   since: string;
 }
 
+/** Per-session compaction cycle state (flush-once-per-generation). */
+export interface SessionMemoryCompact {
+  generation: number;
+  lastFlushAt?: string;
+  lastCompactAt?: string;
+  lastTier?: "A" | "B" | "C";
+  tokenEstimateRatio?: number;
+  lastFailure?: { at: string; message: string };
+}
+
 /** Persisted session metadata alongside transcript. */
 export interface SessionMeta {
   id: SessionId;
@@ -84,6 +94,8 @@ export interface SessionMeta {
   agentState?: SessionAgentState;
   /** Plan markdown file path when this session has entered plan mode. */
   planFilePath?: string;
+  /** Compaction cycle metadata (generation, flush/compact timestamps, EMA ratio). */
+  memoryCompact?: SessionMemoryCompact;
 }
 
 export type SystemSkillHandler = "skill" | "dynamic-workflow";
