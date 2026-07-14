@@ -50,6 +50,9 @@ import {
 import { designSyncHandler, designSyncToolDefinition } from "./design-sync.js";
 import { pushNotificationHandler, pushNotificationToolDefinition } from "./push-notification.js";
 import { taskOutputHandler, taskOutputToolDefinition } from "./task-output.js";
+import { memorySearchHandler, memorySearchToolDefinition } from "./memory-search.js";
+import { memoryGetHandler, memoryGetToolDefinition } from "./memory-get.js";
+import { memoryPinHandler, memoryPinToolDefinition } from "./memory-pin.js";
 import { CLAUDE_CODE_BUILTIN_TOOL_NAMES } from "../claude-tool-text.js";
 
 export { CLAUDE_CODE_BUILTIN_TOOL_NAMES };
@@ -94,6 +97,9 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   { definition: webSearchToolDefinition, handler: webSearchHandler },
   { definition: skillToolDefinition, handler: skillHandler },
   { definition: workflowToolDefinition, handler: workflowHandler },
+  { definition: memorySearchToolDefinition, handler: memorySearchHandler },
+  { definition: memoryGetToolDefinition, handler: memoryGetHandler },
+  { definition: memoryPinToolDefinition, handler: memoryPinHandler },
   // Agent is registered in createToolRegistry (needs runtime spawn host).
 ];
 

@@ -21,6 +21,35 @@ export {
   transcriptPreviewText,
 } from "./memory/store.js";
 export {
+  projectToolResultsForContext,
+  runCompactionCascade,
+  consolidateToL1,
+  preCompactFlush,
+} from "./memory/compact.js";
+export { loadPins, savePins, selectPinsForInject, formatPinsForPrompt } from "./memory/pins.js";
+export {
+  searchMemoryFts,
+  rebuildMemoryFtsIndex,
+  syncSessionToFts,
+  memoryGet,
+  closeMemoryFtsDb,
+} from "./memory/index-fts.js";
+export { runAutoRecall } from "./memory/auto-recall.js";
+export { consolidateL1ToL2 } from "./memory/l2.js";
+export { runMemoryCurator } from "./memory/curator.js";
+export {
+  detailPreviewFromL1,
+  feedClassifierMilestoneToL1,
+  resolveAgentsDetailPreview,
+} from "./memory/detail-bridge.js";
+export {
+  listFacts,
+  formatFactsExcerpt,
+  loadUserProfile,
+  extractFactsFromTranscript,
+  applyFactDecisions,
+} from "./memory/facts.js";
+export {
   SessionManager,
   sessionManager,
 } from "./session/manager.js";
@@ -122,7 +151,11 @@ export {
   resolvePlanFileForSession,
 } from "./tools/builtin/plan-mode-shared.js";
 export { enterPlanModeSession } from "./tools/builtin/plan-mode-enter.js";
-export { listBackgroundTasks } from "./background/task-store.js";
+export {
+  listBackgroundTasks,
+  listAllBackgroundTasks,
+  sessionsWithRunningBackgroundWork,
+} from "./background/task-store.js";
 export type { BackgroundTask } from "./background/types.js";
 export {
   discoverSkills,
@@ -283,4 +316,16 @@ export function createRouter(registry: ProviderRegistry) {
 }
 
 /** @deprecated Use loadProviderRegistry */
+export {
+  loadMemorySettings,
+  saveMemorySettings,
+  resolveInjectCaps,
+  type MemorySettings,
+} from "./config/memory-store.js";
+export { resolveModelContextWindow } from "./memory/context-window.js";
+export {
+  updateTokenEstimateRatio,
+  applyEstimateRatio,
+} from "./memory/tokens.js";
+export { parseMemoryFlushPayload, FLUSH_SYSTEM_PROMPT } from "./memory/flush-schema.js";
 export { loadConfig, type KakoConfig } from "./config/loader.js";

@@ -56,6 +56,9 @@ describe("builtin tool registry", () => {
       "WebSearch",
       "Skill",
       "Workflow",
+      "MemorySearch",
+      "MemoryGet",
+      "MemoryPin",
     ]);
   });
 

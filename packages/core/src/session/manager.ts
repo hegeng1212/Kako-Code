@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
@@ -19,7 +19,7 @@ import {
 import { FileMemoryStore } from "../memory/store.js";
 import { projectIdFromCwd, projectNameFromCwd } from "./project-id.js";
 
-const DEFAULT_TITLE = "New chat";
+const DEFAULT_TITLE = "new session";
 
 function metaToSession(meta: SessionMeta): Session {
   return {
@@ -238,10 +238,34 @@ export class SessionManager {
     return sessions.slice(0, options?.limit ?? 50);
   }
 
+  /** All session metas across working directories, newest first. */
+  async listSessionMetas(options?: { limit?: number }): Promise<SessionMeta[]> {
+    const sessionsDir = join(getMemoryDir(), "sessions");
+    let entries: string[];
+    try {
+      entries = await readdir(sessionsDir);
+    } catch {
+      return [];
+    }
+
+    const metas: SessionMeta[] = [];
+    for (const entry of entries) {
+      const meta = await readSessionMeta(entry);
+      if (!meta) continue;
+      metas.push(meta);
+    }
+
+    metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return metas.slice(0, options?.limit ?? 100);
+  }
+
   async updateSession(
     id: SessionId,
     patch: Partial<
-      Pick<SessionMeta, "title" | "status" | "jobLabel" | "agentState" | "planFilePath">
+      Pick<
+        SessionMeta,
+        "title" | "status" | "jobLabel" | "agentState" | "planFilePath" | "memoryCompact"
+      >
     >,
   ): Promise<Session> {
     const meta = await readSessionMeta(id);
@@ -254,6 +278,7 @@ export class SessionManager {
     if (patch.jobLabel !== undefined) meta.jobLabel = patch.jobLabel;
     if (patch.agentState !== undefined) meta.agentState = patch.agentState;
     if (patch.planFilePath !== undefined) meta.planFilePath = patch.planFilePath;
+    if (patch.memoryCompact !== undefined) meta.memoryCompact = patch.memoryCompact;
     meta.updatedAt = new Date().toISOString();
     await writeSessionMeta(meta);
     return metaToSession(meta);
@@ -265,10 +290,35 @@ export class SessionManager {
 
     const memory = new FileMemoryStore(id);
     await memory.consolidate(id);
+    void import("../memory/index-fts.js")
+      .then(({ syncSessionToFts }) => syncSessionToFts(id))
+      .catch(() => {});
 
     meta.status = "ended";
     meta.updatedAt = new Date().toISOString();
     await writeSessionMeta(meta);
+  }
+
+  /**
+   * Permanently remove a session from disk (Agents Ctrl+X delete).
+   * Unlike endSession, the session no longer appears in any list.
+   */
+  async deleteSession(id: SessionId): Promise<void> {
+    const meta = await readSessionMeta(id);
+    const sessionDir = getSessionMemoryDir(id);
+    await rm(sessionDir, { recursive: true, force: true });
+
+    if (!meta) return;
+    const index = await readProjectIndex();
+    let changed = false;
+    for (const project of index.projects) {
+      if (project.lastSessionId === id) {
+        project.lastSessionId = undefined;
+        project.updatedAt = new Date().toISOString();
+        changed = true;
+      }
+    }
+    if (changed) await writeProjectIndex(index);
   }
 
   async loadSessionSummary(id: SessionId): Promise<string | undefined> {

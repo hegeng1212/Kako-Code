@@ -37,6 +37,9 @@ const REQUIRED_TOOL_TESTS: Record<string, string[]> = {
   ExitWorktree: ["enter-worktree.test.ts", "exit-worktree.test.ts"],
   Skill: ["skill.test.ts"],
   Workflow: ["workflow.test.ts"],
+  MemorySearch: ["memory-search.test.ts"],
+  MemoryGet: ["memory-get.test.ts"],
+  MemoryPin: ["memory-pin.test.ts"],
 };
 
 describe("builtin tool test coverage gate", () => {

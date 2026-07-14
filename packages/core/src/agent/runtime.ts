@@ -24,6 +24,16 @@ import {
 } from "./context.js";
 import { runAgentLoop, TurnAbortedError } from "./loop.js";
 import { FileMemoryStore, createMessage } from "../memory/store.js";
+import { runCompactionCascade } from "../memory/compact.js";
+import { formatPinsForPrompt, loadPins, selectPinsForInject } from "../memory/pins.js";
+import { formatFactsExcerpt, listFacts, loadUserProfile } from "../memory/facts.js";
+import { runAutoRecall } from "../memory/auto-recall.js";
+import { syncSessionToFts } from "../memory/index-fts.js";
+import { feedClassifierMilestoneToL1 } from "../memory/detail-bridge.js";
+import { resolveModelContextWindow } from "../memory/context-window.js";
+import { estimateMessagesTokens, updateTokenEstimateRatio } from "../memory/tokens.js";
+import { loadMemorySettings, resolveInjectCaps } from "../config/memory-store.js";
+import type { MemoryTelemetry } from "@kako/shared";
 import { ToolRegistry } from "../tools/registry.js";
 import { registerBuiltinTools, resolveAllToolNames, resolveAllowedToolNames } from "../tools/builtin/index.js";
 import {
@@ -93,6 +103,8 @@ export interface AgentRuntimeOptions {
   onReasoningDelta?: (text: string) => void;
   onReasoningEnd?: () => void;
   onStreamUsage?: (usage: LLMTokenUsage) => void;
+  /** Optional memory cascade / auto-recall telemetry (budget/inject caps). */
+  onMemoryTelemetry?: (telemetry: MemoryTelemetry) => void;
   onToolStart?: (name: string, input: Record<string, unknown>) => void;
   onToolEnd?: (name: string, status: string, error?: string, output?: string, input?: Record<string, unknown>) => void;
   onAnswerRollback?: (charCount: number) => void;
@@ -105,7 +117,7 @@ export interface TurnResult {
   response: string;
 }
 
-const DEFAULT_TITLE = "New chat";
+const DEFAULT_TITLE = "new session";
 
 function buildUserTurnMetadata(turn: UserTurnInput): Record<string, unknown> | undefined {
   const metadata: Record<string, unknown> = {};
@@ -123,6 +135,9 @@ export class AgentRuntime {
   private sessionPermissionMode?: PermissionMode;
   private sessionPlanFilePath?: string;
   private askUserQuestion?: AskUserQuestionPrompt;
+  /** Last turn transcript-view estimate for usage ratio calibration. */
+  private lastEstimateForRatio?: number;
+  private lastSessionIdForRatio?: SessionId;
   private callbacks: Pick<
     AgentRuntimeOptions,
     | "confirm"
@@ -130,6 +145,7 @@ export class AgentRuntime {
     | "onReasoningDelta"
     | "onReasoningEnd"
     | "onStreamUsage"
+    | "onMemoryTelemetry"
     | "onToolStart"
     | "onToolEnd"
     | "onAnswerRollback"
@@ -146,11 +162,20 @@ export class AgentRuntime {
       onReasoningDelta: options.onReasoningDelta,
       onReasoningEnd: options.onReasoningEnd,
       onStreamUsage: options.onStreamUsage,
+      onMemoryTelemetry: options.onMemoryTelemetry,
       onToolStart: options.onToolStart,
       onToolEnd: options.onToolEnd,
       onAnswerRollback: options.onAnswerRollback,
       shouldAbort: options.shouldAbort,
     };
+  }
+
+  setCwd(cwd: string): void {
+    this.cwd = resolve(cwd);
+  }
+
+  getCwd(): string {
+    return this.cwd;
   }
 
   async createSession(agentName = "main"): Promise<Session> {
@@ -162,10 +187,11 @@ export class AgentRuntime {
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
-    if (resolve(session.cwd) !== this.cwd) {
-      throw new Error(`Session cwd mismatch: ${session.cwd} vs ${this.cwd}`);
-    }
-    return sessionManager.updateSession(sessionId, { status: "active" });
+    this.cwd = resolve(session.cwd);
+    // Viewing / switching must not bump updatedAt or flip ended→active; that would
+    // reshuffle the Agents list and move completed sessions into Needs input.
+    // runTurn reactivates when the user actually sends a message.
+    return session;
   }
 
   /** Persist permission mode across user turns (CLI shift+tab, EnterPlanMode, ExitPlanMode). */
@@ -206,6 +232,16 @@ export class AgentRuntime {
       }),
     );
 
+    await sessionManager.updateSession(session.id, {
+      status: "active",
+      agentState: {
+        state: "working",
+        detail: "running turn",
+        tempo: "active",
+        since: new Date().toISOString(),
+      },
+    });
+
     const router = createLLMRouter(this.registry);
     const model = await resolveModel(definition.model, this.registry);
     this.currentTurnModel = model;
@@ -235,10 +271,62 @@ export class AgentRuntime {
     const globalContext = await loadGlobalUserContext();
     const environment = await resolveEnvironmentInfo(session.cwd, model);
     const transcript = await memory.loadTranscript();
+
+    const memorySettings = await loadMemorySettings();
+    const injectCaps = resolveInjectCaps(memorySettings);
+    const contextWindow = resolveModelContextWindow(this.registry, model);
+    const sessionMeta = await sessionManager.getSessionMeta(session.id);
+
+    const cascade = await runCompactionCascade({
+      sessionId: session.id,
+      transcript,
+      router,
+      model,
+      contextWindow,
+      caps: injectCaps,
+      memoryCompact: sessionMeta?.memoryCompact,
+      tokenEstimateRatio: sessionMeta?.memoryCompact?.tokenEstimateRatio,
+    });
+    if (cascade.memoryCompact) {
+      await sessionManager
+        .updateSession(session.id, { memoryCompact: cascade.memoryCompact })
+        .catch(() => {});
+    }
+    void syncSessionToFts(session.id).catch(() => {
+      /* FTS sync is best-effort */
+    });
+
+    const pinsSection = formatPinsForPrompt(
+      selectPinsForInject(await loadPins(session.id), injectCaps),
+    );
+    const userProfile = await loadUserProfile();
+    const factsExcerpt = formatFactsExcerpt(await listFacts(), injectCaps);
+    const autoRecall = runAutoRecall({
+      query: turn.text,
+      sessionId: session.id,
+      enabled: memorySettings.autoRecall,
+      caps: injectCaps,
+    });
+
+    this.callbacks.onMemoryTelemetry?.({
+      tierApplied: cascade.result.tierApplied,
+      estimatedTokensBefore: cascade.result.estimatedTokensBefore,
+      estimatedTokensAfter: cascade.result.estimatedTokensAfter,
+      injectedSnippets: autoRecall.injectedSnippets,
+      injectedTokens: autoRecall.injectedTokens,
+      flushed: cascade.result.flush?.flushed,
+      autoRecallEnabled: memorySettings.autoRecall,
+    });
+
+    // Capture estimated message size for usage ratio update after the turn.
+    this.lastEstimateForRatio = estimateMessagesTokens(cascade.viewTranscript);
+    this.lastSessionIdForRatio = session.id;
+
     const sessionSummary =
-      transcript.length > 0
+      cascade.sessionSummary ??
+      (transcript.length > 0
         ? await sessionManager.loadSessionSummary(session.id)
-        : undefined;
+        : undefined);
     const discoveredSkills = await discoverSkillsForAgent(session.cwd);
     const skillCatalog = await partitionSkillsForCatalog(session.cwd);
 
@@ -259,10 +347,15 @@ export class AgentRuntime {
 
     const messages = await buildMessages({
       definition,
-      transcript,
+      transcript: cascade.viewTranscript,
       workspaceKakoMd: workspaceKako?.content,
       globalContext: globalContext?.content,
       sessionSummary,
+      userProfile,
+      factsExcerpt: factsExcerpt || undefined,
+      pinsSection: pinsSection || undefined,
+      // Auto-recall only — never agentState.detail / DetailLog.
+      retrievedContext: autoRecall.formatted || undefined,
       availableSkills: skillCatalog,
       environment,
       subagentDefinitions,
@@ -328,7 +421,11 @@ export class AgentRuntime {
         }
         const loaded = await loadSkill(parsed.skill, session.cwd);
         if (parsed.args?.trim()) {
-          await memory.append(createMessage("user", parsed.args.trim()));
+          await memory.append(
+            createMessage("user", parsed.args.trim(), {
+              metadata: { harnessInjected: true },
+            }),
+          );
         }
         return buildSkillActivatedMessages({
           systemPromptBase,
@@ -363,7 +460,9 @@ export class AgentRuntime {
   ): Promise<void> {
     const bgTasks = listBackgroundTasks(session.id).filter((t) => !t.stopped);
     const hasBackgroundWork = bgTasks.some((t) => t.kind === "agent" || t.kind === "workflow");
-    if (!hasBackgroundWork && !responseText.trim()) return;
+    const meta = await sessionManager.getSessionMeta(session.id);
+    const wasWorking = meta?.agentState?.state === "working";
+    if (!hasBackgroundWork && !responseText.trim() && !wasWorking) return;
 
     const updatedTranscript = [...transcriptBefore];
     if (responseText) {
@@ -372,33 +471,78 @@ export class AgentRuntime {
     const toolNames = updatedTranscript
       .filter((m) => m.role === "tool")
       .map((m) => {
-        const meta = m.metadata as { toolName?: string } | undefined;
-        return meta?.toolName ?? "tool";
+        const toolMeta = m.metadata as { toolName?: string } | undefined;
+        return toolMeta?.toolName ?? m.toolName ?? "tool";
       });
 
-    const meta = await sessionManager.getSessionMeta(session.id);
-    if (hasBackgroundWork || meta?.agentState) {
-      try {
-        const classified = await classifySessionState(router, model, {
-          previousState: meta?.agentState,
-          userAsk,
-          assistantTail: responseText,
-          toolSummary: summarizeToolCallsFromTranscript(toolNames),
+    try {
+      const classified = await classifySessionState(router, model, {
+        previousState: meta?.agentState,
+        userAsk,
+        assistantTail: responseText,
+        toolSummary: summarizeToolCallsFromTranscript(toolNames),
+      });
+      if (classified) {
+        // Contract: in-flight agent/workflow background work ⇒ working (not done).
+        const state =
+          hasBackgroundWork && classified.state === "done" ? "working" : classified.state;
+        await sessionManager.updateSession(session.id, {
+          agentState: {
+            state,
+            detail: classified.detail,
+            tempo: state === "working" ? "active" : classified.tempo,
+            needs: state === "blocked" ? classified.needs : undefined,
+            result: state === "done" ? classified.result : undefined,
+            since: new Date().toISOString(),
+          },
         });
-        if (classified) {
-          await sessionManager.updateSession(session.id, {
+        // Bidirectional: classifier milestone → L1; UI detail never enters RAG.
+        void feedClassifierMilestoneToL1(session.id, {
+          state,
+          detail: classified.detail,
+        }).catch(() => {});
+      } else if (hasBackgroundWork) {
+        await sessionManager.updateSession(session.id, {
+          agentState: {
+            state: "working",
+            detail: responseText.trim().slice(0, 120) || "background work running",
+            tempo: "active",
+            since: new Date().toISOString(),
+          },
+        });
+      } else if (wasWorking) {
+        await sessionManager.updateSession(session.id, {
+          agentState: {
+            state: "done",
+            detail: responseText.trim().slice(0, 120) || "turn finished",
+            tempo: "idle",
+            since: new Date().toISOString(),
+          },
+        });
+      }
+    } catch {
+      if (hasBackgroundWork) {
+        await sessionManager
+          .updateSession(session.id, {
             agentState: {
-              state: classified.state,
-              detail: classified.detail,
-              tempo: classified.tempo,
-              needs: classified.needs,
-              result: classified.result,
+              state: "working",
+              detail: "background work running",
+              tempo: "active",
               since: new Date().toISOString(),
             },
-          });
-        }
-      } catch {
-        // Classifier is best-effort.
+          })
+          .catch(() => {});
+      } else if (wasWorking) {
+        await sessionManager
+          .updateSession(session.id, {
+            agentState: {
+              state: "done",
+              detail: "turn finished",
+              tempo: "idle",
+              since: new Date().toISOString(),
+            },
+          })
+          .catch(() => {});
       }
     }
 
@@ -425,6 +569,26 @@ export class AgentRuntime {
       onReasoningEnd: this.callbacks.onReasoningEnd,
       onStreamUsage: (usage: LLMTokenUsage) => {
         getTurnBudget(sessionId)?.recordOutputTokens(usage.outputTokens);
+        if (
+          usage.inputTokens > 0 &&
+          this.lastEstimateForRatio &&
+          this.lastSessionIdForRatio === sessionId
+        ) {
+          void sessionManager.getSessionMeta(sessionId).then(async (m) => {
+            const prev = m?.memoryCompact?.tokenEstimateRatio;
+            const next = updateTokenEstimateRatio(
+              prev,
+              this.lastEstimateForRatio!,
+              usage.inputTokens,
+            );
+            const memoryCompact = {
+              ...(m?.memoryCompact ?? { generation: 0 }),
+              generation: m?.memoryCompact?.generation ?? 0,
+              tokenEstimateRatio: next,
+            };
+            await sessionManager.updateSession(sessionId, { memoryCompact });
+          }).catch(() => {});
+        }
         this.callbacks.onStreamUsage?.(usage);
       },
       onToolStart: this.callbacks.onToolStart,

@@ -10,7 +10,8 @@ export const BUILTIN_SECURITY_METADATA: Record<string, ToolSecurityMetadata> = {
   Bash: { sideEffect: true, capability: ["exec"], defaultRiskLevel: "high" },
   Monitor: { sideEffect: true, capability: ["exec"], defaultRiskLevel: "high" },
   WebFetch: { requiresNetwork: true, capability: ["network"], defaultRiskLevel: "medium" },
-  WebSearch: { requiresNetwork: true, capability: ["network"], defaultRiskLevel: "medium" },
+  /** Query-only search — gated by network enable/disable, not per-query pre-approval. */
+  WebSearch: { requiresNetwork: true, capability: ["network"], defaultRiskLevel: "none" },
   Skill: { readonly: true, capability: ["read"], defaultRiskLevel: "none" },
   Workflow: { sideEffect: true, capability: ["exec"], defaultRiskLevel: "high" },
   EnterPlanMode: { sideEffect: true, defaultRiskLevel: "medium" },
@@ -35,6 +36,9 @@ export const BUILTIN_SECURITY_METADATA: Record<string, ToolSecurityMetadata> = {
   AskUserQuestion: { readonly: true, defaultRiskLevel: "none" },
   /** Spawns subagents; tool policy applies inside the child run, not at spawn. */
   Agent: { defaultRiskLevel: "none" },
+  MemorySearch: { readonly: true, capability: ["read"], defaultRiskLevel: "none" },
+  MemoryGet: { readonly: true, capability: ["read"], defaultRiskLevel: "none" },
+  MemoryPin: { defaultRiskLevel: "none" },
 };
 
 export function applySecurityMetadata(definition: ToolDefinition): ToolDefinition {

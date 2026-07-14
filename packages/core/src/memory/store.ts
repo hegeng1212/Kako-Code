@@ -1,9 +1,20 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { MemorySystem, RecallOptions, RecallResult, SessionId, TranscriptMessage } from "@kako/shared";
-import type { FactMergeDecision } from "@kako/shared";
+import type {
+  CompactBoundary,
+  FactMergeDecision,
+  LLMRouter,
+  MemorySystem,
+  RecallOptions,
+  RecallResult,
+  SessionId,
+  TranscriptMessage,
+} from "@kako/shared";
 import { getSessionMemoryDir } from "../config/paths.js";
+import { appendCompactBoundary, consolidateToL1, summaryPath } from "./compact.js";
+import { loadPins, savePins, upsertPin } from "./pins.js";
+import type { MemoryPin } from "@kako/shared";
 
 export class FileMemoryStore implements MemorySystem {
   constructor(private sessionId: SessionId) {}
@@ -13,7 +24,7 @@ export class FileMemoryStore implements MemorySystem {
   }
 
   private get summaryPath(): string {
-    return join(getSessionMemoryDir(this.sessionId), "summary.md");
+    return summaryPath(this.sessionId);
   }
 
   async append(message: TranscriptMessage): Promise<void> {
@@ -48,53 +59,82 @@ export class FileMemoryStore implements MemorySystem {
     await this.rewriteTranscript(transcript.slice(0, keep));
   }
 
+  /**
+   * Legacy recall — bounded substring match on current session only.
+   * Prefer memory_search (FTS) for production retrieval; this never dumps unbounded L0.
+   */
   async recall(options: RecallOptions): Promise<RecallResult[]> {
     const results: RecallResult[] = [];
+    const limit = Math.min(options.limit ?? 8, 8);
+    const maxSnippet = 700;
     if (options.layers.includes("L0")) {
       const transcript = await this.loadTranscript();
       const query = options.query.toLowerCase();
       for (const msg of transcript) {
+        if (msg.role === "system") continue;
         if (msg.content.toLowerCase().includes(query)) {
           results.push({
             layer: "L0",
-            content: msg.content,
+            content: msg.content.slice(0, maxSnippet),
             source: this.transcriptPath,
+            score: 1,
           });
+          if (results.length >= limit) break;
         }
       }
     }
-    if (options.layers.includes("L1")) {
+    if (results.length < limit && options.layers.includes("L1")) {
       try {
         const summary = await readFile(this.summaryPath, "utf-8");
-        results.push({ layer: "L1", content: summary, source: this.summaryPath });
+        results.push({
+          layer: "L1",
+          content: summary.slice(0, maxSnippet),
+          source: this.summaryPath,
+          score: 1,
+        });
       } catch {
         // no summary yet
       }
     }
-    return results.slice(0, options.limit ?? 10);
+    return results.slice(0, limit);
   }
 
-  async consolidate(sessionId: SessionId): Promise<void> {
+  async consolidate(
+    sessionId: SessionId,
+    options?: { router?: LLMRouter; model?: string },
+  ): Promise<void> {
     const store = new FileMemoryStore(sessionId);
     const transcript = await store.loadTranscript();
     if (!transcript.length) return;
-
-    const lines = transcript.map((m) => `**${m.role}**: ${m.content.slice(0, 500)}`);
-    const summary = [
-      `# Session Summary`,
-      ``,
-      `Session: ${sessionId}`,
-      `Messages: ${transcript.length}`,
-      ``,
-      ...lines,
-    ].join("\n");
-
-    await mkdir(getSessionMemoryDir(sessionId), { recursive: true });
-    await writeFile(store.summaryPath, summary, "utf-8");
+    await consolidateToL1({
+      sessionId,
+      transcript,
+      router: options?.router,
+      model: options?.model,
+    });
   }
 
-  async extractFacts(): Promise<FactMergeDecision[]> {
-    return [];
+  async extractFacts(transcript: TranscriptMessage[] = []): Promise<FactMergeDecision[]> {
+    const { extractFactsFromTranscript, applyFactDecisions } = await import("./facts.js");
+    const decisions = await extractFactsFromTranscript(transcript);
+    await applyFactDecisions(decisions);
+    return decisions;
+  }
+
+  async loadPins(): Promise<MemoryPin[]> {
+    return loadPins(this.sessionId);
+  }
+
+  async savePins(pins: MemoryPin[]): Promise<void> {
+    return savePins(this.sessionId, pins);
+  }
+
+  async addPin(content: string, source?: string): Promise<MemoryPin[]> {
+    return upsertPin(this.sessionId, content, source);
+  }
+
+  async appendBoundary(boundary: CompactBoundary): Promise<void> {
+    await appendCompactBoundary(this.sessionId, boundary);
   }
 }
 
