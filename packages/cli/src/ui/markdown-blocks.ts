@@ -1,11 +1,14 @@
+import { isListConnectorLine, looksLikeAsciiArtLine } from "./markdown-ascii-art.js";
 import { extractMarkdownTable, type ParsedTable } from "./markdown-table.js";
 
 export type MarkdownBlock =
   | { type: "paragraph"; text: string }
   | { type: "heading"; level: number; text: string }
   | { type: "ul"; items: string[] }
-  | { type: "ol"; items: string[] }
+  | { type: "ol"; items: string[]; connectors?: string[] }
   | { type: "code"; language?: string; lines: string[] }
+  /** Preformatted ASCII / box diagrams — spaces and borders preserved. */
+  | { type: "pre"; lines: string[] }
   | { type: "blockquote"; lines: string[] }
   | { type: "hr" }
   | { type: "table"; table: ParsedTable };
@@ -92,6 +95,18 @@ export function parseMarkdownBlocks(text: string): MarkdownBlock[] {
       continue;
     }
 
+    // ASCII boxes before HR — underscore tops must not become thematic breaks.
+    if (looksLikeAsciiArtLine(line)) {
+      flushParagraph(paragraphBuffer, blocks);
+      const artLines: string[] = [];
+      while (index < lines.length && looksLikeAsciiArtLine(lines[index]!)) {
+        artLines.push(lines[index]!);
+        index++;
+      }
+      blocks.push({ type: "pre", lines: artLines });
+      continue;
+    }
+
     if (isHorizontalRule(line)) {
       flushParagraph(paragraphBuffer, blocks);
       blocks.push({ type: "hr" });
@@ -133,14 +148,24 @@ export function parseMarkdownBlocks(text: string): MarkdownBlock[] {
     if (ordered !== null) {
       flushParagraph(paragraphBuffer, blocks);
       const items: string[] = [ordered];
+      const connectors: string[] = [];
       index++;
       while (index < lines.length) {
+        if (isListConnectorLine(lines[index]!)) {
+          connectors.push(lines[index]!.trim());
+          index++;
+          continue;
+        }
         const nextItem = orderedMatch(lines[index]!);
         if (nextItem === null) break;
         items.push(nextItem);
         index++;
       }
-      blocks.push({ type: "ol", items });
+      blocks.push({
+        type: "ol",
+        items,
+        connectors: connectors.length > 0 ? connectors : undefined,
+      });
       continue;
     }
 

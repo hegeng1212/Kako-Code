@@ -59,6 +59,7 @@ describe("builtin tool registry", () => {
       "MemorySearch",
       "MemoryGet",
       "MemoryPin",
+      "Memory",
     ]);
   });
 

@@ -30,7 +30,9 @@ import { openSettingsWindow } from "../utils/open-settings-window.js";
 
 export async function runWeb(): Promise<void> {
   const port = Number(process.env.KAKO_SERVER_PORT ?? 3721);
-  const url = defaultSettingsUrl(port);
+  const settings = new URL(defaultSettingsUrl(port));
+  settings.searchParams.set("cwd", process.cwd());
+  const url = settings.toString();
   const installRoot = resolveKakoInstallRoot();
 
   const existing = await fetchServerHealth(port);

@@ -4,7 +4,9 @@ import { wrapContentLines } from "./text-wrap.js";
 
 export const CHOICE_HINT = `${ansi.muted}Enter to select · ↑/↓ navigate · ←/→ switch topic · Esc to cancel${ansi.reset}`;
 
-export const MULTI_SELECT_CHOICE_HINT = `${ansi.muted}Enter to toggle · ↑/↓ navigate · Enter on Submit to confirm · Esc to cancel${ansi.reset}`;
+export const MULTI_SELECT_CHOICE_HINT = `${ansi.muted}Enter to select · Tab/Arrow keys to navigate · Esc to cancel${ansi.reset}`;
+
+export const WIZARD_MULTI_SELECT_HINT = `${ansi.muted}Enter to select · Tab/Arrow keys · ←/→ switch topic · Esc to cancel${ansi.reset}`;
 
 export type ChoiceRowKind = "option" | "custom" | "chat" | "submit";
 
@@ -35,7 +37,7 @@ export function buildChoiceRows(
   return rows;
 }
 
-/** Rows for single-question multi-select: options + Type something + Submit + Chat. */
+/** Rows for multi-select: options with [ ] checkboxes + Type something + Submit + Chat. */
 export function buildMultiChoiceRows(options: AskUserQuestionOption[]): ChoiceRow[] {
   const rows: ChoiceRow[] = options.map((opt, i) => ({
     kind: "option",
@@ -48,6 +50,24 @@ export function buildMultiChoiceRows(options: AskUserQuestionOption[]): ChoiceRo
   rows.push({ kind: "submit", label: "Submit" });
   rows.push({ kind: "chat", label: "Chat about this" });
   return rows;
+}
+
+/** Restore checked option indexes from a prior multi-select answer string. */
+export function checkedIndexesFromAnswer(
+  options: AskUserQuestionOption[],
+  answer: string | undefined,
+): Set<number> {
+  const checked = new Set<number>();
+  if (!answer?.trim()) return checked;
+  const labels = answer
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const label of labels) {
+    const idx = options.findIndex((o) => o.label === label);
+    if (idx >= 0) checked.add(idx);
+  }
+  return checked;
 }
 
 function truncateToWidth(text: string, maxWidth: number): string {
@@ -67,41 +87,76 @@ function truncateToWidth(text: string, maxWidth: number): string {
 
 function renderOptionLines(
   row: ChoiceRow,
-  index: number,
+  displayNumber: number | null,
   selected: boolean,
   cols: number,
   multiSelect?: boolean,
   checked?: boolean,
+  customText?: string,
 ): string[] {
   const prefix = selected ? `${ansi.accent}>${ansi.reset}` : " ";
-  const num = `${index + 1}.`;
+
+  if (row.kind === "submit") {
+    const label = `${ansi.text}${row.label}${ansi.reset}`;
+    return [`${prefix} ${label}`];
+  }
+
+  const num = displayNumber != null ? `${displayNumber}.` : "";
   const check =
-    multiSelect && row.kind === "option"
-      ? `${checked ? "[✔]" : "[ ]"} `
+    multiSelect && (row.kind === "option" || row.kind === "custom")
+      ? `${checked ? "[✓]" : "[ ]"} `
       : "";
-  const head = `${prefix} ${check}${num} `;
-  const desc =
-    row.description && row.kind === "option"
-      ? ` ${ansi.muted}${truncateToWidth(row.description, Math.max(20, cols - 8 - row.label.length))}${ansi.reset}`
-      : "";
-  const labelWidth = Math.max(12, cols - displayWidth(head) - displayWidth(desc));
+  const head = `${prefix} ${num ? `${num} ` : ""}${check}`;
+
+  if (row.kind === "custom" && multiSelect) {
+    const typed = customText ?? "";
+    // Armed/editing: hide "Type something." — show typed text + caret only.
+    // Unchecked: restore the placeholder label.
+    if (!checked) {
+      return [`${head}${ansi.text}${row.label}${ansi.reset}`];
+    }
+    const cursor = selected ? `${ansi.accent}▌${ansi.reset}` : "";
+    return [`${head}${ansi.text}${typed}${ansi.reset}${cursor}`];
+  }
+
+  const label = `${ansi.text}${row.label}${ansi.reset}`;
+  if (row.kind === "option" && row.description) {
+    const indent = " ".repeat(Math.max(2, displayWidth(head)));
+    const descLines = wrapContentLines(row.description, Math.max(20, cols - indent.length));
+    return [
+      `${head}${label}`,
+      ...descLines.map((d) => `${indent}${ansi.muted}${d}${ansi.reset}`),
+    ];
+  }
+
+  const labelWidth = Math.max(12, cols - displayWidth(head));
   const wrapped = wrapContentLines(row.label, labelWidth);
   if (wrapped.length <= 1) {
-    const label = `${ansi.text}${row.label}${ansi.reset}`;
-    const body = `${head}${label}${desc}`;
-    return [body.length > cols + 100 ? truncateToWidth(body, cols) : body];
+    return [`${head}${label}`];
   }
   const lines: string[] = [];
   const indent = " ".repeat(displayWidth(head));
   wrapped.forEach((part, i) => {
-    const label = `${ansi.text}${part}${ansi.reset}`;
-    if (i === 0) {
-      lines.push(`${head}${label}${desc}`);
-    } else {
-      lines.push(`${indent}${label}`);
-    }
+    const piece = `${ansi.text}${part}${ansi.reset}`;
+    if (i === 0) lines.push(`${head}${piece}`);
+    else lines.push(`${indent}${piece}`);
   });
   return lines;
+}
+
+/** Join checked option labels with optional custom text (parallel semantics). */
+export function composeMultiSelectAnswer(
+  options: AskUserQuestionOption[],
+  checkedOptionIndexes: ReadonlySet<number>,
+  customText?: string,
+): string {
+  const labels = [...checkedOptionIndexes]
+    .sort((a, b) => a - b)
+    .map((i) => options[i]?.label)
+    .filter((l): l is string => Boolean(l?.trim()));
+  const custom = customText?.trim();
+  if (custom) labels.push(custom);
+  return labels.join(", ");
 }
 
 export interface RenderChoicePanelOptions {
@@ -118,6 +173,10 @@ export interface RenderChoicePanelOptions {
   multiSelect?: boolean;
   /** Option indexes currently checked (multi-select only). */
   checkedOptionIndexes?: ReadonlySet<number>;
+  /** Inline custom text for Type something (multi-select). */
+  customText?: string;
+  /** Explicit check state for Type something (Enter/Space arms; empty leave clears). */
+  customChecked?: boolean;
 }
 
 /** Lines to paint in the choice footer (excludes top/bottom separators and hint). */
@@ -131,9 +190,11 @@ export function renderChoicePanelLines(opts: RenderChoicePanelOptions): string[]
     questionIndex,
     questionTotal,
     showHeader = true,
-    multiSelect = false,
-    checkedOptionIndexes,
-  } = opts;
+  multiSelect = false,
+  checkedOptionIndexes,
+  customText = "",
+  customChecked = false,
+} = opts;
   const lines: string[] = [];
 
   if (showHeader) {
@@ -143,7 +204,7 @@ export function renderChoicePanelLines(opts: RenderChoicePanelOptions): string[]
 
   let q = question;
   if (multiSelect && !q.includes("multi-select") && !q.includes("可多选")) {
-    q = `${q} ${ansi.muted}(multi-select)${ansi.reset}`;
+    q = `${q} ${ansi.muted}(可多选)${ansi.reset}`;
   }
   if (questionTotal && questionTotal > 1 && questionIndex !== undefined) {
     q = `${question} ${ansi.muted}(${questionIndex + 1}/${questionTotal})${ansi.reset}`;
@@ -154,13 +215,30 @@ export function renderChoicePanelLines(opts: RenderChoicePanelOptions): string[]
 
   lines.push("");
 
+  let displayNumber = 0;
   rows.forEach((row, i) => {
+    if (multiSelect && row.kind === "chat") {
+      const sepLen = Math.min(cols, 48);
+      lines.push(`${ansi.muted}${"─".repeat(sepLen)}${ansi.reset}`);
+    }
+    const numbered = row.kind === "option" || row.kind === "custom" || row.kind === "chat";
+    if (numbered) displayNumber += 1;
     const checked =
       row.kind === "option" && row.optionIndex !== undefined
-        ? checkedOptionIndexes?.has(row.optionIndex)
-        : false;
+        ? checkedOptionIndexes?.has(row.optionIndex) === true
+        : row.kind === "custom"
+          ? customChecked
+          : false;
     lines.push(
-      ...renderOptionLines(row, i, i === selectedIndex, cols, multiSelect, checked),
+      ...renderOptionLines(
+        row,
+        numbered ? displayNumber : null,
+        i === selectedIndex,
+        cols,
+        multiSelect,
+        checked,
+        row.kind === "custom" ? customText : undefined,
+      ),
     );
   });
 
@@ -241,10 +319,26 @@ export interface RenderQuestionWizardPanelOptions {
   rows: ChoiceRow[];
   selectedIndex: number;
   cols: number;
+  /** When focusing a multiSelect question, render option checkboxes. */
+  multiSelect?: boolean;
+  checkedOptionIndexes?: ReadonlySet<number>;
+  customText?: string;
+  customChecked?: boolean;
 }
 
 export function renderQuestionWizardPanelLines(opts: RenderQuestionWizardPanelOptions): string[] {
-  const { questions, answers, focusIndex, rows, selectedIndex, cols } = opts;
+  const {
+    questions,
+    answers,
+    focusIndex,
+    rows,
+    selectedIndex,
+    cols,
+    multiSelect = false,
+    checkedOptionIndexes,
+    customText = "",
+    customChecked = false,
+  } = opts;
   const lines: string[] = [];
   lines.push(renderQuestionChipBar(questions, answers, focusIndex, cols));
   lines.push("");
@@ -254,8 +348,13 @@ export function renderQuestionWizardPanelLines(opts: RenderQuestionWizardPanelOp
     if (unanswered.length === 0) {
       lines.push(...renderWizardReviewSummary(questions, answers, cols));
       lines.push("");
+      let displayNumber = 0;
       rows.forEach((row, i) => {
-        lines.push(...renderOptionLines(row, i, i === selectedIndex, cols));
+        const numbered = row.kind === "option" || row.kind === "custom" || row.kind === "chat";
+        if (numbered) displayNumber += 1;
+        lines.push(
+          ...renderOptionLines(row, numbered ? displayNumber : null, i === selectedIndex, cols),
+        );
       });
     } else {
       const pending = unanswered.map((q) => q.header).join(", ");
@@ -267,12 +366,39 @@ export function renderQuestionWizardPanelLines(opts: RenderQuestionWizardPanelOp
   }
 
   const item = questions[focusIndex]!;
-  for (const part of wrapContentLines(item.question, cols)) {
+  let questionText = item.question;
+  if (multiSelect && !questionText.includes("multi-select") && !questionText.includes("可多选")) {
+    questionText = `${questionText} ${ansi.muted}(可多选)${ansi.reset}`;
+  }
+  for (const part of wrapContentLines(questionText, cols)) {
     lines.push(`${ansi.text}${part}${ansi.reset}`);
   }
   lines.push("");
+  let displayNumber = 0;
   rows.forEach((row, i) => {
-    lines.push(...renderOptionLines(row, i, i === selectedIndex, cols));
+    if (multiSelect && row.kind === "chat") {
+      const sepLen = Math.min(cols, 48);
+      lines.push(`${ansi.muted}${"─".repeat(sepLen)}${ansi.reset}`);
+    }
+    const numbered = row.kind === "option" || row.kind === "custom" || row.kind === "chat";
+    if (numbered) displayNumber += 1;
+    const checked =
+      row.kind === "option" && row.optionIndex !== undefined
+        ? checkedOptionIndexes?.has(row.optionIndex) === true
+        : row.kind === "custom"
+          ? customChecked
+          : false;
+    lines.push(
+      ...renderOptionLines(
+        row,
+        numbered ? displayNumber : null,
+        i === selectedIndex,
+        cols,
+        multiSelect,
+        checked,
+        row.kind === "custom" ? customText : undefined,
+      ),
+    );
   });
   return lines;
 }
@@ -295,6 +421,7 @@ export function parseChoiceInputActions(data: string): {
     | { type: "left" }
     | { type: "right" }
     | { type: "enter" }
+    | { type: "space" }
     | { type: "escape" }
     | { type: "interrupt" }
   >;
@@ -305,6 +432,7 @@ export function parseChoiceInputActions(data: string): {
     | { type: "left" }
     | { type: "right" }
     | { type: "enter" }
+    | { type: "space" }
     | { type: "escape" }
     | { type: "interrupt" }
   > = [];
@@ -314,6 +442,11 @@ export function parseChoiceInputActions(data: string): {
     const ch = data[i]!;
     if (ch === "\r" || ch === "\n") {
       actions.push({ type: "enter" });
+      i++;
+      continue;
+    }
+    if (ch === " ") {
+      actions.push({ type: "space" });
       i++;
       continue;
     }

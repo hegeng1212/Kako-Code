@@ -19,7 +19,7 @@ Kako 采用**文件优先**的多层记忆架构。首版以人类可读的 Mark
 |------|------|----------|------|----------|----------|
 | L0 | Raw Transcript | `memory/sessions/{id}/transcript.jsonl` | 完整消息流（含 `compact_boundary` 元事件） | **不整段注入**；仅近期 tail 进 messages | 实时 append；compact 不改写历史行 |
 | L1 | Session Summary | `memory/sessions/{id}/summary.md` | 累积章节摘要（Goal / Decisions / Files / Open / Next / Historical Context） | compact 后 / resume 注入「Previous Session Summary」 | flush + structured consolidate |
-| DetailLog | UI 进度 | `SessionMeta.agentState.detail` | Agents 列表短周期预览 | **不进入**模型消息组装 | classifier / BG / slash |
+| DetailLog | UI 进度 | `SessionMeta.agentState.detail` | 运行时进度文案（**不**用于 Agents 列表预览） | **不进入**模型消息组装 | classifier / BG / slash |
 | Pins | Checkpoint | `memory/sessions/{id}/pins.json` | 路径、数字、未完成 TODO（verbatim） | 每轮有界 reinject | 模型/flush 写入；count+bytes cap |
 | L2 | Rolling Summary | `memory/summaries/rolling/{date}.md` | 跨会话日汇总 | 不默认注入；search 可命中 | 日终 Curator 或 `kako memory consolidate` |
 | L3 | Long-term Facts | `memory/facts/*.md` + `facts.index.json` | 原子事实 | bootstrap top-K / 摘录（token cap） | ADD/UPDATE/DELETE/NOOP |
@@ -45,12 +45,29 @@ memory/
 │   ├── facts.index.json
 │   └── {factId}.md
 ├── profile/
-│   └── user.md
+│   └── user.md                 # L4 (legacy/editable profile)
+├── curated/
+│   ├── notes.md                # Hermes-style bounded notes (§ delimited)
+│   └── user.md                 # Curated user tags/traits (§ delimited)
+├── pending/
+│   └── {id}.json               # writeApproval staging
 └── episodes/
     └── {episodeId}.md
 ```
 
-索引（文件仍为 SoT）：`~/.kako/index/memory-fts.db`（Phase 2 FTS5）。
+索引（文件仍为 SoT）：`~/.kako/index/memory-fts.db`（Phase 2 FTS5）；LLM 配额 `~/.kako/index/memory-budget.json`。
+
+## Curated Memory（Hermes 风格，Phase 1）
+
+| 层 | 路径 | 注入 | 更新 |
+|----|------|------|------|
+| Curated notes | `memory/curated/notes.md` | **会话级冻结** bootstrap（`## Curated Memory`） | `Memory` 工具 / Background Review；中途写盘不刷 freeze |
+| Curated user | `memory/curated/user.md` | 同上（`## User Profile (curated)`） | 同上 |
+| writeApproval pending | `memory/pending/*.json` | 不注入 | `writeApproval.enabled` 时 stage；批准后再写 curated/facts |
+
+- 字符上限默认 notes **2200** / user **1375**（`memory.json` → `curated.*CharLimit`）。超限返回 error + `current_entries`，禁止静默截断。
+- 主 turn 工具 **`Memory`**（`target` + `add|replace|remove|list`）与 `MemorySearch`/`Get`/`Pin` 并存；主 agent 仍暴露 **全部 default builtins + MCP**（`resolveAllToolNames`）。
+- **Background Review**：turn 成功后 fire-and-forget；`router.complete` **无 tools**；受 `backgroundReview.*` + 共享 `budget.*` 配额约束。
 
 ## 核心 API
 
@@ -63,17 +80,24 @@ memory.consolidate(sessionId)             // L0 → L1 结构化累积摘要
 memory.extractFacts(transcript)           // → ADD/UPDATE/DELETE/NOOP
 memory.loadPins() / savePins()            // 有界 pins
 runCompactionCascade(...)                 // Tier A → B → C + precompact flush
+getFrozenCuratedSnapshot(sessionId)       // 会话冻结 curated inject
+runBackgroundReview(...) / runMemoryJob() // review + Phase2 job stubs
 ```
 
 类型见 `@kako/shared`：`CompactBoundary`、`MemoryPin`、`SearchHit`、`L1SummaryFrontmatter`、`MemoryInjectCaps`、`DEFAULT_MEMORY_INJECT_CAPS`、`SessionMemoryCompact`、`MemoryFlushPayload`、`MemoryTelemetry`。
 
-## 配置与周期元数据（Memory Hardening）
+## 配置与周期元数据（Memory Hardening + Hermes）
 
-**用户设置**（`~/.kako/config/memory.json`）：`autoRecall`（默认 `true`）、可选 `injectCaps` 覆盖。缺文件 ≡ 默认 caps。
+**用户设置**（`~/.kako/config/memory.json`）：每个 mode/job 均为独立 `{ enabled, …params, model? }`。
+
+- `autoRecall` / `curated` / `memoryTool` / `backgroundReview` / `budget` / `writeApproval` / `cli`
+- Phase 2 jobs（默认 `enabled: false`）：`jobs.consolidate` / `jobs.curator` / `jobs.dreaming`
+- 兼容旧扁平 `autoRecall: boolean` → `{ enabled }`
+- 可选 `injectCaps` 覆盖
 
 **周期元数据**（`SessionMeta.memoryCompact`）：`generation` 与 L1 `compactGeneration` 对齐；每周期至多一次 structured flush（`lastFlushAt`）；`tokenEstimateRatio` EMA 校准预算；`lastTier` / `lastFailure` 供 UI 与降级。
 
-**表面不变量**：memory 块只追加在 skills 之后；不裁剪默认+用户 skill catalog；不替换顶层 `resolveAllToolNames`；flush LLM 不改动主 turn 工具注册表。
+**表面不变量**：memory 块只追加在 skills 之后；不裁剪默认+用户 skill catalog；不替换顶层 `resolveAllToolNames`；flush / Background Review LLM 不改动主 turn 工具注册表。
 
 ## Compaction Cascade
 
@@ -113,12 +137,12 @@ runCompactionCascade(...)                 // Tier A → B → C + precompact flu
    - `memory_search`：有界列表（默认 ≤8）：`{layer, path, score, snippet≤700chars, lineRange}`。
    - `memory_get`：按 path + line/range 取正文。
 3. **Auto-recall（可选、默认开但强约束）**：每用户消息可跑一次 search，但 **仅注入 ≤N snippets / ≤M tokens**，标记为 *untrusted retrieved context*；**禁止** L0 全文 dump。
-4. **Agents 列表**：跨会话浏览用 L1 标题 + `agentState.detail`；点开再 load L0。DetailLog **不进入**模型 RAG。
+4. **Agents 列表**：跨会话预览优先 L1 `## Goal`，否则最近实质 user/assistant 正文；空会话用 `send a prompt to start`。**不**使用 `agentState.detail`（避免 `turn finished` 等状态文案）。DetailLog **不进入**模型 RAG。
 
 ## 会话上下文组装顺序（每轮）
 
 1. System：agent prompt + env + security + skills  
-2. Bootstrap：**L4**（全量小文件）+ **L3 摘录**（cap）+ **Pins**  
+2. Bootstrap：**Curated（会话冻结 notes+user）** + **L4**（全量小文件）+ **L3 摘录**（cap）+ **Pins**  
 3. Warm：**L1**（若存在 / 刚 compact）  
 4. Retrieved block（若 auto-recall）：有界 snippets  
 5. Messages：**compact 后的 transcript 视图**（非裸全量 L0）  

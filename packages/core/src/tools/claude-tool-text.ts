@@ -147,7 +147,7 @@ Only skip EnterPlanMode for simple tasks:
 ## What Happens in Plan Mode
 
 In plan mode, you'll:
-1. Thoroughly explore the codebase using \`grep\`/Grep and Read
+1. Thoroughly explore the codebase using \`find\`/Glob, \`grep\`/Grep, and Read
 2. Understand existing patterns and architecture
 3. Design an implementation approach
 4. Present your plan to the user for approval
@@ -184,7 +184,7 @@ User: "What files handle routing?"
 
 ## Important Notes
 
-- This tool REQUIRES user approval - they must consent to entering plan mode
+- Entering plan mode does not require a separate confirmation prompt; the user reviews and approves the written plan via ExitPlanMode
 - If unsure whether to use it, err on the side of planning - it's better to get alignment upfront than to redo work
 - Users appreciate being consulted before significant changes are made to their codebase`;
 
@@ -206,11 +206,10 @@ Ensure your plan is complete and unambiguous:
 
 **Important:** Do NOT use AskUserQuestion to ask "Is this plan okay?" or "Should I proceed?" - that's exactly what THIS tool does. ExitPlanMode inherently requests user approval of your plan.
 
-## Examples
+Research-only work never needs ExitPlanMode. Implementation planning may need AskUserQuestion first when requirements or approach are still open, then ExitPlanMode after the plan file is finalized.
 
-1. Initial task: "Search for and understand the implementation of vim mode in the codebase" - Do not use the exit plan mode tool because you are not planning the implementation steps of a task.
-2. Initial task: "Help me implement yank mode for vim" - Use the exit plan mode tool after you have finished planning the implementation steps of the task.
-3. Initial task: "Add a new feature to handle user authentication" - If unsure about auth method (OAuth, JWT, etc.), use AskUserQuestion first, then use exit plan mode tool after clarifying the approach.`;
+## Auto mode
+When permission mode is auto (\`bypassPermissions\`), do **not** call ExitPlanMode as a follow-up gate. Propose steps in chat if useful and Write/Edit directly.`;
 
 export const CLAUDE_EXIT_PLAN_MODE_ALLOWED_PROMPTS_DESCRIPTION =
   "Prompt-based permissions needed to implement the plan. These describe categories of actions rather than specific commands.";
@@ -246,7 +245,7 @@ When using the Agent tool, specify a subagent_type parameter to select which age
 Reach for this when the task matches an available agent type, when you have independent work to run in parallel, or when answering would mean reading across several files — delegate it and you keep the conclusion, not the file dumps. For a single-fact lookup where you already know the file, symbol, or value, search directly. Once you've delegated a search, don't also run it yourself — wait for the result.
 
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.
-- Use SendMessage with the agent's ID or name to continue a previously spawned agent with its context intact; a new Agent call starts fresh.
+- A new Agent call starts a fresh child session. Prior transcript is not shared automatically; include needed prior findings in the follow-up prompt if you continue related work.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).
 - \`run_in_background: true\` runs the agent asynchronously; you'll be notified when it completes.`;
 

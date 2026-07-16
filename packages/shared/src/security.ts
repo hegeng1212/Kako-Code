@@ -69,4 +69,8 @@ export interface ToolAuditMetadata {
   networkTarget?: string;
   networkDecision?: string;
   bashTier?: BashTier;
+  /** Auto-mode security classifier blocked this action. */
+  automodeBlocked?: boolean;
+  automodeBlockCategory?: string;
+  automodeBlockReason?: string;
 }

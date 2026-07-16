@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { stripAnsi } from "./ansi.js";
-import { HISTORY_LABEL_COLUMN, renderHistorySeparator, renderInputCopyHint, renderInputTopSeparator, renderPlanModeFooterHint } from "./input-footer.js";
+import { ansi, stripAnsi } from "./ansi.js";
+import {
+  HISTORY_LABEL_COLUMN,
+  nextPermissionMode,
+  renderHistorySeparator,
+  renderInputCopyHint,
+  renderInputTopSeparator,
+  renderPermissionModeFooterHint,
+  renderPlanModeFooterHint,
+} from "./input-footer.js";
 
 describe("input-footer", () => {
   it("renders history label at fixed left offset with white rule", () => {
@@ -20,6 +28,19 @@ describe("input-footer", () => {
     expect(line.length).toBe(cols);
   });
 
+  it("formats History n/n like Claude Code for any browse position", () => {
+    for (const [pos, total] of [
+      [1, 1],
+      [11, 12],
+      [21, 21],
+    ] as const) {
+      const label = `History ${pos}/${total}`;
+      const line = stripAnsi(renderHistorySeparator(label, 48));
+      expect(line).toContain(label);
+      expect(line.indexOf(label)).toBe(HISTORY_LABEL_COLUMN - 1);
+    }
+  });
+
   it("renders clear hint on its own row above the separator", () => {
     const hint = "Esc again to clear";
     const cols = 72;
@@ -29,9 +50,63 @@ describe("input-footer", () => {
     expect(line.startsWith(" ")).toBe(true);
   });
 
+  it("cycles default → plan → bypassPermissions → default", () => {
+    expect(nextPermissionMode("default")).toBe("plan");
+    expect(nextPermissionMode("plan")).toBe("bypassPermissions");
+    expect(nextPermissionMode("bypassPermissions")).toBe("default");
+    expect(nextPermissionMode("acceptEdits")).toBe("plan");
+  });
+
   it("renders plan mode footer hint", () => {
     expect(stripAnsi(renderPlanModeFooterHint())).toBe(
-      "⏸ plan mode on (shift+tab to cycle) · ← for agents",
+      "  ⏸ plan mode on (shift+tab to cycle) · ← for agents",
+    );
+  });
+
+  it("renders manual mode with muted pause icon (Claude-style)", () => {
+    expect(stripAnsi(renderPermissionModeFooterHint("default"))).toBe(
+      "  ⏸ manual mode on · ? for shortcuts · ← for agents",
+    );
+  });
+
+  it("renders plan idle/busy icons", () => {
+    expect(stripAnsi(renderPermissionModeFooterHint("plan", { busy: false }))).toBe(
+      "  ⏸ plan mode on (shift+tab to cycle) · ← for agents",
+    );
+    expect(stripAnsi(renderPermissionModeFooterHint("plan", { busy: true }))).toBe(
+      "  ▶▶ plan mode on (shift+tab to cycle) · ← for agents",
+    );
+  });
+
+  it("renders auto mode with yellow dual-play icon (Claude-style)", () => {
+    expect(stripAnsi(renderPermissionModeFooterHint("bypassPermissions", { busy: false }))).toBe(
+      "  ▶▶ auto mode on (shift+tab to cycle) · ← for agents",
+    );
+    expect(stripAnsi(renderPermissionModeFooterHint("bypassPermissions", { busy: true }))).toBe(
+      "  ▶▶ auto mode on (shift+tab to cycle) · ← for agents",
+    );
+    const raw = renderPermissionModeFooterHint("bypassPermissions");
+    expect(raw).toContain(ansi.yellow);
+    expect(raw).toContain(ansi.muted);
+  });
+
+  it("appends ↓ to manage when subagents are live", () => {
+    expect(
+      stripAnsi(
+        renderPermissionModeFooterHint("plan", {
+          busy: false,
+          canManageAgents: true,
+          agentCount: 1,
+        }),
+      ),
+    ).toBe(
+      "  ⏸ plan mode on (shift+tab to cycle) · ← 1 agent · ↓ to manage",
+    );
+  });
+
+  it("does not render acceptEdits in the shift+tab footer (falls back to manual label)", () => {
+    expect(stripAnsi(renderPermissionModeFooterHint("acceptEdits"))).toBe(
+      "  ⏸ manual mode on · ? for shortcuts · ← for agents",
     );
   });
 

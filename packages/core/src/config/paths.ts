@@ -70,6 +70,14 @@ export function getSessionWorkflowRunsPath(sessionId: string): string {
   return join(getSessionMemoryDir(sessionId), "workflows", "runs.json");
 }
 
+export function getSessionInterruptedBackgroundPath(sessionId: string): string {
+  return join(getSessionMemoryDir(sessionId), "background", "interrupted.json");
+}
+
+export function getSessionActiveAgentsPath(sessionId: string): string {
+  return join(getSessionMemoryDir(sessionId), "background", "active-agents.json");
+}
+
 export function getProjectsIndexPath(): string {
   return join(getIndexDir(), "projects.json");
 }

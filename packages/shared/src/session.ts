@@ -1,5 +1,5 @@
 import type { AgentId, SessionId } from "./agent.js";
-import type { SessionCapability } from "./security.js";
+import type { OutsideWorkspacePolicy, SessionCapability } from "./security.js";
 import type { TranscriptMessage } from "./memory.js";
 
 /** Session lifecycle states. */
@@ -31,6 +31,15 @@ export interface SessionStartOptions {
   title?: string;
 }
 
+/** Per-cwd workspace security overlay (capability / outside policy / extra roots). */
+export interface ProjectWorkspaceSecurity {
+  capabilities?: { default: SessionCapability };
+  workspace?: {
+    outsidePolicy?: OutsideWorkspacePolicy;
+    extraTrustedRoots?: string[];
+  };
+}
+
 /** Registered project (working directory). */
 export interface Project {
   id: string;
@@ -41,6 +50,13 @@ export interface Project {
   lastSessionId?: SessionId;
   /** ISO time when the user confirmed trust for this workspace; absent = not trusted. */
   trustedAt?: string;
+  /** Workspace security settings for this cwd (not shared across projects). */
+  security?: ProjectWorkspaceSecurity;
+  /**
+   * Workflow `meta.name` values that skip confirm in this cwd
+   * ("don't ask again for {name} in {cwd}").
+   */
+  allowedWorkflows?: string[];
 }
 
 export interface ProjectIndexFile {
@@ -90,6 +106,8 @@ export interface SessionMeta {
   parentSessionId?: SessionId;
   /** Compact lowercase label for background jobs (2–4 words). */
   jobLabel?: string;
+  /** Kebab-case job slug (2–4 words) for plan filenames and path labels. */
+  jobName?: string;
   /** Harness session-state classifier output. */
   agentState?: SessionAgentState;
   /** Plan markdown file path when this session has entered plan mode. */
@@ -107,9 +125,13 @@ export type SlashResult =
   | { type: "message"; text: string }
   | { type: "skill-slash"; name: string; args: string; handler: SystemSkillHandler; displayText: string }
   | { type: "workflows-panel" }
+  /** Clear chat UI + wipe L0 transcript; same session. Not sent to the model. */
+  | { type: "clear"; displayText: string }
   | { type: "plan-enter"; question?: string; displayText: string }
   | { type: "plan-view"; displayText: string }
   | { type: "plan-open"; displayText: string }
+  | { type: "auto-enter"; question?: string; displayText: string }
+  | { type: "manual-enter"; displayText: string }
   | { type: "error"; message: string };
 
 export interface SlashCommandContext {

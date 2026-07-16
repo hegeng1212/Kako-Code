@@ -95,10 +95,20 @@ describe("skillHandler", () => {
     });
   });
 
-  it("rejects slash-only skills", async () => {
+  it("returns this session workflow status for Skill(workflows)", async () => {
+    await withTempDir(async (cwd) => {
+      const result = await skillHandler(
+        { skill: "workflows" },
+        toolContext(cwd, { sessionId: "sess-wf", allowedSkills: ["workflows"] }),
+      );
+      expect(result).toBe("No workflows in this session.");
+    });
+  });
+
+  it("rejects plan as slash-only", async () => {
     await withTempDir(async (cwd) => {
       await expect(
-        skillHandler({ skill: "workflows" }, toolContext(cwd, { allowedSkills: ["workflows"] })),
+        skillHandler({ skill: "plan" }, toolContext(cwd, { allowedSkills: ["plan"] })),
       ).rejects.toThrow(/only available as a slash command/);
     });
   });

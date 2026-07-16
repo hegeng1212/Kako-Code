@@ -5,34 +5,57 @@ import {
   isSlashOnlySystemSkill,
   isSystemSkill,
   loadSlashOnlyCatalogSkills,
+  loadSystemSkills,
   mergeSkillsForAgent,
   skillNamesForToolAllowlist,
 } from "./system-skills.js";
 
 describe("system skills", () => {
-  it("registers plan, workflows, deep-research, and init", () => {
+  it("registers plan, auto, manual, workflows, deep-research, and init", () => {
     expect(SYSTEM_SKILL_REGISTRY.map((entry) => entry.name)).toEqual([
       "plan",
+      "auto",
+      "manual",
       "workflows",
       "deep-research",
       "init",
     ]);
   });
 
-  it("marks plan and workflows as slash-only", () => {
+  it("marks plan as slash-only; workflows is agent-readable", () => {
     expect(isSlashOnlySystemSkill("plan")).toBe(true);
-    expect(isSlashOnlySystemSkill("workflows")).toBe(true);
+    expect(isSlashOnlySystemSkill("workflows")).toBe(false);
     expect(isSlashOnlySystemSkill("init")).toBe(false);
     expect(getSystemSkillEntry("init")?.handler).toBe("skill");
   });
 
-  it("loads slash-only catalog from registry without skill files", async () => {
+  it("loads slash catalog with plan, auto, manual, and workflows", async () => {
     const skills = await loadSlashOnlyCatalogSkills();
-    expect(skills.map((skill) => skill.name)).toEqual(["plan", "workflows"]);
+    expect(skills.map((skill) => skill.name)).toEqual([
+      "plan",
+      "auto",
+      "manual",
+      "workflows",
+    ]);
     expect(skills.every((skill) => skill.description.trim().length > 0)).toBe(true);
     expect(skills.every((skill) => skill.instructions === "" && skill.skillMdPath === "")).toBe(
       true,
     );
+  });
+
+  it("lists /clear in slash autocomplete menu", async () => {
+    const { listSlashInvokableSkills } = await import("./system-skills.js");
+    const skills = await listSlashInvokableSkills(process.cwd());
+    expect(skills.some((s) => s.name === "clear")).toBe(true);
+    expect(skills.find((s) => s.name === "clear")?.description).toMatch(/context/i);
+  });
+
+  it("loads workflows as agent-readable with no SKILL.md (no context pivot)", async () => {
+    const skills = await loadSystemSkills();
+    const workflows = skills.find((skill) => skill.name === "workflows");
+    expect(workflows).toBeDefined();
+    expect(workflows!.skillMdPath).toBe("");
+    expect(workflows!.instructions).toBe("");
   });
 
   it("identifies system skills", () => {

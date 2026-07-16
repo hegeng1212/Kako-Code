@@ -11,14 +11,18 @@ vi.mock("../workflow-agent.js", () => ({
 
 describe("executeWorkflowScript DSL globals", () => {
   let dir: string;
+  const priorHome = process.env.KAKO_HOME;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "kako-sandbox-"));
+    process.env.KAKO_HOME = dir;
     clearTurnBudget("sess-sandbox");
   });
 
   afterEach(async () => {
     clearTurnBudget("sess-sandbox");
+    if (priorHome === undefined) delete process.env.KAKO_HOME;
+    else process.env.KAKO_HOME = priorHome;
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -125,5 +129,102 @@ return await agent('ping', { label: 'ping' });
       ctx: { sessionId: "sess-sandbox", cwd: dir, runId: "wf_deep" },
     });
     expect(result).toBe("result:ping");
+  });
+
+  it("keeps agentsDone ≤ agentsTotal when two top-level workflows run concurrently", async () => {
+    const { runWorkflowAgent } = await import("../workflow-agent.js");
+    let aStarted = 0;
+    let releaseB!: () => void;
+    const bGate = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+
+    vi.mocked(runWorkflowAgent).mockImplementation(async (prompt, opts, ctx) => {
+      const label = opts.label ?? "agent";
+      await ctx.onAgentStart?.(label, opts.phase);
+      if (String(prompt).startsWith("slow-")) {
+        aStarted += 1;
+        if (aStarted === 3) releaseB();
+        await new Promise((r) => setTimeout(r, 40));
+      } else {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      await ctx.onAgentEnd?.({
+        label,
+        phase: opts.phase,
+        model: "mock",
+        tokens: 1,
+        durationMs: 1,
+        status: "success",
+        output: "ok",
+      });
+      return "ok";
+    });
+
+    const applyMax = (
+      store: { total: number; done: number },
+      patch: { agentsTotal?: number; agentsDone?: number },
+    ) => {
+      if (typeof patch.agentsTotal === "number") {
+        store.total = Math.max(store.total, patch.agentsTotal);
+      }
+      if (typeof patch.agentsDone === "number") {
+        store.done = Math.max(store.done, patch.agentsDone);
+      }
+    };
+
+    const storeA = { total: 0, done: 0 };
+    const storeB = { total: 0, done: 0 };
+
+    const pathA = await writeScript(
+      "concurrent-a.js",
+      `
+      await Promise.all([
+        agent('slow-1', { label: 'a1' }),
+        agent('slow-2', { label: 'a2' }),
+        agent('slow-3', { label: 'a3' }),
+      ]);
+      return 'A';
+      `,
+    );
+    const pathB = await writeScript(
+      "concurrent-b.js",
+      `
+      for (let i = 0; i < 10; i++) {
+        await agent('fast-' + i, { label: 'b' + i });
+      }
+      return 'B';
+      `,
+    );
+
+    const runA = executeWorkflowScript({
+      scriptPath: pathA,
+      args: {},
+      ctx: {
+        sessionId: "sess-sandbox",
+        cwd: dir,
+        runId: "wf_a",
+        onRunStats: (patch) => applyMax(storeA, patch),
+      },
+    });
+    const runB = bGate.then(() =>
+      executeWorkflowScript({
+        scriptPath: pathB,
+        args: {},
+        ctx: {
+          sessionId: "sess-sandbox",
+          cwd: dir,
+          runId: "wf_b",
+          onRunStats: (patch) => applyMax(storeB, patch),
+        },
+      }),
+    );
+
+    await Promise.all([runA, runB]);
+
+    expect(storeA.done).toBeLessThanOrEqual(storeA.total);
+    expect(storeB.done).toBeLessThanOrEqual(storeB.total);
+    expect(storeA).toEqual({ total: 3, done: 3 });
+    expect(storeB).toEqual({ total: 10, done: 10 });
   });
 });

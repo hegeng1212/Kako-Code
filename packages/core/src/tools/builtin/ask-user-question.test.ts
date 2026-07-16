@@ -25,15 +25,50 @@ const validQuestion = {
 };
 
 describe("AskUserQuestion tool definition", () => {
-  it("matches Claude Code description and schema", () => {
+  it("matches Claude Code / Cursor AskUserQuestion description and schema", () => {
+    expect(askUserQuestionToolDefinition.name).toBe("AskUserQuestion");
     expect(askUserQuestionToolDefinition.description).toContain("blocked on a decision");
+    expect(askUserQuestionToolDefinition.description).toContain('select "Other"');
+    expect(askUserQuestionToolDefinition.description).toContain("multiSelect: true");
+    expect(askUserQuestionToolDefinition.description).toContain("(Recommended)");
     expect(askUserQuestionToolDefinition.description).toContain("Plan mode note");
+    expect(askUserQuestionToolDefinition.description).toContain("EnterPlanMode");
+    expect(askUserQuestionToolDefinition.description).toContain("ExitPlanMode");
     expect(askUserQuestionToolDefinition.description).toContain("Preview feature");
+    expect(askUserQuestionToolDefinition.description).toContain(
+      "previews are only supported for single-select questions",
+    );
+
     const schema = askUserQuestionToolDefinition.inputSchema;
+    expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(schema.type).toBe("object");
+    expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toEqual(["questions"]);
-    expect(schema.properties).toHaveProperty("answers");
-    expect(schema.properties).toHaveProperty("annotations");
-    expect(schema.properties).toHaveProperty("metadata");
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(
+      ["annotations", "answers", "metadata", "questions"].sort(),
+    );
+
+    const questions = schema.properties!.questions!;
+    expect(questions.type).toBe("array");
+    expect(questions.minItems).toBe(1);
+    expect(questions.maxItems).toBe(4);
+    expect(questions.items?.required).toEqual(["question", "header", "options", "multiSelect"]);
+    expect(Object.keys(questions.items?.properties ?? {}).sort()).toEqual(
+      ["header", "multiSelect", "options", "question"].sort(),
+    );
+
+    const options = questions.items!.properties!.options!;
+    expect(options.minItems).toBe(2);
+    expect(options.maxItems).toBe(4);
+    expect(options.items?.required).toEqual(["label", "description"]);
+    expect(Object.keys(options.items?.properties ?? {}).sort()).toEqual(
+      ["description", "label", "preview"].sort(),
+    );
+
+    expect(schema.properties!.annotations?.propertyNames).toEqual({ type: "string" });
+    expect(schema.properties!.answers?.propertyNames).toEqual({ type: "string" });
+    expect(schema.properties!.metadata?.properties?.source?.type).toBe("string");
+    expect(questions.items?.properties?.multiSelect?.default).toBe(false);
   });
 });
 

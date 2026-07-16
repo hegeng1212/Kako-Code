@@ -44,12 +44,14 @@ import {
   SEARCH_PROVIDER_PRESETS,
   testSearchProvider,
   loadSecurityPolicy,
-  saveSecurityPolicy,
+  saveWorkspaceSecuritySettings,
   toSecuritySettingsFile,
-  applySecuritySettingsPatch,
   loadNetworkPolicy,
   saveNetworkPolicy,
   parseNetworkPolicy,
+  loadMemorySettings,
+  saveMemorySettings,
+  parseMemorySettings,
 } from "@kako/core";
 import type {
   NetworkConfigFile,
@@ -217,20 +219,18 @@ app.post("/api/search/test", async (c) => {
   }
 });
 
-// --- Security settings ---
+// --- Security settings (workspace fields keyed by project cwd) ---
 app.get("/api/security", async (c) => {
-  const cwd = process.cwd();
+  const cwd = c.req.query("cwd")?.trim() || process.cwd();
   const policy = await loadSecurityPolicy(cwd);
   return c.json(toSecuritySettingsFile(policy, cwd));
 });
 
 app.put("/api/security", async (c) => {
-  const body = await c.req.json<SecurityConfigFile>();
-  const cwd = process.cwd();
-  const existing = await loadSecurityPolicy(cwd);
-  const next = applySecuritySettingsPatch(existing, body, cwd);
-  await saveSecurityPolicy(next);
-  return c.json(toSecuritySettingsFile(await loadSecurityPolicy(cwd), cwd));
+  const body = await c.req.json<SecurityConfigFile & { cwd?: string }>();
+  const cwd = c.req.query("cwd")?.trim() || body.cwd?.trim() || process.cwd();
+  const policy = await saveWorkspaceSecuritySettings(cwd, body);
+  return c.json(toSecuritySettingsFile(policy, cwd));
 });
 
 // --- Network settings ---
@@ -244,6 +244,19 @@ app.put("/api/network", async (c) => {
   const policy = parseNetworkPolicy(body);
   await saveNetworkPolicy(policy);
   return c.json(policy);
+});
+
+// --- Memory settings (~/.kako/config/memory.json) ---
+app.get("/api/memory", async (c) => {
+  const settings = await loadMemorySettings();
+  return c.json(settings);
+});
+
+app.put("/api/memory", async (c) => {
+  const body = await c.req.json();
+  const settings = parseMemorySettings(body);
+  await saveMemorySettings(settings);
+  return c.json(await loadMemorySettings());
 });
 
 // --- MCP servers ---

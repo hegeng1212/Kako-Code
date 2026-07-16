@@ -12,6 +12,7 @@ import type {
 import { DEFAULT_MEMORY_INJECT_CAPS } from "@kako/shared";
 import type { LLMRouter } from "@kako/shared";
 import { getSessionMemoryDir } from "../config/paths.js";
+import { isProtocolWakeText } from "../background/agent-notification.js";
 import {
   draftL1FromTranscript,
   formatL1Summary,
@@ -183,6 +184,7 @@ async function llmConsolidateDraft(
 ): Promise<Partial<Record<L1SectionName, string>> | null> {
   const slice = transcript.slice(-80);
   const transcriptText = slice
+    .filter((m) => !isProtocolWakeText(m.content))
     .map((m) => `${m.role}${m.toolName ? `(${m.toolName})` : ""}: ${m.content.slice(0, 800)}`)
     .join("\n");
   const prevText = previous ? formatL1Summary(previous) : "(none)";

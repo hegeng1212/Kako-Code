@@ -7,6 +7,7 @@ import { mcpManager } from "./mcp/manager.js";
 
 export { getKakoHome, getAgentsDir, getSkillsDir, getSessionReportsDir } from "./config/paths.js";
 export { initializeKakoHome } from "./config/bootstrap.js";
+export { setCoreDebugSink, coreDebug, coreDebugError } from "./debug.js";
 export { AgentRuntime, type AgentRuntimeOptions, type TurnResult, type RunTurnOptions } from "./agent/runtime.js";
 export { TurnAbortedError } from "./agent/loop.js";
 export { loadAgent, loadProjectContext, loadGlobalUserContext, loadWorkspaceKakoMd } from "./agent/loader.js";
@@ -18,8 +19,21 @@ export {
   getTranscriptLength,
   sessionInputHistory,
   truncateSessionTranscript,
+  clearSessionConversation,
   transcriptPreviewText,
 } from "./memory/store.js";
+export {
+  summarizeTranscriptRange,
+  selectedTurnEndIndex,
+  type RewindSummarizeMode,
+} from "./memory/rewind-summarize.js";
+export {
+  isCodeMutatingTool,
+  summarizeCodeChanges,
+  restoreCodeChangesFromTranscript,
+  type RewindCodeChangeSummary,
+  type RestoreCodeResult,
+} from "./memory/rewind-code-restore.js";
 export {
   projectToolResultsForContext,
   runCompactionCascade,
@@ -52,6 +66,7 @@ export {
 export {
   SessionManager,
   sessionManager,
+  sessionHasUserDialogue,
 } from "./session/manager.js";
 export {
   handleSlashCommand,
@@ -89,6 +104,7 @@ export {
 export {
   loadSecurityPolicy,
   saveSecurityPolicy,
+  saveWorkspaceSecuritySettings,
   toSecuritySettingsFile,
   applySecuritySettingsPatch,
   type SecurityPolicy,
@@ -154,8 +170,50 @@ export { enterPlanModeSession } from "./tools/builtin/plan-mode-enter.js";
 export {
   listBackgroundTasks,
   listAllBackgroundTasks,
+  getBackgroundTask,
+  stopBackgroundTask,
+  registerBackgroundTask,
+  resetBackgroundTaskStore,
   sessionsWithRunningBackgroundWork,
 } from "./background/task-store.js";
+export {
+  createTask,
+  listTasks,
+  getTask,
+  updateTask,
+  resetTaskStore,
+} from "./tasks/task-store.js";
+export type { SessionTask, TaskStatus } from "./tasks/types.js";
+export { reconcileStaleBackgroundWork, checkpointBackgroundWorkForProcessExit } from "./background/reconcile-stale-work.js";
+export {
+  INTERRUPTED_PROCESS_ERROR,
+  loadInterruptedBackground,
+  saveInterruptedBackground,
+  upsertInterruptedItem,
+  listResumableInterrupted,
+  markInterruptedDiscarded,
+  removeInterruptedItem,
+  removeInterruptedForWorkflowRun,
+} from "./background/interrupted-store.js";
+export type {
+  InterruptedBackgroundFile,
+  InterruptedBackgroundItem,
+  InterruptedWorkflowItem,
+  InterruptedAgentItem,
+} from "./background/interrupted-store.js";
+export {
+  listActiveAgentPayloads,
+  upsertActiveAgentPayload,
+  removeActiveAgentPayload,
+} from "./background/agent-persist.js";
+export type { ActiveAgentPayload } from "./background/agent-persist.js";
+export {
+  assertWorkflowResumable,
+  agentInputFromInterrupted,
+  recoverWorkflowArgsFromJournal,
+  resolveInterruptedWorkflowArgs,
+  resumeInterruptedWorkflow,
+} from "./background/resume.js";
 export type { BackgroundTask } from "./background/types.js";
 export {
   discoverSkills,
@@ -206,10 +264,20 @@ export {
   saveWorkflowRun,
   updateWorkflowRun,
   countRunningWorkflows,
+  listRunningWorkflows,
   primaryRunningWorkflow,
   type WorkflowRunRecord,
   type WorkflowRunStatus,
 } from "./workflows/store.js";
+export {
+  formatWorkflowRunsStatus,
+  formatSessionWorkflowsStatus,
+} from "./workflows/status-summary.js";
+export {
+  shouldRenderWorkflowFooter,
+  markOrphanWorkflowInterrupted,
+  liveWorkflowTaskActive,
+} from "./workflows/workflow-live.js";
 export {
   aggregateWorkflowJournal,
   isPhaseFatal,
@@ -229,6 +297,12 @@ export {
   workflowCompletedSummary,
   type WorkflowTaskNotification,
 } from "./workflows/task-notification.js";
+export {
+  isTerminalWorkflowStatus,
+  listUnpresentedTerminalWorkflowRuns,
+  listTerminalRunsNeedingPresentedHeal,
+  transcriptContainsWorkflowNotification,
+} from "./workflows/present.js";
 export {
   registerWorkflowCompleteHandler,
   unregisterWorkflowCompleteHandler,
@@ -257,9 +331,13 @@ export {
   agentCompletedSummary,
   agentFinishedTimelineLine,
   buildAgentTaskNotificationMessage,
+  buildAgentWakeUserMessage,
+  buildAgentResultUserMessage,
   formatBackgroundAgentLaunchResult,
+  isProtocolWakeText,
   type AgentTaskRecord,
   type AgentTaskStatus,
+  type AgentTaskUsage,
 } from "./background/agent-notification.js";
 export {
   registerAgentCompleteHandler,
@@ -272,7 +350,7 @@ export {
   resolveServerEntry,
   defaultSettingsUrl,
 } from "./config/install-paths.js";
-export const KAKO_CORE_VERSION = "0.2.1";
+export const KAKO_CORE_VERSION = "0.2.2";
 export const KAKO_LICENSE = "MIT";
 export const KAKO_LICENSE_URL =
   "https://github.com/hegeng1212/Kako-Code/blob/main/LICENSE";
@@ -288,6 +366,8 @@ export async function createHarness(
     | "cwd"
     | "confirm"
     | "askUserQuestion"
+    | "beforeInteractive"
+    | "afterInteractive"
     | "onTextDelta"
     | "onReasoningDelta"
     | "onReasoningEnd"
@@ -320,8 +400,34 @@ export {
   loadMemorySettings,
   saveMemorySettings,
   resolveInjectCaps,
+  parseMemorySettings,
+  isAutoRecallEnabled,
+  isCuratedEnabled,
+  isMemoryToolEnabled,
+  isBackgroundReviewEnabled,
+  isWriteApprovalEnabled,
   type MemorySettings,
 } from "./config/memory-store.js";
+export {
+  getFrozenCuratedSnapshot,
+  clearFrozenCuratedSnapshot,
+} from "./memory/curated-freeze.js";
+export {
+  loadCuratedEntries,
+  addCuratedEntry,
+  formatCuratedSnapshot,
+} from "./memory/curated-store.js";
+export {
+  stageMemoryWrite,
+  listPendingMemoryWrites,
+  approvePendingMemoryWrite,
+  rejectPendingMemoryWrite,
+} from "./memory/pending.js";
+export {
+  runBackgroundReview,
+  scheduleBackgroundReview,
+} from "./memory/background-review.js";
+export { runMemoryJob } from "./memory/jobs/index.js";
 export { resolveModelContextWindow } from "./memory/context-window.js";
 export {
   updateTokenEstimateRatio,

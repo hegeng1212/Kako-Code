@@ -12,6 +12,7 @@ import { loadMcpRegistry } from "../mcp/config.js";
 import { resolveMcpApprovalForToolCall } from "../mcp/approval-policy.js";
 import { evaluateMcpServerNetworkAccess } from "../mcp/network-access.js";
 import { resolveApprovalDecision } from "./approval-resolver.js";
+import { shouldRunSecurityActionClassifier } from "./action-classifier.js";
 import { capabilityDenialMessage } from "./capability.js";
 import { evaluateNetworkToolGate, evaluateNetworkToolGateWithoutTarget } from "./network-guard.js";
 import { evaluateToolRisk } from "./risk-evaluator.js";
@@ -43,6 +44,15 @@ export interface SecurityContext {
   sessionAllowedHosts: Set<string>;
   sessionAllowedMcpTools: Set<string>;
   sessionAllowedWorkspacePaths: Set<string>;
+  /** Optional auto-mode semantic security classifier (injected by runtime). */
+  classifyAction?: (
+    toolCall: ToolCall,
+    definition: ToolDefinition,
+  ) => Promise<{
+    shouldBlock: boolean;
+    category?: string;
+    reason?: string;
+  }>;
 }
 
 export interface SecurityGateResult {
@@ -295,6 +305,37 @@ export async function runSecurityGate(
 
   audit.approvalRequired = false;
   audit.approvalResult = "skipped";
+
+  if (
+    ctx.permissionMode === "bypassPermissions" &&
+    shouldRunSecurityActionClassifier({
+      permissionMode: ctx.permissionMode,
+      definition,
+      toolName: toolCall.name,
+    }) &&
+    ctx.classifyAction
+  ) {
+    const verdict = await ctx.classifyAction(toolCall, definition);
+    if (verdict.shouldBlock) {
+      audit.automodeBlocked = true;
+      audit.automodeBlockCategory = verdict.category;
+      audit.automodeBlockReason = verdict.reason;
+      audit.approvalResult = "denied";
+      const error =
+        verdict.reason ??
+        (verdict.category ? `Blocked by auto-mode security monitor: ${verdict.category}` : undefined) ??
+        "Blocked by auto-mode security monitor";
+      return {
+        allowed: false,
+        needsConfirm: false,
+        error,
+        audit,
+        networkTarget,
+        networkDecision,
+      };
+    }
+  }
+
   return {
     allowed: true,
     needsConfirm: false,

@@ -85,6 +85,43 @@ export function sortWorkflowRuns(runs: WorkflowRunRecord[]): WorkflowRunRecord[]
   );
 }
 
+/** How long terminal (non-running) workflow runs stay visible in `/workflows`. */
+export const WORKFLOW_PANEL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+export function isLiveWorkflowStatus(status: WorkflowRunRecord["status"]): boolean {
+  return status === "running" || status === "pending";
+}
+
+function workflowRunActivityAtMs(run: WorkflowRunRecord): number {
+  const iso = run.completedAt ?? run.startedAt;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Panel list: always show live runs; keep other statuses only within the
+ * retention window (default 24h) so old completed work does not pile up.
+ */
+export function filterWorkflowRunsForPanel(
+  runs: WorkflowRunRecord[],
+  now = Date.now(),
+  retentionMs = WORKFLOW_PANEL_RETENTION_MS,
+): WorkflowRunRecord[] {
+  const cutoff = now - retentionMs;
+  return runs.filter((run) => {
+    if (isLiveWorkflowStatus(run.status)) return true;
+    return workflowRunActivityAtMs(run) >= cutoff;
+  });
+}
+
+/** Filter + newest-first sort for the `/workflows` panel. */
+export function prepareWorkflowRunsForPanel(
+  runs: WorkflowRunRecord[],
+  now = Date.now(),
+): WorkflowRunRecord[] {
+  return sortWorkflowRuns(filterWorkflowRunsForPanel(runs, now));
+}
+
 function runElapsed(run: WorkflowRunRecord): number {
   const start = new Date(run.startedAt).getTime();
   const end = run.completedAt ? new Date(run.completedAt).getTime() : Date.now();

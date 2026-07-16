@@ -19,7 +19,8 @@ function appendWizardChoices(
     const answer = result.answers[item.question];
     if (answer) {
       rows.push({ item, answer });
-    } else if (result.declined) {
+    } else if (result.declined && answered.size > 0) {
+      // Partial cancel — mark remaining as skipped. Esc with zero answers: no timeline row.
       rows.push({ item, answer: "", declined: true });
     }
   }

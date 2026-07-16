@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { globToolDefinition } from "../tools/builtin/glob.js";
 import { grepToolDefinition } from "../tools/builtin/grep.js";
+import { webSearchToolDefinition } from "../tools/builtin/web-search.js";
 import { applySecurityMetadata } from "./tool-metadata.js";
 import { runSecurityGate, type SecurityContext } from "./pipeline.js";
 import { normalizeSecurityPolicy, type SecurityPolicy } from "./policy-store.js";
@@ -85,5 +86,30 @@ describe("pipeline Grep/Glob approval", () => {
     );
     expect(gate.allowed).toBe(true);
     expect(gate.needsConfirm).toBe(true);
+  });
+});
+
+describe("pipeline WebSearch approval", () => {
+  it("skips confirmation when network is enabled", async () => {
+    const gate = await runSecurityGate(
+      { id: "1", name: "WebSearch", input: { query: "china mother baby market" } },
+      applySecurityMetadata(webSearchToolDefinition),
+      ctx(),
+    );
+    expect(gate.allowed).toBe(true);
+    expect(gate.needsConfirm).toBe(false);
+  });
+
+  it("denies when network is disabled", async () => {
+    const gate = await runSecurityGate(
+      { id: "1", name: "WebSearch", input: { query: "china mother baby market" } },
+      applySecurityMetadata(webSearchToolDefinition),
+      {
+        ...ctx(),
+        networkPolicy: { ...networkPolicy, enabled: false },
+      },
+    );
+    expect(gate.allowed).toBe(false);
+    expect(gate.needsConfirm).toBe(false);
   });
 });

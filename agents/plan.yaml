@@ -15,5 +15,6 @@ disallowedTools:
   - Edit
   - Write
   - NotebookEdit
-permissionMode: plan
+# Same as explore: read-only via tools list; parent session plan mode is separate.
+permissionMode: default
 maxTurns: 20

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { homedir } from "node:os";
 import { isLowRiskBashCommand } from "@kako/core";
 
@@ -5,6 +6,69 @@ function trimDetail(detail: string, max = 80): string {
   const t = detail.trim();
   if (!t || t === "{}") return "";
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * Drop the current working directory prefix from a path or command string
+ * (Read/Write/Edit targets and Bash args under cwd).
+ */
+export function stripCwdPrefix(text: string, cwd: string = process.cwd()): string {
+  const raw = text.trim();
+  if (!raw || !cwd) return raw;
+
+  const absCwd = path.resolve(cwd);
+  if (path.isAbsolute(raw)) {
+    const rel = path.relative(absCwd, raw);
+    if (rel === "") return ".";
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return rel;
+  }
+
+  const prefix = absCwd.endsWith(path.sep) ? absCwd : absCwd + path.sep;
+  if (raw.includes(prefix)) return raw.split(prefix).join("");
+  if (raw === absCwd) return ".";
+  if (raw.includes(absCwd)) {
+    return raw.split(absCwd).join(".");
+  }
+  return raw;
+}
+
+/** Line-range label for partial Read, e.g. "L34 - L56". */
+export function formatReadLineRangeLabel(
+  input?: Record<string, unknown> | null,
+): string | null {
+  if (!input) return null;
+  const hasOffset = input.offset !== undefined && input.offset !== null && input.offset !== "";
+  const hasLimit = input.limit !== undefined && input.limit !== null && input.limit !== "";
+  if (!hasOffset && !hasLimit) return null;
+
+  const rawOffset = hasOffset ? Number(input.offset) : 1;
+  const start =
+    Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 1;
+
+  if (!hasLimit) return `L${start}+`;
+
+  const rawLimit = Number(input.limit);
+  if (!Number.isFinite(rawLimit) || rawLimit <= 0) return `L${start}+`;
+  const end = start + Math.floor(rawLimit) - 1;
+  return `L${start} - L${end}`;
+}
+
+/** File path plus optional line range for Read tool detail display. */
+export function formatReadDisplayDetail(
+  filePath: string,
+  input?: Record<string, unknown> | null,
+): string {
+  const raw = filePath.trim();
+  if (!raw) return "";
+  // Path may already include a line-range suffix — strip cwd only from the file part.
+  const rangeInPath = raw.match(/^(.*?)(\s+L\d+(?:\s*-\s*L\d+|\+)?)$/);
+  const filePart = rangeInPath?.[1]?.trim() || raw;
+  const existingRange = rangeInPath?.[2]?.trim();
+  const displayPath = stripCwdPrefix(filePart);
+  if (existingRange) return `${displayPath} ${existingRange}`;
+  if (/\bL\d+\s*-\s*L\d+\b/.test(raw) || /\bL\d+\+\b/.test(raw)) return displayPath;
+  const range = formatReadLineRangeLabel(input);
+  return range ? `${displayPath} ${range}` : displayPath;
 }
 
 function parseAgentDescription(detail: string): string {
@@ -146,7 +210,7 @@ export function formatToolInvocationLabel(name: string, detail: string): string 
   if (name === "Workflow" && isWorkflowDetail(detail)) {
     return `Workflow(${detail.trim()})`;
   }
-  const target = trimDetail(detail, 120);
+  const target = trimDetail(stripCwdPrefix(detail), 120);
   if (name === "Bash" && target) return `Bash(${target})`;
   if (target) return `${name}(${target})`;
   return name;
@@ -242,7 +306,7 @@ export function toolCallStatPhrase(
 
 /** Contextual English phrase for an in-progress tool call. */
 export function toolCallWaitingPhrase(name: string, detail: string): string {
-  const target = trimDetail(detail);
+  const target = trimDetail(stripCwdPrefix(detail));
   switch (name) {
     case "Read":
       return target ? `Reading ${target}` : "Reading file";
@@ -303,7 +367,7 @@ export function toolCallWaitingPhrase(name: string, detail: string): string {
 
 /** Contextual English phrase for a completed tool call. */
 export function toolCallSuccessPhrase(name: string, detail: string): string {
-  const target = trimDetail(detail);
+  const target = trimDetail(stripCwdPrefix(detail));
   switch (name) {
     case "Read":
       return target ? `Read ${target}` : "Read file";

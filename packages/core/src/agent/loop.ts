@@ -7,6 +7,7 @@ import { toolOutputToLlmContent } from "../media/read-media.js";
 import { createMessage, type FileMemoryStore } from "../memory/store.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { ToolLogger } from "../observability/tool-logger.js";
+import { partitionToolCallClusters } from "./tool-parallel.js";
 
 export class TurnAbortedError extends Error {
   constructor() {
@@ -42,12 +43,17 @@ export interface RunAgentLoopOptions {
   model: string;
   maxTurns: number;
   callbacks?: AgentLoopCallbacks;
-  /** Block nested Agent tool calls (sub-agents). */
+  /** Block nested Agent tool calls (sub-agents at depth ≥ 3). */
   blockAgentTool?: boolean;
   /** When true, abort streaming and end the turn (e.g. Ctrl+C during generation). */
   shouldAbort?: () => boolean;
   /** Rebuild messages after a lone Skill tool call (harness loads skill + pivots context). */
   onSkillActivate?: (input: SkillActivateInput) => Promise<LLMMessage[] | null | void> | LLMMessage[] | null | void;
+}
+
+/** Main = 0; at depth ≥ 3, Agent tool is blocked. Depths 0/1/2 may spawn. */
+export function shouldBlockAgentToolAtDepth(agentDepth: number): boolean {
+  return agentDepth >= 3;
 }
 
 export async function streamCompletion(
@@ -267,12 +273,20 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
       const result = await registry.execute(toolCall);
       await toolLogger.log(result);
 
+      // Exactly one start/end pair — a second start left "Waiting. Activating…" stuck.
+      callbacks?.onToolStart?.(toolCall.name, toolCall.input);
+
       if (result.status === "success") {
-        callbacks?.onToolStart?.(toolCall.name, toolCall.input);
-        const pivoted = await onSkillActivate({
-          toolCall,
-          priorMessages: [...messages],
-        });
+        let pivoted: LLMMessage[] | null | void;
+        try {
+          pivoted = await onSkillActivate({
+            toolCall,
+            priorMessages: [...messages],
+          });
+        } catch {
+          // Failed activation must not kill the turn — keep Skill tool result in-band.
+          pivoted = undefined;
+        }
         if (pivoted?.length) {
           callbacks?.onToolEnd?.(
             toolCall.name,
@@ -289,16 +303,9 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
           responseText = "";
           continue;
         }
-        callbacks?.onToolEnd?.(
-          toolCall.name,
-          "error",
-          "Skill activation did not rebuild context",
-          undefined,
-          toolCall.input,
-        );
       }
 
-      callbacks?.onToolStart?.(toolCall.name, toolCall.input);
+      // Status-only skill (e.g. workflows) or failed execute: keep tool result in-band.
       callbacks?.onToolEnd?.(
         toolCall.name,
         result.status,
@@ -336,10 +343,9 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
 
     let choiceDeclined = false;
 
-    for (const toolCall of toolCalls) {
-      if (shouldAbort?.()) {
-        return rollbackResponse(responseText, callbacks);
-      }
+    const executeOneTool = async (
+      toolCall: ToolCall,
+    ): Promise<{ declined: boolean }> => {
       if (blockAgentTool && toolCall.name === "Agent") {
         const output = "Error: Sub-agents cannot spawn nested Agent tools";
         messages.push({
@@ -356,7 +362,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
             }),
           );
         }
-        continue;
+        return { declined: false };
       }
 
       callbacks?.onToolStart?.(toolCall.name, toolCall.input);
@@ -391,8 +397,91 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
         );
       }
 
-      if (toolCall.name === "AskUserQuestion" && askUserQuestionOutputDeclined(getTextContent(llmOutput))) {
-        choiceDeclined = true;
+      return {
+        declined:
+          toolCall.name === "AskUserQuestion" &&
+          askUserQuestionOutputDeclined(getTextContent(llmOutput)),
+      };
+    };
+
+    /** Run parallelizable tools concurrently; push results in cluster order after all finish. */
+    const executeParallelCluster = async (cluster: ToolCall[]): Promise<void> => {
+      type ClusterItem = {
+        toolCall: ToolCall;
+        llmOutput: ReturnType<typeof toolOutputToLlmContent> | string;
+        declined: boolean;
+      };
+
+      const items = await Promise.all(
+        cluster.map(async (toolCall): Promise<ClusterItem> => {
+          if (blockAgentTool && toolCall.name === "Agent") {
+            return {
+              toolCall,
+              llmOutput: "Error: Sub-agents cannot spawn nested Agent tools",
+              declined: false,
+            };
+          }
+
+          callbacks?.onToolStart?.(toolCall.name, toolCall.input);
+          const result = await registry.execute(toolCall);
+          await toolLogger.log(result);
+          callbacks?.onToolEnd?.(
+            toolCall.name,
+            result.status,
+            result.error,
+            result.status === "success" ? String(result.output ?? "") : undefined,
+            toolCall.input,
+          );
+
+          const llmOutput =
+            result.status === "success"
+              ? toolOutputToLlmContent(result.output)
+              : `Error: ${result.error ?? result.status}`;
+
+          return {
+            toolCall,
+            llmOutput,
+            declined:
+              toolCall.name === "AskUserQuestion" &&
+              askUserQuestionOutputDeclined(getTextContent(llmOutput)),
+          };
+        }),
+      );
+
+      for (const item of items) {
+        messages.push({
+          role: "tool",
+          content: item.llmOutput,
+          toolCallId: item.toolCall.id,
+          name: item.toolCall.name,
+        });
+        if (memory) {
+          await memory.append(
+            createMessage("tool", getTextContent(item.llmOutput), {
+              toolCallId: item.toolCall.id,
+              toolName: item.toolCall.name,
+            }),
+          );
+        }
+        if (item.declined) choiceDeclined = true;
+      }
+    };
+
+    const parts = partitionToolCallClusters(toolCalls, (name) =>
+      registry.getDefinitions([name])[0],
+    );
+
+    for (const part of parts) {
+      if (shouldAbort?.()) {
+        return rollbackResponse(responseText, callbacks);
+      }
+      const cluster = part.indices.map((idx) => toolCalls[idx]!);
+      if (part.parallel && cluster.length > 1) {
+        await executeParallelCluster(cluster);
+      } else {
+        if ((await executeOneTool(cluster[0]!)).declined) {
+          choiceDeclined = true;
+        }
       }
     }
 

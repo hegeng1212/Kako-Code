@@ -54,7 +54,7 @@ function renderPlainWithSelection(
     out += selected ? `${ansi.selectionBg}${ansi.text}${char}${ansi.reset}` : char;
     offset += charLen;
   }
-  return `${ansi.text}${out}${ansi.reset}`;
+  return `${ansi.muted}${out}${ansi.reset}`;
 }
 
 function renderVisibleInputLine(
@@ -74,9 +74,9 @@ function renderVisibleInputLine(
     : renderSlashInputText(lineText);
 
   if (globalLine === 0) {
-    return `${ansi.text}${ansi.bold}>${ansi.reset} ${body}`;
+    return `${ansi.text}>${ansi.reset} ${body}`;
   }
-  return `${ansi.text}${INPUT_CONTINUATION}${body}${ansi.reset}`;
+  return `${INPUT_CONTINUATION}${body}`;
 }
 
 export function splitLogicalLines(text: string): string[] {

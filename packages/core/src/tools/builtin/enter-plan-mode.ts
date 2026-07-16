@@ -10,8 +10,10 @@ export const ENTER_PLAN_MODE_DESCRIPTION = adaptClaudeCodeToolText(
 export const enterPlanModeToolDefinition: ToolDefinition = {
   name: "EnterPlanMode",
   description: ENTER_PLAN_MODE_DESCRIPTION,
-  requiresConfirmation: true,
+  // Entering plan mode is a UX mode switch (like /plan). Real approval is ExitPlanMode.
+  requiresConfirmation: false,
   inputSchema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
     type: "object",
     additionalProperties: false,
     properties: {},

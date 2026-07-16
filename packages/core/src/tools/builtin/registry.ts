@@ -53,6 +53,7 @@ import { taskOutputHandler, taskOutputToolDefinition } from "./task-output.js";
 import { memorySearchHandler, memorySearchToolDefinition } from "./memory-search.js";
 import { memoryGetHandler, memoryGetToolDefinition } from "./memory-get.js";
 import { memoryPinHandler, memoryPinToolDefinition } from "./memory-pin.js";
+import { memoryCuratedHandler, memoryCuratedToolDefinition } from "./memory-curated.js";
 import { CLAUDE_CODE_BUILTIN_TOOL_NAMES } from "../claude-tool-text.js";
 
 export { CLAUDE_CODE_BUILTIN_TOOL_NAMES };
@@ -100,6 +101,7 @@ export const BUILTIN_TOOLS: BuiltinTool[] = [
   { definition: memorySearchToolDefinition, handler: memorySearchHandler },
   { definition: memoryGetToolDefinition, handler: memoryGetHandler },
   { definition: memoryPinToolDefinition, handler: memoryPinHandler },
+  { definition: memoryCuratedToolDefinition, handler: memoryCuratedHandler },
   // Agent is registered in createToolRegistry (needs runtime spawn host).
 ];
 

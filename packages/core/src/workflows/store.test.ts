@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   loadWorkflowRuns,
+  listRunningWorkflows,
   parseRunsFileText,
   saveWorkflowRun,
   updateWorkflowRun,
@@ -116,5 +117,45 @@ entPhase": "Scope"
     const repaired = await readFile(path, "utf-8");
     expect(() => JSON.parse(repaired)).not.toThrow();
     expect(repaired).not.toContain("entPhase");
+  });
+});
+
+describe("updateWorkflowRun agent counters", () => {
+  afterEach(() => {
+    delete process.env.KAKO_HOME;
+  });
+
+  it("does not let nested patches decrease agentsTotal/agentsDone", async () => {
+    const home = await mkdtemp(join(tmpdir(), "kako-wf-counters-"));
+    process.env.KAKO_HOME = home;
+    const sessionId = "sess-counters";
+    await saveWorkflowRun(sessionId, {
+      ...sampleRun("a1"),
+      agentsTotal: 80,
+      agentsDone: 53,
+    });
+
+    await updateWorkflowRun(sessionId, "a1", { agentsTotal: 12, agentsDone: 8 });
+    const runs = await loadWorkflowRuns(sessionId);
+    expect(runs[0]?.agentsTotal).toBe(80);
+    expect(runs[0]?.agentsDone).toBe(53);
+
+    await updateWorkflowRun(sessionId, "a1", { agentsTotal: 90, agentsDone: 60 });
+    const again = await loadWorkflowRuns(sessionId);
+    expect(again[0]?.agentsTotal).toBe(90);
+    expect(again[0]?.agentsDone).toBe(60);
+  });
+});
+
+describe("listRunningWorkflows", () => {
+  it("returns every pending/running run, not only the first", () => {
+    const runs = [
+      { ...sampleRun("a"), status: "completed" as const },
+      { ...sampleRun("b"), status: "running" as const, name: "deep-research" },
+      { ...sampleRun("c"), status: "pending" as const, name: "deep-research" },
+      { ...sampleRun("d"), status: "stopped" as const },
+    ];
+    const live = listRunningWorkflows(runs);
+    expect(live.map((r) => r.runId)).toEqual(["b", "c"]);
   });
 });

@@ -17,6 +17,7 @@ import {
   renderClaudeTwoColumnBox,
 } from "./box.js";
 import { KAKO_DINO, KAKO_DINO_MINI } from "./mascot.js";
+import { pickInputPlaceholder } from "./input-placeholders.js";
 import type { ChatHeaderMode } from "./cli-usage.js";
 
 const H = "─";
@@ -74,6 +75,7 @@ function italicMuted(text: string): string {
 }
 
 function buildLeftTop(opts: WelcomeScreenOptions): string[] {
+  const sessionBit = opts.sessionLabel.trim();
   return [
     "",
     pinkBold("Welcome back!"),
@@ -81,6 +83,7 @@ function buildLeftTop(opts: WelcomeScreenOptions): string[] {
     ...KAKO_DINO.map((row) => pink(row)),
     "",
     bodyText(opts.modelLabel),
+    ...(sessionBit ? [italicMuted(sessionBit)] : []),
   ];
 }
 
@@ -141,7 +144,8 @@ function miniHeaderTitle(version: string): string {
 }
 
 function miniHeaderMetaLine(opts: WelcomeScreenOptions): string {
-  return `${ansi.muted}${opts.modelLabel} · ${opts.agentName} agent${ansi.reset}`;
+  const sessionBit = opts.sessionLabel.trim() || `${opts.agentName} agent`;
+  return `${ansi.muted}${opts.modelLabel} · ${sessionBit}${ansi.reset}`;
 }
 
 /** Compact pinned header — icon + version, model, cwd (Claude Code mini style). */
@@ -188,15 +192,15 @@ export function resolveEffectiveHeaderMode(
 
 export function renderInputHint(): string {
   return renderClaudeFooter({
-    placeholder: 'Try "explain this codebase"',
+    placeholder: pickInputPlaceholder(),
     shortcuts: "? for shortcuts · /help for commands",
   });
 }
 
 export function renderInitialInputFooter(): ClaudeFooterParts {
   return renderClaudeFooterParts({
-    placeholder: 'Try "explain this codebase"',
-    shortcuts: "? for shortcuts · click Thought to expand · drag to select · /help",
+    placeholder: pickInputPlaceholder(),
+    shortcuts: "? for shortcuts · ← for agents · /help for commands",
   });
 }
 

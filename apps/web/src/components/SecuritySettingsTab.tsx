@@ -167,6 +167,12 @@ function SecuritySettingsSkeleton() {
 }
 
 export function SecuritySettingsTab() {
+  const settingsCwd = useMemo(() => {
+    if (typeof window === "undefined") return undefined;
+    const fromQuery = new URLSearchParams(window.location.search).get("cwd")?.trim();
+    return fromQuery || undefined;
+  }, []);
+
   const [config, setConfig] = useState<SecurityConfigFile | null>(null);
   const [inheritedRoots, setInheritedRoots] = useState<string[]>([]);
   const [advancedDraft, setAdvancedDraft] = useState<AdvancedDraft | null>(null);
@@ -181,7 +187,7 @@ export function SecuritySettingsTab() {
     setLoading(true);
     setError(null);
     try {
-      const next = await api.getSecurity();
+      const next = await api.getSecurity(settingsCwd);
       setConfig(next);
       setInheritedRoots(next.workspace.inheritedTrustedRoots ?? []);
       const advanced = { extraTrustedRoots: next.workspace.extraTrustedRoots ?? [] };
@@ -192,7 +198,7 @@ export function SecuritySettingsTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [settingsCwd]);
 
   useEffect(() => {
     void load();
@@ -230,7 +236,7 @@ export function SecuritySettingsTab() {
   }
 
   async function persistSecurity(next: SecurityConfigFile) {
-    const saved = await api.saveSecurity(next);
+    const saved = await api.saveSecurity(next, settingsCwd);
     setConfig(saved);
     setInheritedRoots(saved.workspace.inheritedTrustedRoots ?? []);
     return saved;
@@ -289,8 +295,13 @@ export function SecuritySettingsTab() {
     <div className="settings-page security-settings">
       <div className="settings-page__intro">
         <p className="settings-page__desc">
-          工作区读写权限、越权路径策略与信任根目录。基础选项变更后立即生效。
+          工作区读写权限、越权路径策略与信任根目录。按工作目录分别保存；基础选项变更后立即生效。
         </p>
+        {settingsCwd ? (
+          <p className="settings-page__meta">
+            当前工作区：<code>{settingsCwd}</code>
+          </p>
+        ) : null}
       </div>
 
       {error && <div className="banner banner--error">{error}</div>}

@@ -32,11 +32,26 @@ export interface SessionStateClassifierResult {
   result?: string;
 }
 
+function formatStateDuration(since: string): string | null {
+  const sinceMs = Date.parse(since);
+  if (Number.isNaN(sinceMs)) return null;
+  const elapsedMs = Math.max(0, Date.now() - sinceMs);
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  if (totalSeconds >= 60) {
+    return `${Math.floor(totalSeconds / 60)}m`;
+  }
+  return `${totalSeconds}s`;
+}
+
 export function buildClassifierUserMessage(input: SessionStateClassifierInput): string {
   const prev = input.previousState;
-  const prevLine = prev
-    ? `Current state: ${prev.state} (since ${prev.since})`
-    : "Current state: (none)";
+  let prevLine = "Current state: (none)";
+  if (prev) {
+    const duration = formatStateDuration(prev.since);
+    prevLine = duration
+      ? `Current state: ${prev.state} (for ${duration})`
+      : `Current state: ${prev.state}`;
+  }
   return [
     prevLine,
     `Tool calls so far: ${input.toolSummary || "none"}`,

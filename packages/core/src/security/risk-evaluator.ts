@@ -107,11 +107,6 @@ export function evaluateToolRisk(
     level = riskFromLevel(level, "medium");
   }
 
-  if (toolCall.name === "WebSearch") {
-    requiresNetwork = true;
-    level = riskFromLevel(level, "medium");
-  }
-
   const mcp = parseMcpToolName(toolCall.name);
   if (mcp) {
     level = riskFromLevel(level, meta?.defaultRiskLevel ?? "medium");

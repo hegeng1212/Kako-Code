@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${KAKO_VERSION:-0.2.1}"
+VERSION="${KAKO_VERSION:-0.2.2}"
 PKG_ID="${KAKO_PKG_ID:-com.kako.cli}"
 INSTALL_ROOT="/opt/kako"
 BIN_PATH="/usr/local/bin/kako"

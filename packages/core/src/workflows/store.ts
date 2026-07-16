@@ -13,6 +13,10 @@ export interface WorkflowRunRecord {
   transcriptDir: string;
   startedAt: string;
   completedAt?: string;
+  /** Set when the completion notification turn was delivered into chat. */
+  presentedAt?: string;
+  /** Launch-time Workflow args — required to soft-resume parameterized scripts. */
+  args?: unknown;
   agentsTotal: number;
   agentsDone: number;
   agentsFailed: number;
@@ -162,16 +166,34 @@ export async function updateWorkflowRun(
     const file = await readRunsFileUnlocked(sessionId);
     const idx = file.runs.findIndex((r) => r.runId === runId);
     if (idx === -1) return undefined;
-    file.runs[idx] = { ...file.runs[idx]!, ...patch };
+    const prev = file.runs[idx]!;
+    const next = { ...prev, ...patch };
+    // Nested workflow agent() patches share the parent run id; never let a
+    // smaller local counter overwrite a larger in-flight total/done.
+    if (typeof patch.agentsTotal === "number") {
+      next.agentsTotal = Math.max(prev.agentsTotal, patch.agentsTotal);
+    }
+    if (typeof patch.agentsDone === "number") {
+      next.agentsDone = Math.max(prev.agentsDone, patch.agentsDone);
+    }
+    if (typeof patch.agentsFailed === "number") {
+      next.agentsFailed = Math.max(prev.agentsFailed ?? 0, patch.agentsFailed);
+    }
+    file.runs[idx] = next;
     await writeRunsFileUnlocked(sessionId, file);
     return file.runs[idx];
   });
 }
 
 export function countRunningWorkflows(runs: WorkflowRunRecord[]): number {
-  return runs.filter((r) => r.status === "running" || r.status === "pending").length;
+  return listRunningWorkflows(runs).length;
+}
+
+/** All in-flight workflows for the session (pending + running), oldest first. */
+export function listRunningWorkflows(runs: WorkflowRunRecord[]): WorkflowRunRecord[] {
+  return runs.filter((r) => r.status === "running" || r.status === "pending");
 }
 
 export function primaryRunningWorkflow(runs: WorkflowRunRecord[]): WorkflowRunRecord | undefined {
-  return runs.find((r) => r.status === "running" || r.status === "pending");
+  return listRunningWorkflows(runs)[0];
 }

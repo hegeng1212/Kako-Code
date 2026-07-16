@@ -5,6 +5,7 @@ export * from "./tool-confirm.js";
 export * from "./ask-user-question.js";
 export * from "./skill.js";
 export * from "./memory.js";
+export * from "./memory-settings-ui.js";
 export * from "./llm.js";
 export * from "./session.js";
 export * from "./hook.js";

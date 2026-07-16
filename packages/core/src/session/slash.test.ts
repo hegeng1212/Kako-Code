@@ -49,12 +49,14 @@ describe("handleSlashCommand", () => {
     expect(result.type).toBe("exit");
   });
 
-  it("switches session on /new", async () => {
+  it("returns clear for /clear without creating a session", async () => {
+    const result = await handleSlashCommand("/clear", ctx);
+    expect(result).toEqual({ type: "clear", displayText: "/clear" });
+  });
+
+  it("does not treat /new as a builtin session switch", async () => {
     const result = await handleSlashCommand("/new", ctx);
-    expect(result.type).toBe("switch");
-    if (result.type === "switch") {
-      expect(result.session.id).toBe("sess-new12345");
-    }
+    expect(result.type).toBe("error");
   });
 
   it("passes through non-slash input as message", async () => {
@@ -121,6 +123,26 @@ describe("handleSlashCommand", () => {
     expect(result).toEqual({
       type: "plan-open",
       displayText: "/plan open",
+    });
+  });
+
+  it("returns auto-enter for /auto with optional question", async () => {
+    expect(await handleSlashCommand("/auto", ctx)).toEqual({
+      type: "auto-enter",
+      question: undefined,
+      displayText: "/auto",
+    });
+    expect(await handleSlashCommand("/auto ship it", ctx)).toEqual({
+      type: "auto-enter",
+      question: "ship it",
+      displayText: "/auto ship it",
+    });
+  });
+
+  it("returns manual-enter for /manual", async () => {
+    expect(await handleSlashCommand("/manual", ctx)).toEqual({
+      type: "manual-enter",
+      displayText: "/manual",
     });
   });
 

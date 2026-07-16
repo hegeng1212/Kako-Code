@@ -12,11 +12,13 @@ import {
 } from "./tool-content-preview.js";
 import { wrapContentLines } from "./text-wrap.js";
 import {
+  formatReadDisplayDetail,
   formatToolInvocationLabel,
   isExecutionBashCommand,
   isPlanFileDetail,
   isWorkflowDetail,
   shellCommandStat,
+  stripCwdPrefix,
   toolCallFailurePhrase,
   toolCallStatPhrase,
   toolCallSuccessPhrase,
@@ -53,8 +55,19 @@ export interface ToolCallTimelineEntry {
   awaitingApproval?: boolean;
   /** Agent tool launched with run_in_background. */
   backgrounded?: boolean;
-  /** Expanded background agent detail (ctrl+o). */
+  /**
+   * Foreground Agent (Explore): while waiting, default expanded (show child tools).
+   * After success, default collapsed (Done summary); click toggles child tool list.
+   */
   agentExpanded?: boolean;
+  /** Nested tool rows under a foreground Agent (Explore children). */
+  childTools?: ToolCallTimelineEntry[];
+  /** Wall-clock start for Agent Done duration. */
+  startedAt?: number;
+  /** Wall-clock end when Agent tool finishes. */
+  endedAt?: number;
+  /** Optional token count for Agent Done summary (0 when unknown). */
+  outputTokens?: number;
 }
 
 const WAITING_DOTS = ["", ".", "..", "..."] as const;
@@ -496,19 +509,101 @@ function agentSubagentTypeFromEntry(entry: ToolCallTimelineEntry): string {
   return "general-purpose";
 }
 
+function agentHeaderDot(entry: ToolCallTimelineEntry): string {
+  if (entry.status === "error") return `${ansi.red}⏺${ansi.reset}`;
+  // Explore/Agent headers stay green while running (Claude Code-style).
+  return `${ansi.green}⏺${ansi.reset}`;
+}
+
+function agentToolUseLabel(count: number): string {
+  return count === 1 ? "1 tool use" : `${count} tool uses`;
+}
+
+export function agentDoneSummary(entry: ToolCallTimelineEntry, now = Date.now()): string {
+  const children = entry.childTools ?? [];
+  const tokens = Math.max(0, entry.outputTokens ?? 0);
+  const start = entry.startedAt ?? now;
+  const end = entry.endedAt ?? now;
+  const secs = Math.max(0, Math.floor((end - start) / 1000));
+  return `Done (${agentToolUseLabel(children.length)} · ${tokens} tokens · ${formatDurationSeconds(secs)})`;
+}
+
+/** Whether foreground Agent child tools should be listed. */
+export function isAgentChildrenExpanded(entry: ToolCallTimelineEntry): boolean {
+  if (entry.backgrounded) return false;
+  if (entry.status === "waiting") return entry.agentExpanded !== false;
+  return entry.agentExpanded === true;
+}
+
 export function renderAgentToolLines(entry: ToolCallTimelineEntry): string[] {
   const subagent = formatSubagentDisplayName(agentSubagentTypeFromEntry(entry));
   const description = agentDescriptionFromEntry(entry);
-  const lines = [`${ansi.green}⏺${ansi.reset} ${ansi.text}${subagent}(${description})${ansi.reset}`];
+  const lines = [
+    `${agentHeaderDot(entry)} ${ansi.text}${subagent}(${description})${ansi.reset}`,
+  ];
+  const children = entry.childTools ?? [];
+  const expanded = isAgentChildrenExpanded(entry);
+
   if (entry.backgrounded) {
     lines.push(
       `${ansi.muted}└ Backgrounded agent (↓ to manage · ctrl+o to expand)${ansi.reset}`,
     );
+    return lines;
+  }
+
+  if (entry.status === "waiting") {
+    if (children.length === 0) {
+      lines.push(
+        `${ansi.muted}└ Initializing… (ctrl+b to run in background)${ansi.reset}`,
+      );
+      return lines;
+    }
+    if (expanded) {
+      for (const child of children) {
+        lines.push(...renderAgentNestedToolLines(child, { live: true }));
+      }
+      lines.push(`${ansi.muted}  (ctrl+b to run in background)${ansi.reset}`);
+    } else {
+      lines.push(
+        `${ansi.muted}└ … +${agentToolUseLabel(children.length)} (ctrl+b to run in background)${ansi.reset}`,
+      );
+    }
+    return lines;
+  }
+
+  if (entry.status === "success") {
+    if (expanded && children.length > 0) {
+      // Expanded child tools stay muted gray; Done summary is white when collapsed.
+      for (const child of children) {
+        lines.push(...renderAgentNestedToolLines(child, { live: false, muted: true }));
+      }
+    } else {
+      lines.push(
+        `${ansi.muted}└ ${ansi.reset}${ansi.text}${agentDoneSummary(entry)}${ansi.reset}`,
+      );
+    }
+  } else if (entry.status === "error") {
+    lines.push(`${ansi.red}└ Agent failed${ansi.reset}`);
   }
   return lines;
 }
 
-/** Tree line when a subagent completes — Agent "…" finished */
+function renderAgentNestedToolLines(
+  child: ToolCallTimelineEntry,
+  opts: { live: boolean; muted?: boolean },
+): string[] {
+  const label = formatToolInvocationLabel(child.name, child.detail);
+  // Live stream: white tool lines; after Done expand: muted gray. ctrl+b stays muted separately.
+  const color = opts.muted ? ansi.muted : ansi.text;
+  const lines: string[] = [`${color}└ ${label}${ansi.reset}`];
+  // Nested Explore tools: show Running… while live; never paint a Failed status row.
+  if (opts.live && child.status === "waiting") {
+    lines.push(`${ansi.muted}  Running...${ansi.reset}`);
+  }
+  return lines;
+}
+
+/** @deprecated Prefer agentDoneSummary — kept for callers/tests that expect the old finished copy. */
 export function renderAgentFinishedEventLine(description: string): string {
   const label = description.trim() || "agent task";
   return `${ansi.muted}└ ${ansi.reset}Agent "${ansi.text}${label}${ansi.reset}" finished`;
@@ -603,6 +698,9 @@ export function renderWorkflowToolLines(entry: ToolCallTimelineEntry): string[] 
   return [renderToolCallStatusLine(entry)];
 }
 
+/** Max stat fragments shown on one collapsed activity summary line. */
+const MAX_ACTIVITY_SUMMARY_STATS = 3;
+
 /** Collapsed activity summary: Thought for 10s, listed 1 directory, read 2 files */
 export function renderActivitySummaryLine(
   thoughtSeconds: number | undefined,
@@ -614,7 +712,11 @@ export function renderActivitySummaryLine(
   if (thoughtSeconds && thoughtSeconds > 0) {
     parts.push(`Thought for ${formatDurationSeconds(thoughtSeconds)}`);
   }
-  parts.push(...stats);
+  const visibleStats =
+    stats.length > MAX_ACTIVITY_SUMMARY_STATS
+      ? [...stats.slice(0, MAX_ACTIVITY_SUMMARY_STATS), "…"]
+      : stats;
+  parts.push(...visibleStats);
   const summary = parts.length ? parts.join(", ") : "Finished tool calls";
   const chevron = expanded ? "▾" : "▸";
   const hint = expanded ? "click to collapse" : "click to expand";
@@ -637,7 +739,12 @@ export function isExecutionBashEntry(entry: Pick<ToolCallTimelineEntry, "name" |
 /** Expanded tool invocation header, e.g. Bash(ls -la /path) — no status dot. */
 export function renderToolInvocationLine(entry: ToolCallTimelineEntry): string {
   if (entry.name === "Bash") {
-    return `${ansi.text}Bash(${bashCommandFromEntry(entry)})${ansi.reset}`;
+    const cmd = stripCwdPrefix(bashCommandFromEntry(entry));
+    return `${ansi.text}Bash(${cmd})${ansi.reset}`;
+  }
+  if (entry.name === "Read") {
+    const target = formatReadDisplayDetail(entry.detail, entry.toolInput);
+    return `${ansi.text}Read(${target})${ansi.reset}`;
   }
   const label = formatToolInvocationLabel(entry.name, entry.detail);
   return `${ansi.text}${label}${ansi.reset}`;

@@ -290,16 +290,66 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  getSecurity: () => request<import("@kako/shared").SecurityConfigFile>("/security"),
-  saveSecurity: (config: import("@kako/shared").SecurityConfigFile) =>
-    request<import("@kako/shared").SecurityConfigFile>("/security", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    }),
+  getSecurity: (cwd?: string) =>
+    request<import("@kako/shared").SecurityConfigFile>(
+      `/security${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`,
+    ),
+  saveSecurity: (config: import("@kako/shared").SecurityConfigFile, cwd?: string) =>
+    request<import("@kako/shared").SecurityConfigFile>(
+      `/security${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(cwd ? { ...config, cwd } : config),
+      },
+    ),
   getNetwork: () => request<import("@kako/shared").NetworkConfigFile>("/network"),
   saveNetwork: (config: import("@kako/shared").NetworkConfigFile) =>
     request<import("@kako/shared").NetworkConfigFile>("/network", {
       method: "PUT",
       body: JSON.stringify(config),
     }),
+  getMemory: () => request<MemorySettingsFile>("/memory"),
+  saveMemory: (config: MemorySettingsFile) =>
+    request<MemorySettingsFile>("/memory", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
 };
+
+/** Mirrors ~/.kako/config/memory.json (from @kako/core MemorySettings). */
+export interface MemorySettingsFile {
+  version: number;
+  autoRecall: { enabled: boolean; maxSnippets?: number; maxTokens?: number };
+  writeApproval: { enabled: boolean };
+  curated: {
+    enabled: boolean;
+    notesCharLimit: number;
+    userCharLimit: number;
+    injectFrozenSnapshot: boolean;
+  };
+  memoryTool: { enabled: boolean };
+  backgroundReview: {
+    enabled: boolean;
+    model?: string | null;
+    providerId?: string | null;
+    cooldownSeconds: number;
+    maxPerHour: number;
+    maxPerDay: number;
+    digestMaxChars: number;
+    extractFacts: boolean;
+    updateCurated: boolean;
+  };
+  budget: {
+    enabled: boolean;
+    maxLlmCallsPerHour: number;
+    maxLlmCallsPerDay: number;
+    maxConcurrentJobs: number;
+  };
+  jobs: {
+    consolidate: { enabled: boolean; model?: string | null; providerId?: string | null; cron?: string };
+    curator: { enabled: boolean; model?: string | null; providerId?: string | null; cron?: string };
+    dreaming: { enabled: boolean; model?: string | null; providerId?: string | null; cron?: string };
+  };
+  cli?: { consolidateCommand?: { enabled: boolean } };
+  injectCaps?: Record<string, number>;
+}

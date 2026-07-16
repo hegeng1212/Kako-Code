@@ -23,14 +23,32 @@ describe("Agent tool definition", () => {
     expect(agentToolDefinition.name).toBe("Agent");
   });
 
-  it("matches Claude Code description and schema", () => {
+  it("matches Claude Code / Cursor Agent description and schema", () => {
     expect(agentToolDefinition.description).toContain("subagent_type parameter");
     expect(agentToolDefinition.description).toContain("## When to use");
+    expect(agentToolDefinition.description).toContain("run_in_background: true");
+    expect(agentToolDefinition.description).toContain("you'll be notified when it completes");
+    expect(agentToolDefinition.description).toContain("isolation: \"worktree\"");
+    expect(agentToolDefinition.description).toContain("relay what matters");
     expect(agentToolDefinition.description).not.toContain("When NOT to use");
+    // SendMessage is a Cursor-only continue path; Kako starts a fresh Agent call instead.
+    expect(agentToolDefinition.description).not.toMatch(/SendMessage/i);
+    expect(agentToolDefinition.inputSchema.$schema).toBe(
+      "https://json-schema.org/draft/2020-12/schema",
+    );
     expect(agentToolDefinition.inputSchema.additionalProperties).toBe(false);
-    const props = agentToolDefinition.inputSchema.properties as Record<string, { enum?: string[] }>;
+    const props = agentToolDefinition.inputSchema.properties as Record<
+      string,
+      { enum?: string[]; description?: string }
+    >;
     expect(props.isolation?.enum).toEqual(["worktree", "remote"]);
     expect(props.model?.enum).toEqual(["sonnet", "opus", "haiku", "fable"]);
+    expect(props.model?.description).toContain("model frontmatter");
+    expect(props.model?.description).toContain('subagent_type: "fork"');
+    expect(Object.keys(props).sort()).toEqual(
+      ["description", "isolation", "model", "prompt", "run_in_background", "subagent_type"].sort(),
+    );
+    expect(agentToolDefinition.inputSchema.required).toEqual(["description", "prompt"]);
   });
 });
 
@@ -156,14 +174,14 @@ describe("createAgentHandler", () => {
 });
 
 describe("formatSubAgentResult", () => {
-  it("wraps sub-agent final text for parent consumption", () => {
+  it("returns plain sub-agent final text for parent consumption", () => {
     const text = formatSubAgentResult("explore", "scan auth", "Found auth in src/auth.ts");
-    expect(text).toContain('Agent "explore" completed: scan auth');
-    expect(text).toContain("Found auth in src/auth.ts");
+    expect(text).toBe("Found auth in src/auth.ts");
+    expect(text).not.toContain('Agent "explore" completed');
   });
 
   it("handles empty sub-agent response", () => {
-    expect(formatSubAgentResult("plan", "design", "")).toContain("(no text response)");
+    expect(formatSubAgentResult("plan", "design", "")).toBe("(no text response)");
   });
 });
 

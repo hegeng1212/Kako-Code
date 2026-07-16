@@ -28,7 +28,8 @@ async function fileExists(path: string): Promise<boolean> {
 
 async function createPlanFile(sessionId: string, topicHint?: string): Promise<string> {
   await mkdir(getPlansDir(), { recursive: true });
-  const base = generatePlanFileBase(topicHint);
+  const meta = await sessionManager.getSessionMeta(sessionId);
+  const base = meta?.jobName?.trim() || generatePlanFileBase(topicHint);
   let path = join(getPlansDir(), `${base}.md`);
   let suffix = 2;
   while (await fileExists(path)) {

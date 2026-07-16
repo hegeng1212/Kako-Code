@@ -60,20 +60,20 @@ cd ~/your-project
 kako              # 在当前目录启动对话
 ```
 
-固定版本（生产环境更推荐，将 `0.2.1` 换成 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 中的版本号）：
+固定版本（生产环境更推荐，将 `0.2.2` 换成 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 中的版本号）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.2/scripts/install.sh | bash
 ```
 
 ### 方式二：macOS 安装包（GitHub Release）
 
 从 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 下载 `kako-x.y.z-macos.pkg`，双击安装。
 
-或使用命令行（将 `0.2.1` 换成实际版本号）：
+或使用命令行（将 `0.2.2` 换成实际版本号）：
 
 ```bash
-VERSION=0.2.1
+VERSION=0.2.2
 curl -LO "https://github.com/hegeng1212/Kako-Code/releases/download/v${VERSION}/kako-${VERSION}-macos.pkg"
 sudo installer -pkg "kako-${VERSION}-macos.pkg" -target /
 ```
@@ -97,19 +97,19 @@ pnpm link:global   # 或 node packages/cli/dist/index.js
 推荐固定版本，与 [Releases](https://github.com/hegeng1212/Kako-Code/releases) 一致：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/upgrade.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.2/scripts/upgrade.sh | bash
 ```
 
 若 `upgrade.sh` 报错（如 `BASH_SOURCE[0]: unbound variable`），可直接执行同版本的 `install.sh`（效果相同）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.1/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/v0.2.2/scripts/install.sh | bash
 ```
 
 或指定任意版本：
 
 ```bash
-KAKO_VERSION=v0.2.1 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/upgrade.sh | bash
+KAKO_VERSION=v0.2.2 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako-Code/main/scripts/upgrade.sh | bash
 ```
 
 脚本会 checkout 对应 tag、重新构建并覆盖 `~/.kako/app`，`~/.local/bin/kako` 路径不变。
@@ -119,7 +119,7 @@ KAKO_VERSION=v0.2.1 curl -fsSL https://raw.githubusercontent.com/hegeng1212/Kako
 下载新版本 `.pkg` 后直接安装即可覆盖 `/opt/kako`：
 
 ```bash
-VERSION=0.2.1
+VERSION=0.2.2
 curl -LO "https://github.com/hegeng1212/Kako-Code/releases/download/v${VERSION}/kako-${VERSION}-macos.pkg"
 sudo installer -pkg "kako-${VERSION}-macos.pkg" -target /
 ```
@@ -129,7 +129,7 @@ sudo installer -pkg "kako-${VERSION}-macos.pkg" -target /
 ```bash
 cd kako
 git fetch origin
-git checkout v0.2.1
+git checkout v0.2.2
 pnpm install
 pnpm build
 ```
@@ -147,7 +147,7 @@ pnpm build
 验证：
 
 ```bash
-kako --version   # 应显示 0.2.1
+kako --version   # 应显示 0.2.2
 ```
 
 ## 卸载

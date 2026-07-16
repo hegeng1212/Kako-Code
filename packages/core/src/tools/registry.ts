@@ -37,6 +37,7 @@ import {
   type FileVersionSnapshot,
 } from "./file-version.js";
 import { validateToolCallInput } from "./tool-input-validation.js";
+import { boundToolResultForModel } from "./oversized-result.js";
 
 export interface ToolRegistryOptions {
   cwd: string;
@@ -52,6 +53,11 @@ export interface ToolRegistryOptions {
   /** Active plan file path when in plan mode (Write/Edit allowed only here). */
   planFilePath?: string;
   worktreeSession?: WorktreeSessionInfo;
+  /** Auto-mode LLM security monitor (bypassPermissions only). */
+  classifyAction?: (
+    toolCall: ToolCall,
+    definition: ToolDefinition,
+  ) => Promise<{ shouldBlock: boolean; category?: string; reason?: string }>;
 }
 
 interface RegisteredTool {
@@ -113,6 +119,7 @@ export class ToolRegistry {
       sessionAllowedHosts: this.sessionAllowedHosts,
       sessionAllowedMcpTools: this.sessionAllowedMcpTools,
       sessionAllowedWorkspacePaths: this.sessionAllowedWorkspacePaths,
+      classifyAction: this.options.classifyAction,
     };
   }
 
@@ -422,7 +429,15 @@ export class ToolRegistry {
         }
       }
       const redacted = redactSecretsInValue(output, policies.security);
-      const result = this.result(toolCall, start, "success", redacted, undefined, audit);
+      let finalOutput: unknown = redacted;
+      if (typeof redacted === "string" && redacted.length > 0) {
+        finalOutput = await boundToolResultForModel({
+          sessionId: this.options.sessionId,
+          toolCallId: toolCall.id,
+          content: redacted,
+        });
+      }
+      const result = this.result(toolCall, start, "success", finalOutput, undefined, audit);
       if (toolCall.name === "Skill") {
         const skillName = toolCall.input.skill ?? toolCall.input.command;
         if (typeof skillName === "string") {

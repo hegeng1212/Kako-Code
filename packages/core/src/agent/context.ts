@@ -32,6 +32,11 @@ export interface MessageBuildOptions {
   /** Formatted pins block (already capped). */
   pinsSection?: string;
   /**
+   * Session-frozen curated notes + user profile (Hermes-style).
+   * Must not refresh mid-session after Memory tool writes.
+   */
+  curatedSnapshot?: string;
+  /**
    * Bounded auto-recall snippets. Must already enforce inject caps.
    * Never pass agentState.detail / DetailLog here.
    */
@@ -150,6 +155,7 @@ export function buildSystemPromptBase(
 export function appendMemoryBootstrapSections(
   system: string,
   options: {
+    curatedSnapshot?: string;
     userProfile?: string;
     factsExcerpt?: string;
     pinsSection?: string;
@@ -158,6 +164,9 @@ export function appendMemoryBootstrapSections(
   },
 ): string {
   let out = system;
+  if (options.curatedSnapshot?.trim()) {
+    out += `\n\n${options.curatedSnapshot.trim()}`;
+  }
   if (options.userProfile?.trim()) {
     out += `\n\n## User Profile\n\n${options.userProfile.trim()}`;
   }
@@ -210,6 +219,7 @@ export async function buildMessages(options: MessageBuildOptions): Promise<LLMMe
     }
   }
   system = appendMemoryBootstrapSections(system, {
+    curatedSnapshot: options.curatedSnapshot,
     userProfile: options.userProfile,
     factsExcerpt: options.factsExcerpt,
     pinsSection: options.pinsSection,

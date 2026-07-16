@@ -80,12 +80,13 @@ export function renderChoiceGroupAnswerLine(
   return `${ansi.muted}${treePrefix}${ansi.reset} ${ansi.muted}·${ansi.reset} ${ansi.text}${item.question}${ansi.reset} ${ansi.muted}→${ansi.reset} ${ansi.text}${answerText}${ansi.reset}`;
 }
 
-/** Full multi-question answer block for the transcript. */
+  /** Full multi-question answer block for the transcript. */
 export function renderChoiceGroupLines(items: ChoiceGroupAnswerItem[]): string[] {
-  if (items.length === 0) return [];
+  const visible = items.filter((item) => item.declined || item.answer.trim().length > 0);
+  if (visible.length === 0) return [];
   const lines = [renderChoiceGroupHeaderLine()];
-  items.forEach((item, index) => {
-    const isLast = index === items.length - 1;
+  visible.forEach((item, index) => {
+    const isLast = index === visible.length - 1;
     const treePrefix = isLast ? "└" : "│";
     lines.push(renderChoiceGroupAnswerLine(item, treePrefix));
   });

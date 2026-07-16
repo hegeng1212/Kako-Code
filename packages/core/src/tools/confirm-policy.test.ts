@@ -1,11 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { agentToolDefinition } from "./builtin/agent-tool.js";
 import { bashToolDefinition } from "./builtin/bash.js";
+import { enterPlanModeToolDefinition } from "./builtin/enter-plan-mode.js";
+import { exitPlanModeToolDefinition } from "./builtin/exit-plan-mode.js";
 import { taskUpdateToolDefinition } from "./builtin/task-update.js";
 import { writeToolDefinition } from "./builtin/write.js";
 import { toolCallNeedsUserConfirm } from "./confirm-policy.js";
 
 describe("toolCallNeedsUserConfirm", () => {
+  it("never requires confirm for EnterPlanMode (mode switch; ExitPlanMode is the gate)", () => {
+    const call = { id: "1", name: "EnterPlanMode", input: {} };
+    for (const mode of ["default", "plan", "acceptEdits", "bypassPermissions"] as const) {
+      expect(toolCallNeedsUserConfirm(call, enterPlanModeToolDefinition, mode)).toBe(false);
+    }
+  });
+
+  it("still requires confirm for ExitPlanMode in default mode", () => {
+    expect(
+      toolCallNeedsUserConfirm(
+        { id: "1", name: "ExitPlanMode", input: {} },
+        exitPlanModeToolDefinition,
+        "default",
+      ),
+    ).toBe(true);
+  });
+
   it("never requires confirm for Agent in any permission mode", () => {
     const call = {
       id: "1",

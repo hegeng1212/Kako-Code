@@ -1,4 +1,5 @@
 import { registerBackgroundTask, stopBackgroundTask } from "../background/task-store.js";
+import { sessionManager } from "../session/manager.js";
 import { updateWorkflowRun } from "./store.js";
 
 const controllers = new Map<string, AbortController>();
@@ -17,19 +18,31 @@ export class WorkflowStoppedError extends Error {
 export function registerWorkflowAbort(
   sessionId: string,
   taskId: string,
-  runId: string,
+  _runId: string,
 ): AbortController {
   const controller = new AbortController();
   controllers.set(key(sessionId, taskId), controller);
 
-  registerBackgroundTask(sessionId, taskId, "workflow", async () => {
+  // Abort only signals cancel. Do NOT stamp "Stopped by user" here —
+  // process-exit checkpointing must still see status=running so reconcile can
+  // write an interrupted (resumable) checkpoint. Explicit TaskStop writes the
+  // user-stop terminal state in stopWorkflowByTaskId.
+  registerBackgroundTask(sessionId, taskId, "workflow", () => {
     controller.abort();
-    await updateWorkflowRun(sessionId, runId, {
-      status: "stopped",
-      completedAt: new Date().toISOString(),
-      error: "Stopped by user",
-    });
   });
+
+  // Persist immediately so Agents Working survives until turn-end classifier runs,
+  // and so Ctrl+C leaves a recoverable agentState (reconciled on next startup).
+  void sessionManager
+    .updateSession(sessionId, {
+      agentState: {
+        state: "working",
+        detail: "background workflow running",
+        tempo: "active",
+        since: new Date().toISOString(),
+      },
+    })
+    .catch(() => {});
 
   return controller;
 }
@@ -57,6 +70,22 @@ export async function stopWorkflowByTaskId(
 ): Promise<{ success: boolean; message?: string }> {
   const result = await stopBackgroundTask(sessionId, taskId);
   clearWorkflowAbort(sessionId, taskId);
+  if (result.success) {
+    try {
+      const { loadWorkflowRuns } = await import("./store.js");
+      const runs = await loadWorkflowRuns(sessionId);
+      const run = runs.find((entry) => entry.taskId === taskId);
+      if (run && (run.status === "running" || run.status === "pending")) {
+        await updateWorkflowRun(sessionId, run.runId, {
+          status: "stopped",
+          completedAt: new Date().toISOString(),
+          error: "Stopped by user",
+        });
+      }
+    } catch {
+      // Best-effort terminal write — abort signal already delivered.
+    }
+  }
   return { success: result.success, message: result.message };
 }
 

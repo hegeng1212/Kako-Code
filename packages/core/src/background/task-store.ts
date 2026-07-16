@@ -16,7 +16,7 @@ export function registerBackgroundTask(
   id: string,
   kind: BackgroundTaskKind,
   abort: () => void | Promise<void>,
-  meta?: Pick<BackgroundTask, "description" | "subagentName" | "childSessionId">,
+  meta?: Pick<BackgroundTask, "description" | "subagentName" | "childSessionId" | "blocking">,
 ): BackgroundTask {
   const task: BackgroundTask = {
     id,
@@ -37,6 +37,27 @@ export function getBackgroundTask(sessionId: string, taskId: string): Background
 
 export function listBackgroundTasks(sessionId: string): BackgroundTask[] {
   return [...sessionMap(sessionId).values()];
+}
+
+/** All registered background tasks across sessions (including stopped). */
+export function listAllBackgroundTasks(): BackgroundTask[] {
+  const out: BackgroundTask[] = [];
+  for (const map of sessionTasks.values()) {
+    out.push(...map.values());
+  }
+  return out;
+}
+
+/** Sessions that still have in-flight agent or workflow background work. */
+export function sessionsWithRunningBackgroundWork(): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const task of listAllBackgroundTasks()) {
+    if (task.stopped) continue;
+    if (task.kind === "agent" || task.kind === "workflow") {
+      ids.add(task.sessionId);
+    }
+  }
+  return ids;
 }
 
 export async function stopBackgroundTask(sessionId: string, taskId: string): Promise<TaskStopResult> {

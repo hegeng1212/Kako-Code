@@ -21,6 +21,7 @@ export const agentToolDefinition: ToolDefinition = {
   name: "Agent",
   description: AGENT_DESCRIPTION,
   inputSchema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
     type: "object",
     additionalProperties: false,
     properties: {
@@ -94,16 +95,14 @@ export function assertSubAgentSpawnAllowed(
   return subagentName;
 }
 
+/** Foreground Agent tool result: plain subagent reply (last message body for the parent). */
 export function formatSubAgentResult(
-  subagentName: string,
-  description: string,
+  _subagentName: string,
+  _description: string,
   responseText: string,
 ): string {
-  return [
-    `Agent "${subagentName}" completed: ${description}`,
-    "",
-    responseText || "(no text response)",
-  ].join("\n");
+  const text = responseText.trim();
+  return text || "(no text response)";
 }
 
 export function createAgentHandler(host: AgentToolHost): ToolHandler {

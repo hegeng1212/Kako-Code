@@ -18,6 +18,7 @@ export {
 } from "./loader.js";
 export {
   SYSTEM_SKILL_REGISTRY,
+  BUILTIN_SLASH_MENU_ENTRIES,
   skillNamesForToolAllowlist,
   getSystemSkillEntry,
   isSlashInvokableSkill,

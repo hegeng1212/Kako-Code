@@ -40,6 +40,7 @@ const REQUIRED_TOOL_TESTS: Record<string, string[]> = {
   MemorySearch: ["memory-search.test.ts"],
   MemoryGet: ["memory-get.test.ts"],
   MemoryPin: ["memory-pin.test.ts"],
+  Memory: ["memory-curated.test.ts"],
 };
 
 describe("builtin tool test coverage gate", () => {

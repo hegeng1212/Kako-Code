@@ -92,7 +92,7 @@ export function pinLeftColumnBottom(
 export function renderClaudeInputLine(placeholder: string): string {
   const cursor = `${ansi.placeholder}\x1b[7m \x1b[27m${ansi.placeholder}`;
   const tail = placeholder.length > 1 ? placeholder.slice(1) : "";
-  return `${ansi.text}${ansi.bold}>${ansi.reset} ${cursor}${tail}${ansi.reset}`;
+  return `${ansi.text}>${ansi.reset} ${cursor}${tail}${ansi.reset}`;
 }
 
 export interface ClaudeFooterParts {

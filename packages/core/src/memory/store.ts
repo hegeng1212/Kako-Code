@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
@@ -177,6 +177,17 @@ export async function truncateSessionTranscript(
 ): Promise<void> {
   const store = new FileMemoryStore(sessionId);
   await store.truncateTranscript(length);
+}
+
+/** Wipe L0 transcript and L1 summary so the next turn is system + new user input only. */
+export async function clearSessionConversation(sessionId: SessionId): Promise<void> {
+  const store = new FileMemoryStore(sessionId);
+  await store.rewriteTranscript([]);
+  try {
+    await rm(summaryPath(sessionId), { force: true });
+  } catch {
+    // no summary yet
+  }
 }
 
 /** User prompts from L0 transcript for CLI input history (↑/↓). */

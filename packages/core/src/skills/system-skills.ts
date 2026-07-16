@@ -17,6 +17,16 @@ export interface SystemSkillEntry {
   slashOnly?: boolean;
 }
 
+/** CLI slash autocomplete only — not agent Skill() catalog entries. */
+export const BUILTIN_SLASH_MENU_ENTRIES: SystemSkillEntry[] = [
+  {
+    name: "clear",
+    slashOnly: true,
+    handler: "skill",
+    description: "Clear the chat screen and conversation context",
+  },
+];
+
 export const SYSTEM_SKILL_REGISTRY: SystemSkillEntry[] = [
   {
     name: "plan",
@@ -25,10 +35,22 @@ export const SYSTEM_SKILL_REGISTRY: SystemSkillEntry[] = [
     description: "View the session plan, enter plan mode, or open the plan in VS Code",
   },
   {
-    name: "workflows",
+    name: "auto",
     slashOnly: true,
     handler: "skill",
-    description: "Browse running and completed workflows",
+    description: "Enter auto mode (mid/low-risk tools proceed without prompts)",
+  },
+  {
+    name: "manual",
+    slashOnly: true,
+    handler: "skill",
+    description: "Enter manual mode (default permission approvals)",
+  },
+  {
+    name: "workflows",
+    handler: "skill",
+    description:
+      "List running and completed workflows for this session (status only). Users can open the fullscreen panel with /workflows.",
   },
   {
     name: "deep-research",
@@ -73,6 +95,16 @@ export async function loadSystemSkills(): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
   for (const entry of SYSTEM_SKILL_REGISTRY) {
     if (entry.slashOnly) continue;
+    if (entry.name === "workflows") {
+      skills.push({
+        name: "workflows",
+        description: entry.description,
+        path: "",
+        skillMdPath: "",
+        instructions: "",
+      });
+      continue;
+    }
     const skillFile = join(bundled, entry.name, "SKILL.md");
     try {
       const content = await readFile(skillFile, "utf-8");
@@ -126,7 +158,9 @@ export function mergeSkillsForAgent(
 
 /** Slash-only system skills — built-in slash commands, not loaded from skills/. */
 export async function loadSlashOnlyCatalogSkills(): Promise<SkillDefinition[]> {
-  return SYSTEM_SKILL_REGISTRY.filter((entry) => entry.slashOnly).map((entry) => ({
+  return SYSTEM_SKILL_REGISTRY.filter(
+    (entry) => entry.slashOnly || entry.name === "workflows",
+  ).map((entry) => ({
     name: entry.name,
     description: entry.description,
     path: "",
@@ -167,5 +201,5 @@ export async function listSlashInvokableSkills(
   const user = [...byName.values()]
     .filter((entry) => !isSystemSkill(entry.name))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return [...system, ...user];
+  return [...BUILTIN_SLASH_MENU_ENTRIES, ...system, ...user];
 }

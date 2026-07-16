@@ -4,6 +4,10 @@ export interface InlineStyle {
   bold?: boolean;
   italic?: boolean;
   code?: boolean;
+  /** File / resource path — light blue, no background. */
+  path?: boolean;
+  /** Count-like quantity (12+, 50%, “12 家”) — not list ordinals. */
+  quantity?: boolean;
   link?: string;
 }
 
@@ -21,7 +25,11 @@ function mergeParts(parts: InlinePart[]): InlinePart[] {
       prev &&
       styleKey(prev.style) === styleKey(part.style) &&
       !prev.style.code &&
-      !part.style.code
+      !part.style.code &&
+      !prev.style.path &&
+      !part.style.path &&
+      !prev.style.quantity &&
+      !part.style.quantity
     ) {
       prev.text += part.text;
       continue;
@@ -32,31 +40,60 @@ function mergeParts(parts: InlinePart[]): InlinePart[] {
 }
 
 function styleKey(style: InlineStyle): string {
-  return `${style.bold ? "b" : ""}${style.italic ? "i" : ""}${style.code ? "c" : ""}${style.link ?? ""}`;
+  return `${style.bold ? "b" : ""}${style.italic ? "i" : ""}${style.code ? "c" : ""}${style.path ? "p" : ""}${style.quantity ? "q" : ""}${style.link ?? ""}`;
 }
 
-/** Absolute paths and shell commands rendered as inline pills (Claude Code-style). */
+/**
+ * Absolute / home / relative file or directory paths.
+ * Directories may end with `/`; files need an extension or 2+ path segments.
+ */
 const INLINE_PATH_RE =
-  /(?:~\/|\/(?:Users|tmp|home|var|opt|etc|usr|private)(?:\/[\w.\-+~]+)+|\/[\w.\-+~]+(?:\/[\w.\-+~]+)+\.\w{1,8})/g;
+  /(?:~\/[\w.\-+~/]+\/?|\/(?:Users|tmp|home|var|opt|etc|usr|private)(?:\/[\w.\-+~]+)+\/?|\/[\w.\-+~]+(?:\/[\w.\-+~]+)+(?:\/|\.\w{1,12})?|\b[\w.\-+]+(?:\/[\w.\-+]+)+(?:\/|\.\w{1,12})\b)/g;
 const INLINE_COMMAND_RE =
   /\b(?:python3?|node|npm|pnpm|npx|bash|sh|cargo|rustc|go run)\s+[^\s,;。，)）]+/g;
 const INLINE_EXPR_RE =
   /\b\d+(?:\.\d+)?\s*\+\s*\d+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\s*=\s*\d+(?:\.\d+)?\b/g;
+/**
+ * Quantities / counts — not CJK/ASCII list ordinals (`1、` / leading `1.`).
+ * Structural: `12+`, `50%`, or a number before a Han measure phrase (`12 家`).
+ */
+const INLINE_QUANTITY_RE =
+  /\b\d+(?:\.\d+)?\+|\b\d+(?:\.\d+)?%|\b\d+(?:\.\d+)?(?=\s+\p{Script=Han})/gu;
+
+type PlainMatchKind = "path" | "code" | "quantity";
+
+/** Structural path shape (file or directory) — not domain-specific lists. */
+export function looksLikePath(text: string): boolean {
+  const trimmed = text.trim().replace(/^`+|`+$/g, "");
+  if (!trimmed) return false;
+  if (trimmed.startsWith("~/") || trimmed.startsWith("/")) return true;
+  if (/^[\w.\-+]+(?:\/[\w.\-+]+)+\/$/.test(trimmed)) return true;
+  if (/^[\w.\-+]+(?:\/[\w.\-+]+)+\.\w{1,12}$/.test(trimmed)) return true;
+  // Multi-segment path without extension (package / dir references).
+  if (/^[\w.\-+]+(?:\/[\w.\-+]+){2,}$/.test(trimmed)) return true;
+  return /(?:^|[\s`"'(])[\w.\-+]+(?:\/[\w.\-+]+)+(?:\/|\.\w{1,12})\b/.test(` ${trimmed}`);
+}
 
 function splitPlainTextTokens(text: string): InlinePart[] {
   if (!text) return [];
-  const matches: Array<{ start: number; end: number; value: string }> = [];
-  const patterns = [INLINE_PATH_RE, INLINE_COMMAND_RE, INLINE_EXPR_RE];
+  const matches: Array<{ start: number; end: number; value: string; kind: PlainMatchKind }> = [];
+  const patterns: Array<{ re: RegExp; kind: PlainMatchKind }> = [
+    { re: INLINE_PATH_RE, kind: "path" },
+    // Arithmetic before quantities so "23 + 47" is not split by Han-lookahead counts.
+    { re: INLINE_EXPR_RE, kind: "code" },
+    { re: INLINE_QUANTITY_RE, kind: "quantity" },
+    { re: INLINE_COMMAND_RE, kind: "code" },
+  ];
 
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0;
-    for (const match of text.matchAll(pattern)) {
+  for (const { re, kind } of patterns) {
+    re.lastIndex = 0;
+    for (const match of text.matchAll(re)) {
       const value = match[0];
       if (!value) continue;
       const start = match.index ?? 0;
       const end = start + value.length;
       const overlaps = matches.some((m) => start < m.end && end > m.start);
-      if (!overlaps) matches.push({ start, end, value });
+      if (!overlaps) matches.push({ start, end, value, kind });
     }
   }
 
@@ -67,13 +104,41 @@ function splitPlainTextTokens(text: string): InlinePart[] {
     if (match.start > cursor) {
       parts.push({ text: text.slice(cursor, match.start), style: {} });
     }
-    parts.push({ text: match.value, style: { code: true } });
+    const style: InlineStyle =
+      match.kind === "path"
+        ? { path: true }
+        : match.kind === "quantity"
+          ? { quantity: true }
+          : { code: true };
+    parts.push({ text: match.value, style });
     cursor = match.end;
   }
   if (cursor < text.length) {
     parts.push({ text: text.slice(cursor), style: {} });
   }
   return parts.length ? parts : [{ text, style: {} }];
+}
+
+/** Mid-word `_x_` / `*x*` is not emphasis (paths like open_api/… must stay intact). */
+function canOpenEmphasis(input: string, index: number, marker: string): boolean {
+  if (input[index] !== marker) return false;
+  const prev = index > 0 ? input[index - 1]! : "";
+  if (/[\w]/.test(prev)) return false;
+  return true;
+}
+
+/**
+ * Next index that can start a markdown inline construct.
+ * Mid-word `_` / `*` (e.g. ai_memory, factory.go neighbors) must not split the scan,
+ * or path highlighting only paints the suffix (looks like `.go` is a separate color).
+ */
+function findNextInlineSpecial(input: string, from: number): number {
+  for (let i = from; i < input.length; i++) {
+    const ch = input[i]!;
+    if (ch === "`" || ch === "[") return i;
+    if ((ch === "*" || ch === "_") && canOpenEmphasis(input, i, ch)) return i;
+  }
+  return -1;
 }
 
 /** Parse inline markdown into styled text segments. */
@@ -86,7 +151,11 @@ export function parseInlineParts(input: string): InlinePart[] {
 
     const codeMatch = /^`([^`]+)`/.exec(rest);
     if (codeMatch) {
-      parts.push({ text: codeMatch[1]!, style: { code: true } });
+      const body = codeMatch[1]!;
+      parts.push({
+        text: body,
+        style: looksLikePath(body) ? { path: true } : { code: true },
+      });
       index += codeMatch[0].length;
       continue;
     }
@@ -105,22 +174,26 @@ export function parseInlineParts(input: string): InlinePart[] {
       continue;
     }
 
-    const italicMatch = /^\*([^*]+)\*/.exec(rest);
-    if (italicMatch) {
-      parts.push({ text: italicMatch[1]!, style: { italic: true } });
-      index += italicMatch[0].length;
-      continue;
+    if (canOpenEmphasis(input, index, "*")) {
+      const italicMatch = /^\*([^*]+)\*/.exec(rest);
+      if (italicMatch) {
+        parts.push({ text: italicMatch[1]!, style: { italic: true } });
+        index += italicMatch[0].length;
+        continue;
+      }
     }
 
-    const underlineMatch = /^_([^_]+)_/.exec(rest);
-    if (underlineMatch) {
-      parts.push({ text: underlineMatch[1]!, style: { italic: true } });
-      index += underlineMatch[0].length;
-      continue;
+    if (canOpenEmphasis(input, index, "_")) {
+      const underlineMatch = /^_([^_]+)_/.exec(rest);
+      if (underlineMatch) {
+        parts.push({ text: underlineMatch[1]!, style: { italic: true } });
+        index += underlineMatch[0].length;
+        continue;
+      }
     }
 
-    const nextSpecial = rest.slice(1).search(/[`[*_]/);
-    const end = nextSpecial === -1 ? rest.length : nextSpecial + 1;
+    const nextSpecial = findNextInlineSpecial(input, index + 1);
+    const end = nextSpecial === -1 ? rest.length : nextSpecial - index;
     parts.push(...splitPlainTextTokens(rest.slice(0, end)));
     index += end;
   }
@@ -129,8 +202,17 @@ export function parseInlineParts(input: string): InlinePart[] {
 }
 
 export function renderInlinePart(part: InlinePart): string {
+  // File / folder paths — light cyan/blue (distinct from inline code).
+  if (part.style.path) {
+    return `${ansi.blue}${part.text}${ansi.reset}`;
+  }
+  // Quantities / counts — warm yellow (distinct from white ordinals).
+  if (part.style.quantity) {
+    return `${ansi.yellow}${part.text}${ansi.reset}`;
+  }
+  // Inline `code` — soft yellow (not the same as paths).
   if (part.style.code) {
-    return `${ansi.line}${ansi.codeBg}${ansi.text} ${part.text} ${ansi.reset}`;
+    return `${ansi.yellow}${part.text}${ansi.reset}`;
   }
   if (part.style.link) {
     return `${ansi.accent}${part.text}${ansi.reset}${ansi.muted} (${part.style.link})${ansi.reset}`;
@@ -183,7 +265,15 @@ export function wrapInlineParts(
     if (needsSpace && lineWidth > 0) {
       const currentLine = lines[lines.length - 1]!;
       const lastPart = currentLine[currentLine.length - 1];
-      if (lastPart && !lastPart.style.code && !part.style.code) {
+      if (
+        lastPart &&
+        !lastPart.style.code &&
+        !part.style.code &&
+        !lastPart.style.path &&
+        !part.style.path &&
+        !lastPart.style.quantity &&
+        !part.style.quantity
+      ) {
         lastPart.text += " ";
         lineWidth += 1;
       }
@@ -200,7 +290,7 @@ export function wrapInlineParts(
   };
 
   for (const part of parts) {
-    if (part.style.code) {
+    if (part.style.code || part.style.path || part.style.quantity) {
       pushPart(part);
       continue;
     }

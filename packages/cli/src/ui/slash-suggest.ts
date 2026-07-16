@@ -10,10 +10,17 @@ const SLASH_CMD_UNSELECTED = ansi.muted;
 const SLASH_DESC_SELECTED = ansi.text;
 const SLASH_DESC_UNSELECTED = ansi.muted;
 
+export type SlashInputTone = "muted" | "bright";
+
 /** Input line: slash command token uses the same cyan as the suggest menu. */
-export function renderSlashInputText(value: string): string {
+export function renderSlashInputText(
+  value: string,
+  opts?: { tone?: SlashInputTone },
+): string {
+  const bodyTone = opts?.tone === "bright" ? ansi.text : ansi.muted;
   if (!value.startsWith("/")) {
-    return `${ansi.text}${value}${ansi.reset}`;
+    // Input box: muted. Chat history user bar: bright (white on dark strip).
+    return `${bodyTone}${value}${ansi.reset}`;
   }
   const spaceIdx = value.indexOf(" ");
   if (spaceIdx === -1) {
@@ -21,7 +28,7 @@ export function renderSlashInputText(value: string): string {
   }
   const command = value.slice(0, spaceIdx);
   const args = value.slice(spaceIdx);
-  return `${SLASH_CMD_SELECTED}${command}${ansi.reset}${ansi.text}${args}${ansi.reset}`;
+  return `${SLASH_CMD_SELECTED}${command}${ansi.reset}${bodyTone}${args}${ansi.reset}`;
 }
 
 function padPlain(text: string, width: number): string {

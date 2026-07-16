@@ -56,11 +56,19 @@ export const exitPlanModeHandler: ToolHandler = async (input, context) => {
   const planPath = context.getPlanFilePath?.();
   const planText = planPath ? await readPlanFile(planPath) : "";
 
-  context.setPermissionMode(context.getApprovedPermissionMode?.() ?? "default");
+  const approvedMode = context.getApprovedPermissionMode?.() ?? "default";
+  context.setPermissionMode(approvedMode);
   context.setPlanFilePath?.(undefined);
 
+  const modeNote =
+    approvedMode === "bypassPermissions"
+      ? "User approved — auto mode is on. Start implementing now."
+      : approvedMode === "acceptEdits"
+        ? "User approved — accept edits is on. Start implementing now."
+        : "User approved. Start implementing now.";
+
   const lines = [
-    "Exited plan mode. User approval requested — implement only after they confirm.",
+    `Exited plan mode. ${modeNote}`,
     "Write, Edit, and Bash are enabled again.",
   ];
 

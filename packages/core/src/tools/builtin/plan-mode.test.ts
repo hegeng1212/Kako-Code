@@ -96,13 +96,26 @@ describe("plan-mode-shared", () => {
 });
 
 describe("EnterPlanMode tool definition", () => {
-  it("matches Claude Code schema and description", () => {
+  it("matches Claude Code / Cursor EnterPlanMode description and schema", () => {
+    expect(enterPlanModeToolDefinition.name).toBe("EnterPlanMode");
+    expect(enterPlanModeToolDefinition.inputSchema.$schema).toBe(
+      "https://json-schema.org/draft/2020-12/schema",
+    );
+    expect(enterPlanModeToolDefinition.inputSchema.type).toBe("object");
     expect(enterPlanModeToolDefinition.inputSchema.additionalProperties).toBe(false);
     expect(enterPlanModeToolDefinition.inputSchema.properties).toEqual({});
+    expect(enterPlanModeToolDefinition.description).toContain("proactively");
     expect(enterPlanModeToolDefinition.description).toContain("When to Use This Tool");
+    expect(enterPlanModeToolDefinition.description).toContain("When NOT to Use This Tool");
+    expect(enterPlanModeToolDefinition.description).toContain("New Feature Implementation");
+    expect(enterPlanModeToolDefinition.description).toContain("Pure research/exploration tasks");
     expect(enterPlanModeToolDefinition.description).toContain("What Happens in Plan Mode");
-    expect(enterPlanModeToolDefinition.description).toContain("Agent tool with explore agent");
-    expect(enterPlanModeToolDefinition.requiresConfirmation).toBe(true);
+    expect(enterPlanModeToolDefinition.description).toContain("### GOOD - Use EnterPlanMode:");
+    expect(enterPlanModeToolDefinition.description).toContain("### BAD - Don't use EnterPlanMode:");
+    expect(enterPlanModeToolDefinition.description).toContain("err on the side of planning");
+    expect(enterPlanModeToolDefinition.description).toContain('User: "Add user authentication');
+    expect(enterPlanModeToolDefinition.requiresConfirmation).toBe(false);
+    expect(enterPlanModeToolDefinition.description).not.toMatch(/REQUIRES user approval/i);
   });
 });
 
@@ -115,7 +128,10 @@ describe("ExitPlanMode tool definition", () => {
     expect(exitPlanModeToolDefinition.description).toContain(
       "does NOT take the plan content as a parameter",
     );
-    expect(exitPlanModeToolDefinition.description).toContain("Do NOT use AskUserQuestion");
+    expect(exitPlanModeToolDefinition.description).toContain("IMPORTANT");
+    expect(exitPlanModeToolDefinition.description).toContain("Is this plan okay?");
+    expect(exitPlanModeToolDefinition.description).toContain("bypassPermissions");
+    expect(exitPlanModeToolDefinition.description).not.toMatch(/vim mode/);
     expect(exitPlanModeToolDefinition.requiresConfirmation).toBe(true);
   });
 });
@@ -148,6 +164,8 @@ describe("EnterPlanMode / ExitPlanMode handlers", () => {
       },
     );
     expect(String(out)).toContain("Exited plan mode");
+    expect(String(out)).toContain("Start implementing now");
+    expect(String(out)).toContain("auto mode is on");
     expect(String(out)).toContain("Step 1");
     expect(String(out)).toContain("run tests");
     expect(ctx.getPermissionMode?.()).toBe("bypassPermissions");

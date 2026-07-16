@@ -28,7 +28,7 @@ const ANIMALS = [
 
 function topicPrefix(hint?: string): string {
   const trimmed = (hint ?? "").trim();
-  if (!trimmed || trimmed === "New chat") return "plan";
+  if (!trimmed || trimmed === "New chat" || trimmed === "new session") return "plan";
   const firstWord = trimmed.split(/\s+/)[0] ?? "";
   const slug = firstWord
     .toLowerCase()

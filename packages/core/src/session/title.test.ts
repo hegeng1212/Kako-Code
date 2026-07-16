@@ -5,6 +5,16 @@ import {
   SESSION_TITLE_SYSTEM_PROMPT,
 } from "./title.js";
 
+describe("SESSION_TITLE_SYSTEM_PROMPT", () => {
+  it("asks for sentence-case JSON titles for coding sessions", () => {
+    expect(SESSION_TITLE_SYSTEM_PROMPT).toContain("coding session");
+    expect(SESSION_TITLE_SYSTEM_PROMPT).toContain('Return JSON with a single "title" field.');
+    expect(SESSION_TITLE_SYSTEM_PROMPT).toContain("sentence-case");
+    expect(SESSION_TITLE_SYSTEM_PROMPT).toContain('{"title": "Fix login button on mobile"}');
+    expect(SESSION_TITLE_SYSTEM_PROMPT).toContain("Bad (wrong case)");
+  });
+});
+
 describe("buildSessionTitleMessages", () => {
   it("wraps user input in session tags", () => {
     const messages = buildSessionTitleMessages("帮我设计一个AI客服产品");

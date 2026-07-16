@@ -3,6 +3,7 @@ import { wrapUserMessageForLlm } from "../../agent/context.js";
 import { loadSkill } from "../../skills/loader.js";
 import { isSlashOnlySystemSkill, isSystemSkill } from "../../skills/system-skills.js";
 import { INIT_SLASH_CORE_PROMPT } from "../../skills/slash-command-message.js";
+import { formatSessionWorkflowsStatus } from "../../workflows/status-summary.js";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import {
   CLAUDE_SKILL_ARGS_DESCRIPTION,
@@ -155,6 +156,10 @@ export const skillHandler: ToolHandler = async (input, context) => {
   }
 
   assertSkillAllowed(parsed.skill, context.allowedSkills);
+
+  if (parsed.skill === "workflows") {
+    return formatSessionWorkflowsStatus(context.sessionId);
+  }
 
   if (isSlashOnlySystemSkill(parsed.skill)) {
     throw new Error(`Skill "${parsed.skill}" is only available as a slash command (/${parsed.skill})`);

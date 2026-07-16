@@ -39,6 +39,7 @@ export const BUILTIN_SECURITY_METADATA: Record<string, ToolSecurityMetadata> = {
   MemorySearch: { readonly: true, capability: ["read"], defaultRiskLevel: "none" },
   MemoryGet: { readonly: true, capability: ["read"], defaultRiskLevel: "none" },
   MemoryPin: { defaultRiskLevel: "none" },
+  Memory: { defaultRiskLevel: "none" },
 };
 
 export function applySecurityMetadata(definition: ToolDefinition): ToolDefinition {

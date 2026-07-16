@@ -88,6 +88,8 @@ export async function initializeKakoHome(): Promise<KakoHomeInitResult> {
     join(getMemoryDir(), "summaries", "rolling"),
     join(getMemoryDir(), "facts"),
     join(getMemoryDir(), "profile"),
+    join(getMemoryDir(), "curated"),
+    join(getMemoryDir(), "pending"),
     join(getMemoryDir(), "episodes"),
     getLogsDir(),
     join(getLogsDir(), "tools"),

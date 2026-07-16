@@ -1,5 +1,7 @@
-import { ansi } from "./ansi.js";
+import { ansi, displayWidth } from "./ansi.js";
+import { realignAsciiArtLines } from "./markdown-ascii-art.js";
 import { parseMarkdownBlocks, type MarkdownBlock } from "./markdown-blocks.js";
+import { clipToDisplayWidth, highlightCodeLine } from "./markdown-code-highlight.js";
 import { parseInlineParts, wrapInlineParts } from "./markdown-inline.js";
 import { renderTableLines } from "./markdown-table.js";
 
@@ -9,38 +11,48 @@ function gapBefore(lines: string[]): void {
   }
 }
 
-function renderHeading(text: string, level: number, width: number): string[] {
+function renderHeading(text: string, _level: number, width: number): string[] {
   const content = wrapInlineParts(parseInlineParts(text), width);
-  if (level === 1) {
-    return content.map((line) => `${ansi.accentBold}${line}${ansi.reset}`);
-  }
-  if (level === 2) {
-    return content.map((line) => `${ansi.accent}${ansi.bold}${line}${ansi.reset}`);
-  }
-  return content.map((line) => `${ansi.bold}${line}${ansi.reset}`);
+  // All heading levels: white bold (not coral/red accent).
+  return content.map((line) => `${ansi.bold}${ansi.text}${line}${ansi.reset}`);
 }
 
-function renderCodeBlock(lines: string[], width: number): string[] {
-  const innerWidth = Math.max(20, width - 4);
+/** Fenced code — syntax colors, no left gutter bar, no background strip. */
+function renderCodeBlock(lines: string[], width: number, language?: string): string[] {
+  const innerWidth = Math.max(20, width);
   const out: string[] = [];
   gapBefore(out);
+  const source = realignAsciiArtLines(lines);
 
-  for (const line of lines) {
-    const content = line.length > innerWidth ? line.slice(0, innerWidth) : line;
-    out.push(
-      `${ansi.line}│${ansi.reset} ${ansi.line}${ansi.codeBg}${ansi.text} ${content.padEnd(innerWidth)} ${ansi.reset}`,
-    );
+  for (const line of source) {
+    const clipped = clipToDisplayWidth(line, innerWidth);
+    const highlighted = highlightCodeLine(clipped, language);
+    const pad = Math.max(0, innerWidth - displayWidth(clipped));
+    out.push(`${highlighted}${" ".repeat(pad)}`);
   }
 
-  if (lines.length === 0) {
-    out.push(`${ansi.line}│${ansi.reset} ${ansi.muted}(empty)${ansi.reset}`);
+  if (source.length === 0) {
+    out.push(`${ansi.muted}(empty)${ansi.reset}`);
   }
 
   return out;
 }
 
+/** Unfenced ASCII / box diagrams — preserve spaces; align right borders. */
+function renderPreBlock(lines: string[], width: number): string[] {
+  const innerWidth = Math.max(20, width);
+  const out: string[] = [];
+  gapBefore(out);
+  for (const line of realignAsciiArtLines(lines)) {
+    const clipped = clipToDisplayWidth(line, innerWidth);
+    out.push(`${ansi.text}${clipped}${ansi.reset}`);
+  }
+  return out;
+}
+
 function renderBlockquote(lines: string[], width: number): string[] {
-  const prefix = `${ansi.line}▏${ansi.reset} `;
+  // Soft quote marker (not a heavy black bar).
+  const prefix = `${ansi.muted}▎${ansi.reset} `;
   const innerWidth = Math.max(10, width - 2);
   const out: string[] = [];
 
@@ -54,19 +66,29 @@ function renderBlockquote(lines: string[], width: number): string[] {
   return out;
 }
 
-function renderList(items: string[], width: number, ordered: boolean): string[] {
+function renderList(
+  items: string[],
+  width: number,
+  ordered: boolean,
+  connectors?: readonly string[],
+): string[] {
   const out: string[] = [];
   const indent = "  ";
   const innerWidth = Math.max(10, width - indent.length - 4);
 
   items.forEach((item, index) => {
     const marker = ordered ? `${index + 1}.` : "•";
-    const prefix = `${indent}${ansi.muted}${marker}${ansi.reset} `;
+    // Ordinals / bullets stay white; quantity tokens inside the item use inline colors.
+    const prefix = `${indent}${ansi.text}${marker}${ansi.reset} `;
     const wrapped = wrapInlineParts(parseInlineParts(item), innerWidth);
     wrapped.forEach((line, lineIndex) => {
       out.push(lineIndex === 0 ? `${prefix}${line}` : `${indent}   ${line}`);
     });
     if (index < items.length - 1) {
+      const connector = connectors?.[index];
+      if (connector) {
+        out.push(`${indent}  ${ansi.text}${connector}${ansi.reset}`);
+      }
       out.push("");
     }
   });
@@ -76,7 +98,19 @@ function renderList(items: string[], width: number, ordered: boolean): string[] 
 
 function renderHorizontalRule(width: number): string[] {
   const ruleWidth = Math.min(Math.max(20, width), 48);
-  return [`${ansi.line}${"─".repeat(ruleWidth)}${ansi.reset}`];
+  return [`${ansi.muted}${"─".repeat(ruleWidth)}${ansi.reset}`];
+}
+
+function renderParagraphLine(text: string, width: number): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  const ordinal = /^(\d+\.)(\s+)(.*)$/.exec(trimmed);
+  if (ordinal) {
+    const prefix = `${ansi.text}${ordinal[1]}${ansi.reset}${ordinal[2]}`;
+    const wrapped = wrapInlineParts(parseInlineParts(ordinal[3]!), width);
+    return wrapped.map((line, lineIndex) => (lineIndex === 0 ? `${prefix}${line}` : line));
+  }
+  return wrapInlineParts(parseInlineParts(trimmed), width);
 }
 
 function renderParagraph(text: string, width: number): string[] {
@@ -88,7 +122,7 @@ function renderParagraph(text: string, width: number): string[] {
     for (const chunk of chunks) {
       const trimmed = chunk.trim();
       if (!trimmed) continue;
-      out.push(...wrapInlineParts(parseInlineParts(trimmed), width));
+      out.push(...renderParagraphLine(trimmed, width));
       out.push("");
     }
     if (paragraph !== paragraphs[paragraphs.length - 1]) {
@@ -112,9 +146,11 @@ function renderBlock(block: MarkdownBlock, width: number): string[] {
     case "ul":
       return renderList(block.items, width, false);
     case "ol":
-      return renderList(block.items, width, true);
+      return renderList(block.items, width, true, block.connectors);
     case "code":
-      return renderCodeBlock(block.lines, width);
+      return renderCodeBlock(block.lines, width, block.language);
+    case "pre":
+      return renderPreBlock(block.lines, width);
     case "blockquote":
       return renderBlockquote(block.lines, width);
     case "hr":
@@ -134,13 +170,23 @@ export function renderRichContentLines(text: string, width: number): string[] {
   const lines: string[] = [];
 
   for (const block of blocks) {
-    if (block.type === "table" || block.type === "code" || block.type === "hr") {
+    if (
+      block.type === "table" ||
+      block.type === "code" ||
+      block.type === "pre" ||
+      block.type === "hr"
+    ) {
       gapBefore(lines);
     }
 
     lines.push(...renderBlock(block, wrapWidth));
 
-    if (block.type === "table" || block.type === "code" || block.type === "heading") {
+    if (
+      block.type === "table" ||
+      block.type === "code" ||
+      block.type === "pre" ||
+      block.type === "heading"
+    ) {
       lines.push("");
     }
   }

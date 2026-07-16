@@ -1,7 +1,12 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  formatReadDisplayDetail,
+  formatReadLineRangeLabel,
+  formatToolInvocationLabel,
   isExecutionBashCommand,
   shellCommandStat,
+  stripCwdPrefix,
   toolCallFailurePhrase,
   toolCallStatPhrase,
   toolCallSuccessPhrase,
@@ -23,10 +28,40 @@ describe("tool-call-phrases", () => {
 
   it("uses tool-specific waiting phrases", () => {
     expect(toolCallWaitingPhrase("Read", "/path/a.md")).toBe("Reading /path/a.md");
+    expect(toolCallWaitingPhrase("Read", "/path/a.md L34 - L56")).toBe(
+      "Reading /path/a.md L34 - L56",
+    );
     expect(toolCallWaitingPhrase("Skill", "brainstorming")).toBe(
       "Activating skill brainstorming",
     );
     expect(toolCallWaitingPhrase("Bash", "find .")).toBe("Running find .");
+  });
+
+  it("formats Read line-range labels", () => {
+    expect(formatReadLineRangeLabel({ offset: 34, limit: 23 })).toBe("L34 - L56");
+    expect(formatReadDisplayDetail("/tmp/a.go", { offset: 34, limit: 23 })).toBe(
+      "/tmp/a.go L34 - L56",
+    );
+    expect(formatReadDisplayDetail("/tmp/a.go", {})).toBe("/tmp/a.go");
+  });
+
+  it("strips cwd prefix from tool paths and bash commands", () => {
+    const cwd = "/Users/me/proj";
+    expect(stripCwdPrefix(`${cwd}/AGENTS.md`, cwd)).toBe("AGENTS.md");
+    expect(stripCwdPrefix(`${cwd}/app/api/pkg/llm.go`, cwd)).toBe("app/api/pkg/llm.go");
+    expect(stripCwdPrefix(`ls -la ${cwd}/cmd`, cwd)).toBe("ls -la cmd");
+    expect(stripCwdPrefix("/other/place/a.go", cwd)).toBe("/other/place/a.go");
+    expect(stripCwdPrefix(cwd, cwd)).toBe(".");
+
+    const prev = process.cwd();
+    const abs = path.join(prev, "src", "main.go");
+    expect(formatToolInvocationLabel("Read", abs)).toBe("Read(src/main.go)");
+    expect(formatToolInvocationLabel("Bash", `cat ${path.join(prev, "README.md")}`)).toBe(
+      "Bash(cat README.md)",
+    );
+    expect(formatReadDisplayDetail(abs, { offset: 1, limit: 10 })).toBe("src/main.go L1 - L10");
+    expect(toolCallWaitingPhrase("Read", path.join(prev, "x.md"))).toBe("Reading x.md");
+    expect(toolCallSuccessPhrase("Write", path.join(prev, "out.txt"))).toBe("Wrote out.txt");
   });
 
   it("formats MCP tools", () => {

@@ -6,10 +6,12 @@ import { ToolRegistry } from "../tools/registry.js";
 import { createMessage } from "./store.js";
 
 describe("memory hardening surface invariant", () => {
-  it("keeps MemorySearch/Get/Pin in default builtins", () => {
+  it("keeps MemorySearch/Get/Pin/Memory in default builtins", () => {
     expect(DEFAULT_BUILTIN_TOOL_NAMES).toContain("MemorySearch");
     expect(DEFAULT_BUILTIN_TOOL_NAMES).toContain("MemoryGet");
     expect(DEFAULT_BUILTIN_TOOL_NAMES).toContain("MemoryPin");
+    expect(DEFAULT_BUILTIN_TOOL_NAMES).toContain("Memory");
+    expect(DEFAULT_BUILTIN_TOOL_NAMES).toContain("Read");
   });
 
   it("registerBuiltinTools exposes memory tools via resolveAllToolNames", () => {
@@ -20,7 +22,10 @@ describe("memory hardening surface invariant", () => {
     });
     registerBuiltinTools(registry);
     const names = resolveAllToolNames(registry);
-    expect(names).toEqual(expect.arrayContaining(["MemorySearch", "MemoryGet", "MemoryPin", "Read"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["MemorySearch", "MemoryGet", "MemoryPin", "Memory", "Read"]),
+    );
+    expect(names.length).toBeGreaterThanOrEqual(DEFAULT_BUILTIN_TOOL_NAMES.length);
   });
 
   it("buildMessages still injects skill catalog when provided", async () => {

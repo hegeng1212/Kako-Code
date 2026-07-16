@@ -13,7 +13,7 @@ export const WORKFLOW_CONFIRM_RISK_WARNING =
 export const WORKFLOW_CONFIRM_HINT = `${ansi.muted}Enter to select · ↑/↓ navigate · Esc to cancel${ansi.reset}`;
 
 export interface WorkflowConfirmDecision {
-  action: "run" | "cancel";
+  action: "run" | "run-always" | "cancel";
   scriptPath?: string;
 }
 
@@ -23,9 +23,30 @@ export interface WorkflowConfirmViewState {
   selectedIndex: number;
 }
 
-export function buildWorkflowConfirmChoiceRows(state: WorkflowConfirmViewState): ChoiceRow[] {
+/** Option index of the View raw script / summary toggle row. */
+export const WORKFLOW_CONFIRM_SCRIPT_OPTION_INDEX = 2;
+
+/** Shorten cwd for the don't-ask-again label (home → ~). */
+export function formatWorkflowAllowCwd(cwd: string, home = process.env.HOME ?? ""): string {
+  if (home && cwd.startsWith(home)) {
+    const rest = cwd.slice(home.length);
+    return rest ? `~${rest}` : "~";
+  }
+  return cwd;
+}
+
+export function workflowDontAskAgainLabel(workflowName: string, cwd: string): string {
+  return `Yes, and don't ask again for ${workflowName} in ${formatWorkflowAllowCwd(cwd)}`;
+}
+
+export function buildWorkflowConfirmChoiceRows(
+  state: WorkflowConfirmViewState,
+  opts?: { workflowName?: string; cwd?: string },
+): ChoiceRow[] {
   const scriptLabel = state.scriptVisible ? "View workflow summary" : "View raw script";
   const scriptSuffix = state.scriptToggled ? " ✔" : "";
+  const name = opts?.workflowName?.trim() || "workflow";
+  const cwd = opts?.cwd?.trim() || process.cwd();
   return [
     {
       kind: "option",
@@ -34,13 +55,18 @@ export function buildWorkflowConfirmChoiceRows(state: WorkflowConfirmViewState):
     },
     {
       kind: "option",
-      label: `${scriptLabel}${scriptSuffix}`,
+      label: workflowDontAskAgainLabel(name, cwd),
       optionIndex: 1,
     },
     {
       kind: "option",
+      label: `${scriptLabel}${scriptSuffix}`,
+      optionIndex: WORKFLOW_CONFIRM_SCRIPT_OPTION_INDEX,
+    },
+    {
+      kind: "option",
       label: "No",
-      optionIndex: 2,
+      optionIndex: 3,
     },
   ];
 }
@@ -51,6 +77,9 @@ export function workflowConfirmDecisionFromRow(
 ): WorkflowConfirmDecision {
   if (row.kind === "option" && row.optionIndex === 0) {
     return { action: "run", scriptPath };
+  }
+  if (row.kind === "option" && row.optionIndex === 1) {
+    return { action: "run-always", scriptPath };
   }
   return { action: "cancel" };
 }
@@ -126,8 +155,9 @@ export function workflowConfirmEditorHint(scriptPath: string, cols: number): str
 export function workflowConfirmPanelRowCount(
   cols: number,
   state: WorkflowConfirmViewState,
+  opts?: { workflowName?: string; cwd?: string },
 ): number {
-  const rows = buildWorkflowConfirmChoiceRows(state);
+  const rows = buildWorkflowConfirmChoiceRows(state, opts);
   const panel = renderChoicePanelLines({
     header: "",
     question: "",
@@ -143,8 +173,13 @@ export function renderWorkflowConfirmPanelLines(opts: {
   state: WorkflowConfirmViewState;
   scriptPath: string;
   cols: number;
+  workflowName?: string;
+  cwd?: string;
 }): string[] {
-  const rows = buildWorkflowConfirmChoiceRows(opts.state);
+  const rows = buildWorkflowConfirmChoiceRows(opts.state, {
+    workflowName: opts.workflowName,
+    cwd: opts.cwd,
+  });
   const panel = renderChoicePanelLines({
     header: "",
     question: "",

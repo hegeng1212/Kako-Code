@@ -68,6 +68,15 @@ describe("ask-user-question display", () => {
     expect(renderChoiceGroupHeaderLine()).toContain("⏺");
   });
 
+  it("omits unanswered rows from choice group lines", () => {
+    expect(
+      renderChoiceGroupLines([
+        { question: "尚未作答的问题？", answer: "" },
+        { question: "空答案", answer: "   " },
+      ]),
+    ).toEqual([]);
+  });
+
   it("renders collapsible choice summary", () => {
     const collapsed = stripAnsi(
       renderChoiceSummaryLine(

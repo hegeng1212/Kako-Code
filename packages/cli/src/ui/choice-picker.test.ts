@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { stripAnsi } from "./ansi.js";
 import {
   buildChoiceRows,
   buildMultiChoiceRows,
   buildWizardReviewRows,
+  checkedIndexesFromAnswer,
+  composeMultiSelectAnswer,
   parseChoiceInputActions,
   renderChoicePanelLines,
   renderQuestionWizardPanelLines,
@@ -53,10 +56,104 @@ describe("choice-picker", () => {
       showHeader: true,
     });
     const plain = lines.join("\n");
-    expect(plain).toContain("[✔]");
+    expect(plain).toContain("[✓]");
     expect(plain).toContain("[ ]");
-    expect(plain).toContain("(multi-select)");
+    expect(plain).toContain("可多选");
     expect(plain).toContain("Submit");
+    expect(plain).toContain("alpha");
+    expect(plain.indexOf("A")).toBeLessThan(plain.indexOf("alpha"));
+  });
+
+  it("hides Type something placeholder when custom row is checked", () => {
+    const rows = buildMultiChoiceRows([
+      { label: "A", description: "alpha" },
+      { label: "B", description: "beta" },
+    ]);
+    const customIdx = rows.findIndex((r) => r.kind === "custom");
+    const armed = renderChoicePanelLines({
+      header: "Focus",
+      question: "Which aspects?",
+      rows,
+      selectedIndex: customIdx,
+      cols: 100,
+      multiSelect: true,
+      checkedOptionIndexes: new Set(),
+      customText: "",
+      customChecked: true,
+      showHeader: true,
+    });
+    const armedPlain = stripAnsi(armed.join("\n"));
+    expect(armedPlain).toContain("[✓]");
+    expect(armedPlain).not.toContain("Type something.");
+    expect(armedPlain).toContain("▌");
+
+    const filled = renderChoicePanelLines({
+      header: "Focus",
+      question: "Which aspects?",
+      rows,
+      selectedIndex: customIdx,
+      cols: 100,
+      multiSelect: true,
+      checkedOptionIndexes: new Set(),
+      customText: "彩礼费用",
+      customChecked: true,
+      showHeader: true,
+    });
+    const filledPlain = stripAnsi(filled.join("\n"));
+    expect(filledPlain).toContain("彩礼费用");
+    expect(filledPlain).not.toContain("Type something.");
+    // Must not concatenate placeholder with typed text.
+    expect(filledPlain).not.toMatch(/Type something\.\s*彩礼费用/);
+
+    const idle = renderChoicePanelLines({
+      header: "Focus",
+      question: "Which aspects?",
+      rows,
+      selectedIndex: 0,
+      cols: 100,
+      multiSelect: true,
+      checkedOptionIndexes: new Set(),
+      customText: "",
+      customChecked: false,
+      showHeader: true,
+    });
+    const idlePlain = stripAnsi(idle.join("\n"));
+    expect(idlePlain).toContain("Type something.");
+    expect(idlePlain).toMatch(/\[ \].*Type something\./);
+  });
+
+  it("keeps custom text visible when checked row is not selected", () => {
+    const rows = buildMultiChoiceRows([{ label: "A", description: "alpha" }]);
+    const customIdx = rows.findIndex((r) => r.kind === "custom");
+    const lines = renderChoicePanelLines({
+      header: "Focus",
+      question: "Which?",
+      rows,
+      selectedIndex: 0,
+      cols: 80,
+      multiSelect: true,
+      checkedOptionIndexes: new Set([0]),
+      customText: "彩礼费用",
+      customChecked: true,
+      showHeader: true,
+    });
+    const plain = stripAnsi(lines.join("\n"));
+    expect(plain).toContain("彩礼费用");
+    expect(plain).not.toContain("Type something.");
+    expect(customIdx).toBeGreaterThan(0);
+  });
+
+  it("composes multi-select answer with custom text in parallel", () => {
+    expect(
+      composeMultiSelectAnswer(
+        [
+          { label: "A", description: "" },
+          { label: "B", description: "" },
+        ],
+        new Set([0, 1]),
+        "extra note",
+      ),
+    ).toBe("A, B, extra note");
   });
 
   it("renders selected row with > marker", () => {
@@ -91,6 +188,55 @@ describe("choice-picker", () => {
     expect(parseChoiceInputActions("\x1b[C").actions).toEqual([{ type: "right" }]);
     expect(parseChoiceInputActions("\x1b[D").actions).toEqual([{ type: "left" }]);
     expect(parseChoiceInputActions("\r").actions).toEqual([{ type: "enter" }]);
+    expect(parseChoiceInputActions(" ").actions).toEqual([{ type: "space" }]);
+  });
+
+  it("restores checked indexes from a multi-select answer string", () => {
+    expect(
+      [
+        ...checkedIndexesFromAnswer(
+          [
+            { label: "A", description: "" },
+            { label: "B", description: "" },
+            { label: "C", description: "" },
+          ],
+          "A, C",
+        ),
+      ],
+    ).toEqual([0, 2]);
+  });
+
+  it("renders wizard multi-select option checkboxes and Submit", () => {
+    const rows = buildMultiChoiceRows([
+      { label: "食品", description: "产品" },
+      { label: "健康", description: "服务" },
+    ]);
+    const text = stripAnsi(
+      renderQuestionWizardPanelLines({
+        questions: [
+          {
+            header: "领域侧重",
+            question: "报告最关注哪个领域？",
+            options: [
+              { label: "食品", description: "产品" },
+              { label: "健康", description: "服务" },
+            ],
+            multiSelect: true,
+          },
+        ],
+        answers: {},
+        focusIndex: 0,
+        rows,
+        selectedIndex: 0,
+        cols: 80,
+        multiSelect: true,
+        checkedOptionIndexes: new Set([1]),
+      }).join("\n"),
+    );
+    expect(text).toContain("[ ]");
+    expect(text).toContain("[✓]");
+    expect(text).toContain("Submit");
+    expect(text).toContain("可多选");
   });
 
   it("renders wizard review summary with submit actions", () => {

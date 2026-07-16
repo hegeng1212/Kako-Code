@@ -179,6 +179,25 @@ describe("tool-call-display", () => {
     expect(text).toBe("Thought for 10s, listed 1 directory ▸ (click to expand)");
   });
 
+  it("truncates long activity summary stats with an ellipsis", () => {
+    const text = stripAnsi(
+      renderActivitySummaryLine(
+        undefined,
+        [
+          "found 47 matches",
+          "read 16 files",
+          "found 54 files",
+          "found 120 files",
+          "found 81 files",
+        ],
+        false,
+      ),
+    );
+    expect(text).toBe(
+      "found 47 matches, read 16 files, found 54 files, … ▸ (click to expand)",
+    );
+  });
+
   it("shows green approval dot on first-level summary when approved and succeeded", () => {
     const text = stripAnsi(
       renderActivitySummaryLine(
@@ -231,6 +250,16 @@ describe("tool-call-display", () => {
     const lines = renderToolOutputLines(bash, 80);
     expect(lines.length).toBeGreaterThan(0);
     expect(stripAnsi(lines[0]!)).toContain("total 0");
+  });
+
+  it("shows Read invocation with line range when offset/limit are set", () => {
+    const read = entry({
+      name: "Read",
+      detail: "/tmp/a.go",
+      status: "success",
+      toolInput: { file_path: "/tmp/a.go", offset: 34, limit: 23 },
+    });
+    expect(stripAnsi(renderToolInvocationLine(read))).toBe("Read(/tmp/a.go L34 - L56)");
   });
 
   it("collects activity stats excluding plan writes", () => {
@@ -381,6 +410,143 @@ describe("toolCallStatPhrase", () => {
     );
     expect(text).toContain("Explore(Option A scan)");
     expect(text).toContain("Backgrounded agent");
+  });
+
+  it("collapses foreground Agent success to Done summary (no result body)", () => {
+    const now = Date.parse("2026-07-14T00:00:49.000Z");
+    const rendered = renderAgentToolLines(
+      entry({
+        name: "Agent",
+        detail: "explore APIs",
+        status: "success",
+        agentExpanded: false,
+        startedAt: Date.parse("2026-07-14T00:00:00.000Z"),
+        endedAt: now,
+        outputTokens: 0,
+        toolInput: {
+          subagent_type: "explore",
+          description: "explore APIs",
+        },
+        childTools: [
+          entry({ name: "Read", detail: "a.ts", status: "success" }),
+          entry({ name: "Bash", detail: "grep x", status: "success" }),
+        ],
+      }),
+    );
+    const lines = rendered.map((l) => stripAnsi(l));
+    expect(lines[0]).toContain("Explore(explore APIs)");
+    expect(lines[1]).toMatch(/^└ Done \(2 tool uses · 0 tokens · 49s\)$/);
+    expect(rendered[1]).toContain(ansi.text);
+    expect(lines.some((l) => l.includes("Read("))).toBe(false);
+  });
+
+  it("keeps expanded Explore child tools muted gray", () => {
+    const rendered = renderAgentToolLines(
+      entry({
+        name: "Agent",
+        detail: "explore APIs",
+        status: "success",
+        agentExpanded: true,
+        toolInput: { subagent_type: "explore", description: "explore APIs" },
+        childTools: [entry({ name: "Read", detail: "a.ts", status: "success" })],
+      }),
+    );
+    const child = rendered.find((l) => stripAnsi(l).includes("Read("));
+    expect(child).toBeDefined();
+    expect(child!).toContain(ansi.muted);
+    expect(stripAnsi(child!)).toMatch(/^└ /);
+  });
+
+  it("expands Done Agent to muted child tools without dumping agent output", () => {
+    const lines = renderAgentToolLines(
+      entry({
+        name: "Agent",
+        detail: "explore APIs",
+        status: "success",
+        agentExpanded: true,
+        output: "LONG AGENT REPORT that must not appear",
+        toolInput: {
+          subagent_type: "explore",
+          description: "explore APIs",
+        },
+        childTools: [
+          entry({ name: "Read", detail: "a.ts", status: "success" }),
+          entry({ name: "Bash", detail: "grep x", status: "success" }),
+        ],
+      }),
+    ).map((l) => stripAnsi(l));
+    expect(lines.some((l) => l.includes("Read(") && l.includes("a.ts"))).toBe(true);
+    expect(lines.some((l) => /Bash\(/.test(l))).toBe(true);
+    expect(lines.join("\n")).not.toContain("LONG AGENT REPORT");
+    expect(lines.some((l) => l.includes("Done ("))).toBe(false);
+  });
+
+  it("renders waiting foreground Agent as Explore header plus Initializing ctrl+b hint", () => {
+    const lines = renderAgentToolLines(
+      entry({
+        name: "Agent",
+        detail: "查找LLM调用实现",
+        status: "waiting",
+        dotFrame: 1,
+        toolInput: {
+          subagent_type: "Explore",
+          description: "查找LLM调用实现",
+          run_in_background: false,
+        },
+      }),
+    ).map((l) => stripAnsi(l));
+    expect(lines[0]).toContain("Explore(查找LLM调用实现)");
+    expect(lines[1]).toMatch(/Initializing… \(ctrl\+b to run in background\)/);
+  });
+
+  it("nests child tools under Explore while running", () => {
+    const waiting = entry({
+      name: "Agent",
+      detail: "查找LLM调用实现",
+      status: "waiting",
+      agentExpanded: true,
+      toolInput: { subagent_type: "Explore", description: "查找LLM调用实现" },
+      childTools: [
+        entry({ name: "Read", detail: "app/api/pkg/llm.go", status: "success" }),
+        entry({ name: "Bash", detail: "grep -R openai", status: "waiting", dotFrame: 2 }),
+      ],
+    });
+    const expandedRaw = renderAgentToolLines(waiting);
+    const expanded = expandedRaw.map((l) => stripAnsi(l));
+    expect(expanded[0]).toContain("Explore(查找LLM调用实现)");
+    expect(expanded.some((l) => l.includes("Read(") && l.includes("llm.go"))).toBe(true);
+    expect(expanded.some((l) => /Bash\(/.test(l))).toBe(true);
+    expect(expanded.some((l) => l.includes("Running..."))).toBe(true);
+    expect(expanded.some((l) => l.includes("ctrl+b to run in background"))).toBe(true);
+    // Live children (including completed) are white; only ctrl+b hint is muted.
+    const readLine = expandedRaw.find((l) => stripAnsi(l).includes("Read("));
+    const ctrlB = expandedRaw.find((l) => stripAnsi(l).includes("ctrl+b"));
+    expect(readLine).toContain(ansi.text);
+    expect(ctrlB).toContain(ansi.muted);
+
+    const collapsed = renderAgentToolLines({ ...waiting, agentExpanded: false }).map((l) =>
+      stripAnsi(l),
+    );
+    expect(collapsed.some((l) => l.includes("… +2 tool uses") && l.includes("ctrl+b"))).toBe(true);
+    expect(collapsed.some((l) => l.includes("Read("))).toBe(false);
+  });
+
+  it("does not show Failed under nested Explore child tools", () => {
+    const lines = renderAgentToolLines(
+      entry({
+        name: "Agent",
+        detail: "scan",
+        status: "waiting",
+        agentExpanded: true,
+        toolInput: { subagent_type: "Explore", description: "scan" },
+        childTools: [
+          entry({ name: "Read", detail: "missing.ts", status: "error", errorDetail: "ENOENT" }),
+          entry({ name: "Glob", detail: "**/*.go", status: "success" }),
+        ],
+      }),
+    ).map((l) => stripAnsi(l));
+    expect(lines.some((l) => l.includes("Read("))).toBe(true);
+    expect(lines.some((l) => /Failed/i.test(l))).toBe(false);
   });
 
   it("renders workflow finished event with tree prefix", () => {

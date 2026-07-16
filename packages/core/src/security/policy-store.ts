@@ -200,6 +200,47 @@ export function applySecuritySettingsPatch(
   );
 }
 
+export function projectSecurityFromPolicy(policy: SecurityPolicy): {
+  capabilities: { default: SessionCapability };
+  workspace: {
+    outsidePolicy: OutsideWorkspacePolicy;
+    extraTrustedRoots: string[];
+  };
+} {
+  return {
+    capabilities: { default: policy.capabilities?.default ?? "FullAccess" },
+    workspace: {
+      outsidePolicy: policy.workspace?.outsidePolicy ?? "approve",
+      extraTrustedRoots: [...(policy.workspace?.extraTrustedRoots ?? [])],
+    },
+  };
+}
+
+export function applyProjectSecurityOverlay(
+  base: SecurityPolicy,
+  overlay: {
+    capabilities?: { default?: SessionCapability };
+    workspace?: {
+      outsidePolicy?: OutsideWorkspacePolicy;
+      extraTrustedRoots?: string[];
+    };
+  },
+): SecurityPolicy {
+  return {
+    ...base,
+    capabilities: {
+      default: overlay.capabilities?.default ?? base.capabilities?.default ?? "FullAccess",
+    },
+    workspace: {
+      ...base.workspace,
+      outsidePolicy:
+        overlay.workspace?.outsidePolicy ?? base.workspace?.outsidePolicy ?? "approve",
+      extraTrustedRoots:
+        overlay.workspace?.extraTrustedRoots ?? base.workspace?.extraTrustedRoots ?? [],
+    },
+  };
+}
+
 export function normalizeSecurityPolicy(
   raw: SecurityPolicy,
   cwd: string,
@@ -224,14 +265,42 @@ export function normalizeSecurityPolicy(
   };
 }
 
-export async function loadSecurityPolicy(cwd: string): Promise<SecurityPolicy> {
+async function readGlobalSecurityPolicy(): Promise<SecurityPolicy> {
   await mkdir(getConfigDir(), { recursive: true });
   try {
     const text = await readFile(securityConfigPath(), "utf-8");
-    return normalizeSecurityPolicy(securityPolicySchema.parse(JSON.parse(text)), cwd);
+    return securityPolicySchema.parse(JSON.parse(text));
   } catch {
-    return normalizeSecurityPolicy(securityPolicySchema.parse({ version: 1 }), cwd);
+    return securityPolicySchema.parse({ version: 1 });
   }
+}
+
+export async function loadSecurityPolicy(cwd: string): Promise<SecurityPolicy> {
+  let base = await readGlobalSecurityPolicy();
+  const { sessionManager } = await import("../session/manager.js");
+  const project = await sessionManager.findProject(cwd);
+  if (project) {
+    const seed = projectSecurityFromPolicy(base);
+    const overlay = await sessionManager.ensureProjectSecurity(cwd, seed);
+    base = applyProjectSecurityOverlay(base, overlay);
+  }
+  return normalizeSecurityPolicy(base, cwd);
+}
+
+/** Persist workspace Settings fields onto the Project for `cwd` (not global security.json). */
+export async function saveWorkspaceSecuritySettings(
+  cwd: string,
+  patch: SecurityConfigFile,
+): Promise<SecurityPolicy> {
+  const { sessionManager } = await import("../session/manager.js");
+  await sessionManager.setProjectSecurity(cwd, {
+    capabilities: { default: patch.capabilities.default },
+    workspace: {
+      outsidePolicy: patch.workspace.outsidePolicy,
+      extraTrustedRoots: patch.workspace.extraTrustedRoots ?? [],
+    },
+  });
+  return loadSecurityPolicy(cwd);
 }
 
 export async function saveSecurityPolicy(policy: SecurityPolicy): Promise<void> {

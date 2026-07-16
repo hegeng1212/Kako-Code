@@ -1,4 +1,5 @@
 import { ansi, displayWidth, stripAnsi } from "./ansi.js";
+import { clipAnsiToDisplayWidth } from "./markdown-code-highlight.js";
 import { parseInlineParts, renderInlinePart, wrapInlineParts } from "./markdown-inline.js";
 
 const CELL_PAD_X = 1;
@@ -61,8 +62,13 @@ function renderCellContent(text: string, bold: boolean): string {
 }
 
 function padDisplay(text: string, targetWidth: number): string {
+  // displayWidth strips ANSI; pad so every cell's outer width (and thus ┤/│) aligns.
   const width = displayWidth(text);
-  if (width >= targetWidth) return text;
+  if (width >= targetWidth) {
+    if (width === targetWidth) return text;
+    // Keep path/code colors when a cell is truncated.
+    return clipAnsiToDisplayWidth(text, targetWidth);
+  }
   return text + " ".repeat(targetWidth - width);
 }
 

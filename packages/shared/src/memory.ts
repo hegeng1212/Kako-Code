@@ -223,6 +223,9 @@ export interface MemoryTelemetry {
   injectedTokens?: number;
   flushed?: boolean;
   autoRecallEnabled?: boolean;
+  backgroundReviewRan?: boolean;
+  skippedReason?: string;
+  jobName?: string;
 }
 
 /** Core memory system interface (implementation in @kako/core). */

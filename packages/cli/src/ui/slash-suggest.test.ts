@@ -115,7 +115,12 @@ describe("slash suggest", () => {
     const withArgs = renderSlashInputText("/deep-research topic");
     expect(stripAnsi(withArgs)).toBe("/deep-research topic");
     expect(withArgs).toContain("\x1b[38;5;117m");
-    expect(withArgs).toContain("\x1b[38;5;255m");
+    // Input box args stay muted; chat history uses tone: "bright".
+    expect(withArgs).toContain("\x1b[38;5;245m");
+    expect(renderSlashInputText("/deep-research topic", { tone: "bright" })).toContain(
+      "\x1b[38;5;255m",
+    );
+    expect(renderSlashInputText("普通问题", { tone: "bright" })).toContain("\x1b[38;5;255m");
   });
 
   it("uses cyan for selected command and muted for unselected", () => {

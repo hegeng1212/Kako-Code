@@ -99,7 +99,9 @@ export function evaluateNetworkToolGateWithoutTarget(policy: NetworkPolicy): Net
   if (!policy.enabled) {
     return { action: "deny", reason: "Network access disabled" };
   }
-  return { action: "allow", skipApproval: false, reason: "Network access requires approval" };
+  // No host to allowlist — when network is enabled, allow without per-call approval
+  // (tool risk tier / bash tier still apply via the security pipeline).
+  return { action: "allow", skipApproval: true, reason: "Network enabled" };
 }
 
 /** Fetch-time guard: allow or deny only (approval already resolved). */

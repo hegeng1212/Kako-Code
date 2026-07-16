@@ -80,9 +80,9 @@ describe("evaluateNetworkToolGateWithoutTarget", () => {
     expect(evaluateNetworkToolGateWithoutTarget(disabledPolicy).action).toBe("deny");
   });
 
-  it("requires approval when enabled without concrete URL", () => {
+  it("skips approval when enabled without concrete URL", () => {
     const gate = evaluateNetworkToolGateWithoutTarget(enabledPolicy);
-    expect(gate).toMatchObject({ action: "allow", skipApproval: false });
+    expect(gate).toMatchObject({ action: "allow", skipApproval: true });
   });
 });
 

@@ -1,4 +1,5 @@
 import type { L1SummaryFrontmatter, SessionId, TranscriptMessage } from "@kako/shared";
+import { isProtocolWakeText } from "../background/agent-notification.js";
 
 export const L1_SECTION_HEADERS = [
   "Goal",
@@ -174,11 +175,14 @@ export function mergeCumulativeL1(
 export function draftL1FromTranscript(
   transcript: TranscriptMessage[],
 ): Partial<Record<L1SectionName, string>> {
-  const users = transcript.filter((m) => m.role === "user").map((m) => m.content.trim());
+  const users = transcript
+    .filter((m) => m.role === "user")
+    .map((m) => m.content.trim())
+    .filter((t) => t && !isProtocolWakeText(t));
   const assistants = transcript
     .filter((m) => m.role === "assistant")
     .map((m) => m.content.trim())
-    .filter(Boolean);
+    .filter((t) => t && !isProtocolWakeText(t));
   const toolNames = [
     ...new Set(
       transcript.filter((m) => m.role === "tool" && m.toolName).map((m) => m.toolName!),

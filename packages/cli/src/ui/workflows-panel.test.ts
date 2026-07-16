@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { displayWidth, stripAnsi } from "./ansi.js";
 import {
   createInitialWorkflowsPanelState,
+  filterWorkflowRunsForPanel,
+  prepareWorkflowRunsForPanel,
   renderWorkflowsFullScreen,
+  WORKFLOW_PANEL_RETENTION_MS,
   type WorkflowsPanelState,
 } from "./workflows-panel.js";
 import { isPhaseFatal, isPhaseSuccessful } from "@kako/core";
@@ -26,6 +29,100 @@ function sampleRun(overrides: Partial<WorkflowRunRecord> = {}): WorkflowRunRecor
     ...overrides,
   };
 }
+
+describe("filterWorkflowRunsForPanel", () => {
+  const now = Date.parse("2026-07-16T12:00:00.000Z");
+
+  it("keeps running and pending runs regardless of age", () => {
+    const oldRunning = sampleRun({
+      runId: "wf_old_run",
+      status: "running",
+      startedAt: new Date(now - 3 * WORKFLOW_PANEL_RETENTION_MS).toISOString(),
+      completedAt: undefined,
+    });
+    const oldPending = sampleRun({
+      runId: "wf_old_pending",
+      status: "pending",
+      startedAt: new Date(now - 2 * WORKFLOW_PANEL_RETENTION_MS).toISOString(),
+      completedAt: undefined,
+    });
+    expect(filterWorkflowRunsForPanel([oldRunning, oldPending], now)).toEqual([
+      oldRunning,
+      oldPending,
+    ]);
+  });
+
+  it("keeps completed/error/stopped only within the last day", () => {
+    const recent = sampleRun({
+      runId: "wf_recent",
+      status: "completed",
+      completedAt: new Date(now - 60 * 60 * 1000).toISOString(),
+    });
+    const recentError = sampleRun({
+      runId: "wf_err",
+      status: "error",
+      completedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+    });
+    const stale = sampleRun({
+      runId: "wf_stale",
+      status: "completed",
+      completedAt: new Date(now - WORKFLOW_PANEL_RETENTION_MS - 1000).toISOString(),
+    });
+    const staleStopped = sampleRun({
+      runId: "wf_stopped",
+      status: "stopped",
+      completedAt: new Date(now - WORKFLOW_PANEL_RETENTION_MS - 5000).toISOString(),
+    });
+    const filtered = filterWorkflowRunsForPanel(
+      [recent, recentError, stale, staleStopped],
+      now,
+    );
+    expect(filtered.map((r) => r.runId)).toEqual(["wf_recent", "wf_err"]);
+  });
+
+  it("uses startedAt when completedAt is missing for terminal runs", () => {
+    const recent = sampleRun({
+      runId: "wf_started",
+      status: "completed",
+      startedAt: new Date(now - 30 * 60 * 1000).toISOString(),
+      completedAt: undefined,
+    });
+    const stale = sampleRun({
+      runId: "wf_old_started",
+      status: "completed",
+      startedAt: new Date(now - WORKFLOW_PANEL_RETENTION_MS - 1000).toISOString(),
+      completedAt: undefined,
+    });
+    expect(filterWorkflowRunsForPanel([recent, stale], now).map((r) => r.runId)).toEqual([
+      "wf_started",
+    ]);
+  });
+
+  it("prepareWorkflowRunsForPanel filters then sorts newest first", () => {
+    const older = sampleRun({
+      runId: "wf_a",
+      status: "completed",
+      startedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+      completedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+    });
+    const newer = sampleRun({
+      runId: "wf_b",
+      status: "completed",
+      startedAt: new Date(now - 10 * 60 * 1000).toISOString(),
+      completedAt: new Date(now - 10 * 60 * 1000).toISOString(),
+    });
+    const stale = sampleRun({
+      runId: "wf_old",
+      status: "completed",
+      startedAt: new Date(now - 3 * WORKFLOW_PANEL_RETENTION_MS).toISOString(),
+      completedAt: new Date(now - 3 * WORKFLOW_PANEL_RETENTION_MS).toISOString(),
+    });
+    expect(prepareWorkflowRunsForPanel([older, stale, newer], now).map((r) => r.runId)).toEqual([
+      "wf_b",
+      "wf_a",
+    ]);
+  });
+});
 
 function baseState(overrides: Partial<WorkflowsPanelState> = {}): WorkflowsPanelState {
   return { ...createInitialWorkflowsPanelState([sampleRun()]), ...overrides };

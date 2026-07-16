@@ -14,6 +14,8 @@ import {
   WorkflowStoppedError,
 } from "./control.js";
 import { completeBackgroundTask } from "../background/task-store.js";
+import { removeInterruptedForWorkflowRun } from "../background/interrupted-store.js";
+
 function resultErrorMessage(result: unknown): string | undefined {
   if (!result || typeof result !== "object") return undefined;
   const err = (result as { error?: unknown }).error;
@@ -71,6 +73,17 @@ function normalizeWorkflowArgs(args: unknown): unknown {
   return args;
 }
 
+/** True when launch args can parameterize a workflow script (e.g. deep-research question). */
+export function hasWorkflowArgs(args: unknown): boolean {
+  if (args === undefined || args === null) return false;
+  if (typeof args === "string") return args.trim().length > 0;
+  if (typeof args === "object") {
+    if (Array.isArray(args)) return args.length > 0;
+    return Object.keys(args as Record<string, unknown>).length > 0;
+  }
+  return true;
+}
+
 export async function launchWorkflow(input: LaunchWorkflowInput): Promise<LaunchWorkflowResult> {
   const { taskId, runId } = createWorkflowIds();
   let name = input.name ?? "workflow";
@@ -78,6 +91,7 @@ export async function launchWorkflow(input: LaunchWorkflowInput): Promise<Launch
   let scriptPath = input.scriptPath;
   let meta;
   let resumeFromRunId = input.resumeFromRunId;
+  let args = input.args;
 
   if (resumeFromRunId) {
     const runs = await loadWorkflowRuns(input.sessionId);
@@ -91,6 +105,13 @@ export async function launchWorkflow(input: LaunchWorkflowInput): Promise<Launch
     scriptPath = scriptPath ?? prior.scriptPath;
     name = prior.name;
     meta = { name: prior.name, description: prior.description };
+    // Soft-resume must keep the original args; empty args makes scripts like deep-research fail at 0s.
+    if (!hasWorkflowArgs(args) && hasWorkflowArgs(prior.args)) {
+      args = prior.args;
+    }
+    // Soft-resume via Workflow tool must clear Enter-to-resume checkpoints for the
+    // prior run; otherwise Agents stays Needs input despite a live handle.
+    await removeInterruptedForWorkflowRun(input.sessionId, resumeFromRunId);
   }
 
   if (typeof input.script === "string" && input.script.trim() && !scriptPath) {
@@ -128,6 +149,7 @@ export async function launchWorkflow(input: LaunchWorkflowInput): Promise<Launch
   const transcriptDir = getSessionWorkflowRunDir(input.sessionId, runId);
   await mkdir(transcriptDir, { recursive: true });
 
+  const normalizedArgs = normalizeWorkflowArgs(args);
   const record: WorkflowRunRecord = {
     taskId,
     runId,
@@ -137,6 +159,7 @@ export async function launchWorkflow(input: LaunchWorkflowInput): Promise<Launch
     scriptPath,
     transcriptDir,
     startedAt: new Date().toISOString(),
+    args: normalizedArgs,
     agentsTotal: 0,
     agentsDone: 0,
     agentsFailed: 0,
@@ -152,11 +175,17 @@ export async function launchWorkflow(input: LaunchWorkflowInput): Promise<Launch
     runId,
     taskId,
     scriptPath,
-    args: normalizeWorkflowArgs(input.args),
+    args: normalizedArgs,
     record,
     resumeFromRunId,
     abortSignal: abortController.signal,
   });
+
+  // Soft-resume via Workflow tool (not only Enter-to-resume) must drop the old
+  // interrupt checkpoint; otherwise Agents stays in Needs input while live work runs.
+  if (resumeFromRunId) {
+    await removeInterruptedForWorkflowRun(input.sessionId, resumeFromRunId).catch(() => {});
+  }
 
   return {
     taskId,

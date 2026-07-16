@@ -10,6 +10,8 @@ export interface BackgroundTask {
   description?: string;
   subagentName?: string;
   childSessionId?: string;
+  /** True while the parent Agent tool is still blocked waiting for this run. */
+  blocking?: boolean;
 }
 
 export interface TaskStopResult {

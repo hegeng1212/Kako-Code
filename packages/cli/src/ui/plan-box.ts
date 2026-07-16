@@ -3,7 +3,6 @@ import { parseMarkdownBlocks, type MarkdownBlock } from "./markdown-blocks.js";
 import { parseInlineParts, wrapInlineParts, type InlinePart } from "./markdown-inline.js";
 
 import { homedir } from "node:os";
-import { ansi } from "./ansi.js";
 
 /** Claude Code-style plan preview label under Updated plan. */
 export const PLAN_PREVIEW_LABEL = "/plan to preview";
@@ -103,10 +102,20 @@ function renderPlanBlock(block: MarkdownBlock, width: number): string[] {
       return block.items.flatMap((item) =>
         wrapPlanInlineParts(parseInlineParts(`• ${item}`), width),
       );
-    case "ol":
-      return block.items.flatMap((item, index) =>
-        wrapPlanInlineParts(parseInlineParts(`${index + 1}. ${item}`), width),
-      );
+    case "ol": {
+      const out: string[] = [];
+      block.items.forEach((item, index) => {
+        const marker = `${index + 1}.`;
+        const prefix = `${ansi.text}${marker}${ansi.reset} `;
+        const wrapped = wrapPlanInlineParts(parseInlineParts(item), width);
+        wrapped.forEach((line, lineIndex) => {
+          out.push(lineIndex === 0 ? `${prefix}${line}` : line);
+        });
+        const connector = block.connectors?.[index];
+        if (connector) out.push(`${ansi.text}${connector}${ansi.reset}`);
+      });
+      return out;
+    }
     case "code":
       return renderPlanCodeBlock(block.lines, width);
     case "blockquote":

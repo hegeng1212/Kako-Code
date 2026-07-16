@@ -85,6 +85,87 @@ describe("runAgentLoop", () => {
     expect(messages[messages.length - 1]).toEqual({ role: "user", content: "task details" });
   });
 
+  it("keeps Skill tool result when activation declines to pivot (status-only skills)", async () => {
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      { name: "Skill", description: "skill", inputSchema: { type: "object", properties: {} } },
+      async () => "workflow status listing",
+    );
+
+    const router = createMockRouter([
+      {
+        toolCalls: [{ id: "tu-skill", name: "Skill", input: { skill: "workflows" } }],
+      },
+      { text: "here is the status" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "check workflows" }];
+    const starts: string[] = [];
+    const ends: string[] = [];
+
+    const result = await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Skill"],
+      model: "test-model",
+      maxTurns: 5,
+      onSkillActivate: async () => undefined,
+      callbacks: {
+        onToolStart: (name) => starts.push(name),
+        onToolEnd: (name, status) => ends.push(`${name}:${status}`),
+      },
+    });
+
+    expect(result).toBe("here is the status");
+    expect(messages.some((m) => m.role === "tool" && m.content === "workflow status listing")).toBe(
+      true,
+    );
+    // One Waiting lifecycle — double start left Activating stuck in the CLI.
+    expect(starts).toEqual(["Skill"]);
+    expect(ends).toEqual(["Skill:success"]);
+  });
+
+  it("does not abort the turn when onSkillActivate throws", async () => {
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      { name: "Skill", description: "skill", inputSchema: { type: "object", properties: {} } },
+      async () => "tool body",
+    );
+
+    const router = createMockRouter([
+      {
+        toolCalls: [{ id: "tu-skill", name: "Skill", input: { skill: "workflows" } }],
+      },
+      { text: "recovered" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "hi" }];
+    const starts: string[] = [];
+    const ends: string[] = [];
+
+    const result = await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Skill"],
+      model: "test-model",
+      maxTurns: 5,
+      onSkillActivate: async () => {
+        throw new Error("Unknown skill: workflows");
+      },
+      callbacks: {
+        onToolStart: (name) => starts.push(name),
+        onToolEnd: (name, status) => ends.push(`${name}:${status}`),
+      },
+    });
+
+    expect(result).toBe("recovered");
+    expect(messages.some((m) => m.role === "tool" && m.content === "tool body")).toBe(true);
+    expect(starts).toEqual(["Skill"]);
+    expect(ends).toEqual(["Skill:success"]);
+  });
+
   it("executes tools and feeds results into the next model call", async () => {
     const router = createMockRouter([
       {
@@ -179,6 +260,309 @@ describe("runAgentLoop", () => {
           m.content.includes("Sub-agents cannot spawn nested Agent tools"),
       ),
     ).toBe(true);
+  });
+
+  it("allows Agent spawn when blockAgentTool is false (depth < 3)", async () => {
+    const spawn = vi.fn(async () => "nested ok");
+    const registry = echoRegistry();
+    registry.register(agentToolDefinition, createAgentHandler({ spawnSubAgent: spawn }));
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          {
+            id: "tu-allowed",
+            name: "Agent",
+            input: { description: "nest ok", prompt: "go" },
+          },
+        ],
+      },
+      { text: "after nest" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "nest" }];
+
+    const result = await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Agent"],
+      model: "test-model",
+      maxTurns: 5,
+      blockAgentTool: false,
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result).toBe("after nest");
+  });
+
+  it("maps agentDepth gating: depth 2 allows Agent, depth 3 blocks", async () => {
+    const { shouldBlockAgentToolAtDepth } = await import("./loop.js");
+    expect(shouldBlockAgentToolAtDepth(0)).toBe(false);
+    expect(shouldBlockAgentToolAtDepth(1)).toBe(false);
+    expect(shouldBlockAgentToolAtDepth(2)).toBe(false);
+    expect(shouldBlockAgentToolAtDepth(3)).toBe(true);
+    expect(shouldBlockAgentToolAtDepth(4)).toBe(true);
+  });
+
+  it("runs consecutive Agent tool calls concurrently", async () => {
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const releases: Array<() => void> = [];
+
+    const spawn = vi.fn(async () => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+      concurrent -= 1;
+      return "agent-done";
+    });
+
+    const registry = echoRegistry();
+    registry.register(agentToolDefinition, createAgentHandler({ spawnSubAgent: spawn }));
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          { id: "a1", name: "Agent", input: { description: "one", prompt: "p1" } },
+          { id: "a2", name: "Agent", input: { description: "two", prompt: "p2" } },
+        ],
+      },
+      { text: "both done" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "parallel" }];
+
+    const loopPromise = runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Agent"],
+      model: "test-model",
+      maxTurns: 5,
+    });
+
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
+    expect(maxConcurrent).toBe(2);
+    for (const release of releases) release();
+
+    const result = await loopPromise;
+    expect(result).toBe("both done");
+    expect(messages.filter((m) => m.role === "tool")).toHaveLength(2);
+  });
+
+  it("keeps Agent clusters serial when interrupted by a non-Agent tool", async () => {
+    const order: string[] = [];
+    const spawn = vi.fn(async (input: { description: string }) => {
+      order.push(`Agent:${input.description}`);
+      return "ok";
+    });
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      {
+        name: "Echo",
+        description: "echo",
+        inputSchema: { type: "object", properties: { value: { type: "string" } } },
+      },
+      async (input) => {
+        order.push(`Echo:${input.value}`);
+        return `echo:${input.value}`;
+      },
+    );
+    registry.register(agentToolDefinition, createAgentHandler({ spawnSubAgent: spawn }));
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          { id: "a1", name: "Agent", input: { description: "first", prompt: "p1" } },
+          { id: "e1", name: "Echo", input: { value: "mid" } },
+          { id: "a2", name: "Agent", input: { description: "second", prompt: "p2" } },
+        ],
+      },
+      { text: "serial" },
+    ]);
+
+    await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages: [{ role: "user", content: "cluster break" }],
+      allowedTools: ["Agent", "Echo"],
+      model: "test-model",
+      maxTurns: 5,
+    });
+
+    expect(order).toEqual(["Agent:first", "Echo:mid", "Agent:second"]);
+  });
+
+  it("runs readonly tools concurrently with Agent in one cluster", async () => {
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const releases: Array<() => void> = [];
+
+    const hold = async (label: string) => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+      concurrent -= 1;
+      return label;
+    };
+
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      {
+        name: "Peek",
+        description: "readonly peek",
+        inputSchema: { type: "object", properties: { id: { type: "string" } } },
+        security: { readonly: true },
+      },
+      async (input) => hold(`peek:${input.id}`),
+    );
+    registry.register(
+      agentToolDefinition,
+      createAgentHandler({
+        spawnSubAgent: async () => hold("agent"),
+      }),
+    );
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          { id: "p1", name: "Peek", input: { id: "1" } },
+          { id: "p2", name: "Peek", input: { id: "2" } },
+          { id: "a1", name: "Agent", input: { description: "explore", prompt: "go" } },
+        ],
+      },
+      { text: "cluster done" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "mix parallel" }];
+
+    const loopPromise = runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Peek", "Agent"],
+      model: "test-model",
+      maxTurns: 5,
+    });
+
+    await vi.waitFor(() => expect(releases.length).toBe(3));
+    expect(maxConcurrent).toBe(3);
+    for (const release of releases) release();
+
+    const result = await loopPromise;
+    expect(result).toBe("cluster done");
+    expect(messages.filter((m) => m.role === "tool")).toHaveLength(3);
+  });
+
+  it("does not overlap Write with neighboring Reads in the same loop", async () => {
+    const order: string[] = [];
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      {
+        name: "Peek",
+        description: "readonly peek",
+        inputSchema: { type: "object", properties: { id: { type: "string" } } },
+        security: { readonly: true },
+      },
+      async (input) => {
+        order.push(`start:Peek:${input.id}`);
+        await new Promise((r) => setTimeout(r, 15));
+        order.push(`end:Peek:${input.id}`);
+        return `peek:${input.id}`;
+      },
+    );
+    // Echo is neither readonly nor an async launcher → serial (same contract as Write).
+    registry.register(
+      {
+        name: "Echo",
+        description: "serial side-effect stand-in",
+        inputSchema: { type: "object", properties: { value: { type: "string" } } },
+      },
+      async (input) => {
+        order.push(`start:Echo:${input.value}`);
+        await new Promise((r) => setTimeout(r, 5));
+        order.push(`end:Echo:${input.value}`);
+        return `echo:${input.value}`;
+      },
+    );
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          { id: "r1", name: "Peek", input: { id: "1" } },
+          { id: "e1", name: "Echo", input: { value: "x" } },
+          { id: "r2", name: "Peek", input: { id: "2" } },
+        ],
+      },
+      { text: "ordered" },
+    ]);
+
+    await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages: [{ role: "user", content: "serial write" }],
+      allowedTools: ["Peek", "Echo"],
+      model: "test-model",
+      maxTurns: 5,
+    });
+
+    const serialStart = order.indexOf("start:Echo:x");
+    const peek1End = order.indexOf("end:Peek:1");
+    const peek2Start = order.indexOf("start:Peek:2");
+    const serialEnd = order.indexOf("end:Echo:x");
+    expect(serialStart).toBeGreaterThan(peek1End);
+    expect(peek2Start).toBeGreaterThan(serialEnd);
+  });
+
+  it("appends tool results in tool_use order after a parallel cluster finishes out of order", async () => {
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      {
+        name: "Peek",
+        description: "readonly peek",
+        inputSchema: {
+          type: "object",
+          properties: { id: { type: "string" }, delayMs: { type: "number" } },
+        },
+        security: { readonly: true },
+      },
+      async (input) => {
+        await new Promise((r) => setTimeout(r, Number(input.delayMs ?? 0)));
+        return `peek:${input.id}`;
+      },
+    );
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          { id: "slow", name: "Peek", input: { id: "slow", delayMs: 40 } },
+          { id: "fast", name: "Peek", input: { id: "fast", delayMs: 1 } },
+        ],
+      },
+      { text: "ordered sink" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "order" }];
+
+    await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Peek"],
+      model: "test-model",
+      maxTurns: 5,
+    });
+
+    const tools = messages.filter((m) => m.role === "tool");
+    expect(tools.map((m) => m.toolCallId)).toEqual(["slow", "fast"]);
+    expect(tools.map((m) => m.content)).toEqual(["peek:slow", "peek:fast"]);
   });
 
   it("stops the loop when user declines AskUserQuestion (Esc)", async () => {

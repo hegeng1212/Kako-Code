@@ -18,6 +18,12 @@ import {
   workflowAgentConcurrencyCap,
 } from "./limits.js";
 
+export interface WorkflowAgentRunStats {
+  total: number;
+  done: number;
+  failed: number;
+}
+
 export interface WorkflowSandboxContext extends WorkflowAgentContext {
   runId: string;
   abortSignal?: AbortSignal;
@@ -34,9 +40,9 @@ export interface WorkflowSandboxContext extends WorkflowAgentContext {
   agentReplayer?: AgentResultReplayer;
   agentGate?: AgentConcurrencyGate;
   agentLifetimeCount?: { value: number };
+  /** Per top-level run (shared with nested workflow()); never module-global. */
+  agentStats?: WorkflowAgentRunStats;
 }
-
-let agentStats = { total: 0, done: 0, failed: 0 };
 
 function stripExportMeta(source: string): string {
   return stripWorkflowMetaBlock(source);
@@ -80,9 +86,8 @@ export async function executeWorkflowScript(input: {
   args: unknown;
   ctx: WorkflowSandboxContext;
 }): Promise<unknown> {
-  if (input.ctx.nestingDepth == null) {
-    agentStats = { total: 0, done: 0, failed: 0 };
-  }
+  const agentStats: WorkflowAgentRunStats =
+    input.ctx.agentStats ?? { total: 0, done: 0, failed: 0 };
 
   const lifetime = input.ctx.agentLifetimeCount ?? { value: 0 };
   const gate = input.ctx.agentGate ?? new AgentConcurrencyGate(workflowAgentConcurrencyCap());
@@ -90,6 +95,7 @@ export async function executeWorkflowScript(input: {
     ...input.ctx,
     agentGate: gate,
     agentLifetimeCount: lifetime,
+    agentStats,
   };
 
   const source = await readFile(input.scriptPath, "utf-8");

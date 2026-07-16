@@ -17,7 +17,7 @@ const BUILTIN_HELP = `
 Slash commands:
   /help              Show this help
   /exit, /quit       End session and exit
-  /new, /clear       Start a new session in the same project
+  /clear             Clear the chat screen and conversation context
   /sessions          List sessions for current project
   /resume <id>       Switch to an existing session
   /title <text>      Set session title
@@ -25,6 +25,8 @@ Slash commands:
   /plan               View current session plan (or enter plan mode)
   /plan <question>    Enter plan mode with a design question
   /plan open          Open plan file in VS Code
+  /auto [question]    Enter auto mode (bypass mid/low-risk approvals)
+  /manual             Enter manual mode (default permission approvals)
 `.trim();
 
 interface SlashConfig {
@@ -106,12 +108,8 @@ export async function handleSlashCommand(
     case "exit":
     case "quit":
       return { type: "exit" };
-    case "new":
-    case "clear": {
-      await ctx.endSession(ctx.session.id);
-      const session = await ctx.createSession(ctx.session.agentName);
-      return { type: "switch", session };
-    }
+    case "clear":
+      return { type: "clear", displayText: trimmed };
     case "sessions":
       return { type: "handled" };
     case "resume": {
@@ -147,6 +145,14 @@ export async function handleSlashCommand(
         displayText: trimmed,
       };
     }
+    case "auto":
+      return {
+        type: "auto-enter",
+        question: arg || undefined,
+        displayText: trimmed,
+      };
+    case "manual":
+      return { type: "manual-enter", displayText: trimmed };
     case "init":
       return { type: "message", text: arg ? `init ${arg}` : "init" };
     default: {
