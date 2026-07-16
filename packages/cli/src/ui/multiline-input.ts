@@ -273,7 +273,10 @@ export function inputBlockRowCount(
   scrollRow: number,
   cols: number,
   maxVisibleLines: number = INPUT_MAX_VISIBLE_LINES,
+  cursor = 0,
 ): number {
-  const rendered = renderMultilineInput({ value, cursor: 0, scrollRow, cols, maxVisibleLines });
+  // Cursor must match the live footer render — cursor:0 can under/over-count
+  // wrapped rows and leave ghost separators when height jumps.
+  const rendered = renderMultilineInput({ value, cursor, scrollRow, cols, maxVisibleLines });
   return rendered.rows.length;
 }

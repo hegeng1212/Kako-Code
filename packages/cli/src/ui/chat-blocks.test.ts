@@ -103,8 +103,8 @@ describe("chat-blocks", () => {
       thinkingStartedAt: Date.now() - 437_000,
     });
     const line = stripAnsi(renderSmooshingLine(turn));
-    // Live status * morphs (point → cross → star); pulseFrame 0 starts at ".".
-    expect(line).toMatch(/[.·∙+×*∗⋆] Cogitating…/);
+    // Live status * morphs (point → orb → star); pulseFrame 0 starts at ".".
+    expect(line).toMatch(/[.oO*] Cogitating…/);
     expect(line).toContain("7m 17s");
     expect(line).toContain("tokens");
   });
@@ -123,7 +123,7 @@ describe("chat-blocks", () => {
     expect(metaIdx).toBeGreaterThan(0);
     expect(colored.slice(0, metaIdx)).toContain(ansi.red);
     expect(colored.slice(metaIdx)).not.toContain(ansi.red);
-    expect(stripAnsi(colored)).toMatch(/[.·∙+×*∗⋆] Refining… \(\d+s · ↓ 42 tokens · writing\)/);
+    expect(stripAnsi(colored)).toMatch(/[.oO*] Refining… \(\d+s · ↓ 42 tokens · writing\)/);
   });
 
   it("shows waiting after tools complete while the model thinks", () => {
@@ -342,7 +342,7 @@ describe("chat-blocks", () => {
     const plain = renderTurnToLines(turn, 100).map((l) => stripAnsi(l.text));
     const answerIdx = plain.findIndex((l) => l.includes("让我帮你查一下"));
     const toolIdx = plain.findIndex((l) => l.includes("called bbt_pregnancy.find_baby"));
-    const followIdx = plain.findIndex((l) => l.includes("你有 2 个宝宝"));
+    const followIdx = plain.findIndex((l) => /你有\s*2\s*个宝宝/.test(l));
     expect(plain[answerIdx + 1]).toBe("");
     expect(toolIdx).toBeGreaterThan(answerIdx);
     expect(plain[toolIdx + 1]).toBe("");

@@ -4,6 +4,7 @@ import {
   INPUT_MAX_VISIBLE_LINES,
   clampInputScrollRow,
   cursorLogicalLine,
+  inputBlockRowCount,
   inputOffsetFromScreen,
   insertNewlineAtCursor,
   moveCursorDown,
@@ -89,5 +90,20 @@ describe("multiline-input", () => {
     });
     expect(rendered.rows).toHaveLength(INPUT_MAX_VISIBLE_LINES);
     expect(stripAnsi(rendered.rows[0]!)).toContain("line3");
+  });
+
+  it("inputBlockRowCount matches renderMultilineInput with the same cursor", () => {
+    const lines = Array.from({ length: 8 }, (_, i) => `line${i + 1}`).join("\n");
+    const cursor = lines.length;
+    const count = inputBlockRowCount(lines, 0, 80, 5, cursor);
+    const rendered = renderMultilineInput({
+      value: lines,
+      cursor,
+      scrollRow: 0,
+      cols: 80,
+      maxVisibleLines: 5,
+    });
+    expect(count).toBe(rendered.rows.length);
+    expect(count).toBe(5);
   });
 });

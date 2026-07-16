@@ -39,7 +39,12 @@ import {
 import { toolCallWaitingPhrase } from "./tool-call-phrases.js";
 import { renderPlanBoxLines, renderCurrentPlanTreeLine, renderPlanPathLine } from "./plan-box.js";
 import { wrapContentLines } from "./text-wrap.js";
-import { renderBreathingRedPrefix, renderBreathingRedText, renderPulsingPrefix } from "./stream-pulse.js";
+import {
+  renderAnswerPulsingPrefix,
+  renderBreathingRedPrefix,
+  renderBreathingRedText,
+  renderMutedPulsingPrefix,
+} from "./stream-pulse.js";
 import { extractDisplayFilePaths, formatFileBranchLabel } from "./file-path-display.js";
 import { formatDurationSeconds } from "./format-duration.js";
 import { extractImageLabelsInOrder } from "./image-markers.js";
@@ -329,7 +334,7 @@ export function renderThoughtSummaryForEntry(
   pulseFrame = 0,
 ): string {
   const secs = thoughtEntrySeconds(entry, now, live);
-  const prefix = renderPulsingPrefix("◐", pulseFrame, live);
+  const prefix = renderMutedPulsingPrefix("◐", pulseFrame, live);
   const label = live
     ? `Thinking for ${formatDurationSeconds(secs)}...`
     : `Thought for ${formatDurationSeconds(secs)}`;
@@ -515,7 +520,7 @@ export function renderAnswerTextLines(
     if (line === "") return "";
     const isFirst = !seenContent;
     seenContent = true;
-    const bullet = renderPulsingPrefix("●", pulseFrame, pulseLive && isFirst);
+    const bullet = renderAnswerPulsingPrefix("●", pulseFrame, pulseLive && isFirst);
     return indent(
       isFirst
         ? `${bullet}${ansi.text}${line}${ansi.reset}`

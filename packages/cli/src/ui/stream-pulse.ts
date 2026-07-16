@@ -1,5 +1,13 @@
 import { ansi } from "./ansi.js";
 
+/** 4-step brightness cycle within muted gray — thinking icons stay gray while live. */
+const MUTED_PULSE_STEPS = [
+  { bold: "", color: ansi.muted },
+  { bold: ansi.dim, color: ansi.muted },
+  { bold: ansi.bold, color: ansi.muted },
+  { bold: "", color: ansi.muted },
+] as const;
+
 /** 4-step brightness cycle — same glyph width, no layout jitter (generic UI). */
 const PULSE_STEPS = [
   { bold: "", color: ansi.muted },
@@ -24,39 +32,31 @@ const RED_BREATH_STEPS = [
 export const RED_BREATH_FRAME_DIVISOR = 3;
 
 /**
- * Status * morph: point → cross → star → big star → shrink.
- * Width-1 glyphs only (avoid dingbat/emoji width-2 jitter). Dwell repeats for soft motion.
+ * Streaming answer ● — tick is ~100ms; without a divisor the 4-step brightness
+ * cycle finishes in ~400ms and reads as a frantic blink.
+ */
+export const ANSWER_PULSE_FRAME_DIVISOR = 6;
+
+/**
+ * Status * morph: point → orb → star → peak → shrink.
+ * ASCII-only glyphs so Menlo/SF Mono share one baseline (Unicode · ∗ ⋆ sit
+ * higher/lower and cause vertical jitter while morphing).
  */
 export const LOADING_STAR_CYCLE = [
   ".",
   ".",
-  "·",
-  "·",
-  "∙",
-  "∙",
-  "+",
-  "+",
-  "×",
-  "×",
+  "o",
+  "o",
+  "O",
+  "O",
   "*",
   "*",
-  "∗",
-  "∗",
-  "⋆",
-  "⋆",
-  "⋆", // peak
-  "∗",
-  "∗",
-  "*",
-  "*",
-  "×",
-  "×",
-  "+",
-  "+",
-  "∙",
-  "∙",
-  "·",
-  "·",
+  "*", // peak
+  "O",
+  "O",
+  "o",
+  "o",
+  ".",
 ] as const;
 
 /** Wrap modulus for turn.pulseFrame (glyph cycle length). */
@@ -77,6 +77,15 @@ export function renderPulsingIcon(glyph: string, frame: number, live: boolean): 
   return `${step.bold}${step.color}${glyph}${ansi.reset}`;
 }
 
+/** Thinking/stream chrome — pulse stays in muted gray (never bright text/accent). */
+export function renderMutedPulsingIcon(glyph: string, frame: number, live: boolean): string {
+  if (!live) {
+    return `${ansi.muted}${glyph}${ansi.reset}`;
+  }
+  const step = MUTED_PULSE_STEPS[frame % MUTED_PULSE_STEPS.length]!;
+  return `${step.bold}${step.color}${glyph}${ansi.reset}`;
+}
+
 export function renderPulsingPrefix(
   glyph: string,
   frame: number,
@@ -85,6 +94,31 @@ export function renderPulsingPrefix(
 ): string {
   const space = trailingSpace ? " " : "";
   return `${renderPulsingIcon(glyph, frame, live)}${space}`;
+}
+
+/** Answer bullet — same glyph, slowed brightness cycle (~2.4s at 100ms ticks). */
+export function renderAnswerPulsingPrefix(
+  glyph: string,
+  frame: number,
+  live: boolean,
+  trailingSpace = true,
+): string {
+  return renderPulsingPrefix(
+    glyph,
+    Math.floor(frame / ANSWER_PULSE_FRAME_DIVISOR),
+    live,
+    trailingSpace,
+  );
+}
+
+export function renderMutedPulsingPrefix(
+  glyph: string,
+  frame: number,
+  live: boolean,
+  trailingSpace = true,
+): string {
+  const space = trailingSpace ? " " : "";
+  return `${renderMutedPulsingIcon(glyph, frame, live)}${space}`;
 }
 
 /** Slow soft program-red breath for status glyph + verb (not metadata). */

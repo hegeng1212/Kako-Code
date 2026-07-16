@@ -12,6 +12,7 @@ import {
   parseInputActions,
   resolveContentClickAction,
   resolveContentClickTarget,
+  resolveFooterLayoutHeight,
   wrapContentLines,
 } from "./terminal-layout.js";
 import { renderInitialInputFooter } from "./welcome.js";
@@ -535,6 +536,15 @@ describe("wrapContentLines", () => {
     const lines = wrapContentLines("a\nb", 20);
     expect(lines).toEqual(["a", "b"]);
   });
+
+  it("wraps CJK by display columns so padToWidth does not strip muted SGR", () => {
+    const cjk = "你好世界测试一二三四五六七八九十"; // 16 chars → 32 cols
+    const lines = wrapContentLines(cjk, 10);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) {
+      expect(displayWidth(line)).toBeLessThanOrEqual(10);
+    }
+  });
 });
 
 describe("ChatLayout regions", () => {
@@ -550,6 +560,21 @@ describe("ChatLayout regions", () => {
   it("uses full terminal columns", () => {
     const { cols } = getTerminalSize();
     expect(cols).toBeGreaterThan(0);
+  });
+
+  it("flags content redraw when painted footer height diverges from reserved", () => {
+    expect(resolveFooterLayoutHeight(5, 4, 20)).toEqual({
+      height: 4,
+      needsContentRedraw: true,
+    });
+    expect(resolveFooterLayoutHeight(4, 4, 20)).toEqual({
+      height: 4,
+      needsContentRedraw: false,
+    });
+    expect(resolveFooterLayoutHeight(4, 30, 10)).toEqual({
+      height: 10,
+      needsContentRedraw: true,
+    });
   });
 });
 

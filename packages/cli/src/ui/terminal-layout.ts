@@ -346,6 +346,20 @@ const CHAT_EDGE_LINE: RenderLine = { text: "" };
 /** Footer rows: topSep, input, bottomSep, shortcuts */
 export const CHAT_FOOTER_HEIGHT = 4;
 
+/**
+ * Painted footer row count is the source of truth for reserved height.
+ * When they diverge, content must redraw before the footer paints — otherwise
+ * shrinking leaves a ghost separator above the input, and growing overlaps chat.
+ */
+export function resolveFooterLayoutHeight(
+  reservedHeight: number,
+  paintedRowCount: number,
+  maxHeight: number,
+): { height: number; needsContentRedraw: boolean } {
+  const height = Math.min(Math.max(1, paintedRowCount), maxHeight);
+  return { height, needsContentRedraw: height !== reservedHeight };
+}
+
 export interface RewindHandlers {
   loadTurns: () => Promise<RewindTurnAnchor[]>;
   /** Conversation truncate (+ optional prefill of the selected prompt). */
@@ -440,10 +454,21 @@ function padToWidth(line: string, width: number): string {
   }
   const w = displayWidth(line);
   if (w > width) {
-    return clipPlainToDisplayWidth(line.replace(/\x1b\[[0-9;]*m/g, ""), width);
+    // Keep leading SGR so thinking/muted body does not fall back to bright default FG.
+    return clipStyledToDisplayWidth(line, width);
   }
   if (w >= width) return line;
   return line + " ".repeat(width - w);
+}
+
+/** Clip an ANSI-styled line to display columns while preserving leading color codes. */
+function clipStyledToDisplayWidth(line: string, width: number): string {
+  const lead = line.match(/^(\s*)((?:\x1b\[[0-9;]*m)*)/) ?? ["", "", ""];
+  const openSgr = lead[2] ?? "";
+  const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+  const clipped = clipPlainToDisplayWidth(plain, width);
+  if (!openSgr) return clipped;
+  return `${openSgr}${clipped}${ansi.reset}`;
 }
 
 /** Word-wrap plain or ANSI text to fit terminal columns. */
@@ -1001,6 +1026,8 @@ export class ChatLayout {
   /** Second Ctrl+C during an active turn — exit the chat session. */
   private appExitRequested = false;
   private activeFooterHeight = CHAT_FOOTER_HEIGHT;
+  /** Re-entrancy guard: height change inside drawFooter must redraw content once. */
+  private footerLayoutSyncDepth = 0;
   private choiceResolve: ((row: ChoiceRow) => void) | null = null;
   private choiceReject: ((reason: Error) => void) | null = null;
   private choiceHeader = "";
@@ -3991,7 +4018,13 @@ export class ChatLayout {
 
   private currentInputFooterHeight(inputValue: string): number {
     const { cols } = getTerminalSize();
-    const rows = inputBlockRowCount(inputValue, this.inputScrollRow, cols);
+    const rows = inputBlockRowCount(
+      inputValue,
+      this.inputScrollRow,
+      cols,
+      INPUT_MAX_VISIBLE_LINES,
+      this.inputCursor,
+    );
     const topHintRow = this.readingLine && this.inputTopHintText() ? 1 : 0;
     // Claude: main + agent rows stay visible whenever any agent is running.
     // +1 blank line between shortcuts and the agent list.
@@ -5842,6 +5875,7 @@ export class ChatLayout {
         ? this.filteredSlashSuggestions()
         : [];
 
+    // Plan slash maxVisible from the estimate; final height comes from painted rows.
     if (this.readingLine) {
       this.updateSlashSuggestFooterHeight(suggestions, inputValue);
     } else {
@@ -5850,7 +5884,6 @@ export class ChatLayout {
       );
     }
 
-    const top = this.footerTop;
     const inputRendered = renderMultilineInput({
       value: inputValue,
       cursor: this.inputCursor,
@@ -5909,12 +5942,6 @@ export class ChatLayout {
             maxVisible: this.slashSuggestMaxVisible,
           })
         : [];
-    this.inputRowsScreenStart = computeInputRowsScreenStart({
-      footerTop: top,
-      slashSuggestLineCount: slashLines.length,
-      inputRowOffset,
-    });
-    this.inputRowsScreenCount = inputRendered.rows.length;
 
     const footerRows =
       slashLines.length > 0
@@ -5925,6 +5952,35 @@ export class ChatLayout {
             ...inputBlock,
           ]
         : inputBlock;
+
+    // Height must match painted rows. Changing footerTop without redrawing content
+    // leaves ghost separators above the input (or overlaps the last content line).
+    const layout = resolveFooterLayoutHeight(
+      this.activeFooterHeight,
+      footerRows.length,
+      this.maxFooterHeight(),
+    );
+    if (layout.needsContentRedraw) {
+      this.activeFooterHeight = layout.height;
+      if (this.footerLayoutSyncDepth === 0) {
+        this.footerLayoutSyncDepth++;
+        try {
+          this.invalidateContentCache();
+          this.redrawContent();
+        } finally {
+          this.footerLayoutSyncDepth--;
+        }
+        return;
+      }
+    }
+
+    const top = this.footerTop;
+    this.inputRowsScreenStart = computeInputRowsScreenStart({
+      footerTop: top,
+      slashSuggestLineCount: slashLines.length,
+      inputRowOffset,
+    });
+    this.inputRowsScreenCount = inputRendered.rows.length;
 
     const paintedEnd = top + footerRows.length;
     const prevExtent = this.slashFooterDrawExtent;
