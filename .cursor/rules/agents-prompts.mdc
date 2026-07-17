@@ -1,0 +1,13 @@
+---
+description: Agent prompts and YAML — follow prompt-agents skill; rules not examples
+globs: agents/**/*
+alwaysApply: false
+---
+
+# Agents / prompts
+
+Read `.agents/skills/prompt-agents/SKILL.md` before editing `agents/`.
+
+- Prompt = rules; tool description = boundaries; no vertical sample-as-logic
+- Do not trim Skill catalog via YAML `skills:` in `buildMessages`
+- Docs-first when model-facing contracts change

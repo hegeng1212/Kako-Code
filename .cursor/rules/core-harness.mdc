@@ -1,0 +1,15 @@
+---
+description: Core harness — follow core-dev skill; session state on AgentRuntime
+globs: packages/core/**/*
+alwaysApply: false
+---
+
+# Core harness
+
+Before changing `packages/core/`:
+
+1. Read `packages/core/AGENTS.md`
+2. Follow `.agents/skills/core-dev/SKILL.md`
+3. Security-focused edits: also `.agents/skills/security-dev/SKILL.md`
+4. Docs-first for contract/behavior changes
+5. Remember: per-turn `ToolRegistry` recreation — session allows live on `AgentRuntime`

@@ -180,6 +180,7 @@ The following skills are available for use with the Skill tool:
 
 ## 相关文档
 
+- 贡献者入口与 docs-first：根目录 `AGENTS.md`、`.agents/skills/`
 - Agent 与 AskUserQuestion 边界：`agents/prompts/main.md`
 - 工具需求：`docs/requirements/04-tools.md`
 - Agent 需求：`docs/requirements/03-agent.md`

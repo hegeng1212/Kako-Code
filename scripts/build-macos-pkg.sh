@@ -28,8 +28,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 NODE_MAJOR="$(node -p "process.version.slice(1).split('.')[0]")"
-if [[ "$NODE_MAJOR" -lt 20 ]]; then
-  echo "Node.js >= 20 is required (found $(node -v))" >&2
+if [[ "$NODE_MAJOR" -lt 22 ]]; then
+  echo "Node.js >= 22 is required to build the installer (found $(node -v); see .nvmrc)" >&2
   exit 1
 fi
 

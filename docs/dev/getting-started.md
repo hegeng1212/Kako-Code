@@ -1,12 +1,20 @@
 # 开发指南
 
+## 研发规范（给贡献者 / 编码助手）
+
+- 根入口：[AGENTS.md](../../AGENTS.md)（`CLAUDE.md` 指向同一文件）
+- 工程红线：[engineering-principles.md](./engineering-principles.md)
+- 流程 skill：仓库 [`.agents/skills/`](../../.agents/skills/)（**不是**产品 `skills/`）
+- **Docs-first**：新功能或行为变更须先读文档并更新规范/skill，再实现代码
+
 ## 环境要求
 
-- Node.js >= 20
-- pnpm >= 10
+- Node.js >= 22（仓库根 `.nvmrc`；`.npmrc` 开启 `engine-strict`）
+- pnpm 10.12.1（见根 `packageManager`）
 - Rust >= 1.77（Tauri 开发，Phase 2）
 - macOS / Linux / Windows
 
+质量命令：`pnpm lint`（oxlint）、`pnpm typecheck`、`pnpm test`。CI 见 `.github/workflows/ci.yml`。
 ## 快速开始
 
 ```bash
@@ -34,6 +42,29 @@ packages/shared/   → 类型定义（无运行时依赖）
 packages/core/     → Harness 核心逻辑
 packages/cli/      → CLI 入口
 apps/desktop/      → Tauri 桌面应用
+```
+
+## 常用命令（打包 / 服务 / CLI）
+
+```bash
+# 设置页 API + Web（后台启停，日志在 ~/.kako/dev/logs/）
+pnpm services:restart   # 停旧进程再起 :3721 + :5173
+pnpm services:status
+pnpm services:stop
+pnpm services            # 同 start；也可用 ./scripts/dev-services.sh fg 前台
+
+# 前台开发（同一套 dev:server + Vite）
+pnpm dev:web
+
+# 重建并链接本地 CLI → ~/.local/bin/kako
+pnpm link:dev            # = ./scripts/link-dev.sh（先 build shared/core/cli）
+pnpm rebuild:cli         # 只 build，不写 ~/.local/bin
+
+# macOS 安装包
+pnpm pack                # = pnpm pack:macos → release/macos/kako-*-macos.pkg
+
+# 质量门禁（对齐 CI 硬步骤）
+pnpm ci                  # lint + test
 ```
 
 ## 开发工作流
@@ -166,7 +197,7 @@ export OPENAI_API_KEY=sk-...
 
 ### pnpm install 失败
 
-确保 Node.js >= 20 且 pnpm >= 10：
+确保 Node.js >= 22 且 pnpm 10.12.1（可用 `nvm use` / `fnm use` 读取 `.nvmrc`）：
 
 ```bash
 corepack enable

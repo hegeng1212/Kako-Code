@@ -1,0 +1,12 @@
+---
+description: Always read root AGENTS.md; load .agents/skills for the task; docs-first for behavior changes
+alwaysApply: true
+---
+
+# Kako agent entry
+
+1. Read root `AGENTS.md` (and `CLAUDE.md` → same).
+2. For the task, load the matching skill under `.agents/skills/` (see Skill router in `AGENTS.md`).
+3. **Docs-first**: for new features or behavior changes, update AGENTS/skills/spec **before** implementing.
+4. Product runtime skills are under `skills/` — do not confuse with `.agents/skills/`.
+5. Engineering red lines: `.cursor/rules/no-patch-fixes.mdc` and `docs/dev/engineering-principles.md`.

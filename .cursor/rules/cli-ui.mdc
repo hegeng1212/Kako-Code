@@ -1,0 +1,14 @@
+---
+description: CLI terminal UI — follow write-cli-ui skill; docs-first
+globs: packages/cli/src/ui/**/*,packages/cli/src/commands/chat.ts
+alwaysApply: false
+---
+
+# CLI UI
+
+Before changing files under `packages/cli/src/ui/`:
+
+1. Read `packages/cli/AGENTS.md`
+2. Follow `.agents/skills/write-cli-ui/SKILL.md`
+3. Update that skill if landing spots or red lines change, then implement
+4. Rebuild: `pnpm --filter @kako/cli build`

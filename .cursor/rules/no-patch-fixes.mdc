@@ -5,7 +5,7 @@ alwaysApply: true
 
 # 工程原则（必读）
 
-详见 `docs/dev/engineering-principles.md`。提交代码前遵守以下两条红线。
+详见 `docs/dev/engineering-principles.md` 与根目录 `AGENTS.md`。行为变更请先读并更新相关 `.agents/skills/`，再改代码（docs-first）。提交代码前遵守以下两条红线。
 
 ## 禁止打补丁
 

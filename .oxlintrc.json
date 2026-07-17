@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "warn",
+    "suspicious": "warn",
+    "pedantic": "off",
+    "perf": "off",
+    "style": "off"
+  },
+  "plugins": ["typescript", "unicorn", "node"],
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/.turbo/**",
+    "**/coverage/**",
+    "release/**",
+    "apps/desktop/src-tauri/target/**",
+    "pnpm-lock.yaml",
+    "workflows/templates/**",
+    "packages/core/bundled/**",
+    "oxlint-out.txt"
+  ],
+  "rules": {
+    "eslint/eqeqeq": "warn",
+    "eslint/no-control-regex": "off",
+    "eslint/no-unused-vars": "off",
+    "eslint/no-await-in-loop": "off",
+    "eslint/max-lines": "off",
+    "eslint/max-lines-per-function": "off",
+    "eslint/no-negated-condition": "off",
+    "eslint/preserve-caught-error": "off",
+    "typescript/no-explicit-any": "off",
+    "typescript/no-non-null-assertion": "off",
+    "typescript/no-this-alias": "off",
+    "unicorn/prefer-node-protocol": "warn",
+    "unicorn/prefer-string-starts-ends-with": "off",
+    "unicorn/no-useless-undefined": "off",
+    "unicorn/no-lonely-if": "off",
+    "unicorn/prefer-ternary": "off",
+    "unicorn/no-array-for-each": "off",
+    "unicorn/prefer-string-replace-all": "off",
+    "unicorn/filename-case": "off",
+    "unicorn/explicit-length-check": "off",
+    "unicorn/no-useless-spread": "warn",
+    "unicorn/no-useless-fallback-in-spread": "warn",
+    "unicorn/no-new-array": "warn",
+    "unicorn/prefer-math-trunc": "off",
+    "node/no-exports-assign": "off"
+  }
+}

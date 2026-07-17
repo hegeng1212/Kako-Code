@@ -1,0 +1,14 @@
+# Enforce LF so text is byte-identical across platforms (Windows autocrlf).
+* text=auto eol=lf
+
+# Binary assets — never normalize line endings.
+*.gif binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.pkg binary

@@ -20,3 +20,6 @@ apps/desktop/src-tauri/target/
 .idea/
 .vscode/
 *.swp
+
+# Local lint dumps
+oxlint-out.txt

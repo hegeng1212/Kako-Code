@@ -26,5 +26,6 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "  export PATH=\"$BIN_DIR:\$PATH\""
 fi
 echo ""
-echo "Settings UI (dev):  pnpm dev:web"
+echo "Settings UI (dev):  pnpm services:restart   # or: pnpm dev:web"
 echo "Settings UI (built): pnpm --filter @kako/server build && pnpm --filter @kako/web build && kako web"
+echo "macOS pkg:          pnpm pack"

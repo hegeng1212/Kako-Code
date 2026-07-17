@@ -1,0 +1,14 @@
+---
+description: Security gate and approvals — follow security-dev skill
+globs: packages/core/src/security/**/*
+alwaysApply: false
+---
+
+# Security
+
+Read `.agents/skills/security-dev/SKILL.md` before editing.
+
+- Gate entry: `runSecurityGate` in `pipeline.ts`
+- Session allows must survive turns via shared `SessionToolAllows`
+- No keyword/intent enumeration as security policy
+- Docs-first for approval/allowlist contract changes
