@@ -53,11 +53,35 @@ export interface ToolRegistryOptions {
   /** Active plan file path when in plan mode (Write/Edit allowed only here). */
   planFilePath?: string;
   worktreeSession?: WorktreeSessionInfo;
+  /**
+   * Shared across turn registries for the same chat session so "allow during
+   * this session" survives createToolRegistry-per-turn.
+   */
+  sessionAllows?: SessionToolAllows;
   /** Auto-mode LLM security monitor (bypassPermissions only). */
   classifyAction?: (
     toolCall: ToolCall,
     definition: ToolDefinition,
   ) => Promise<{ shouldBlock: boolean; category?: string; reason?: string }>;
+}
+
+/** Mutable session-scoped approvals (shared by reference across turn registries). */
+export interface SessionToolAllows {
+  writesAllowed: boolean;
+  bashCommands: Set<string>;
+  hosts: Set<string>;
+  mcpTools: Set<string>;
+  workspacePaths: Set<string>;
+}
+
+export function createSessionToolAllows(): SessionToolAllows {
+  return {
+    writesAllowed: false,
+    bashCommands: new Set(),
+    hosts: new Set(),
+    mcpTools: new Set(),
+    workspacePaths: new Set(),
+  };
 }
 
 interface RegisteredTool {
@@ -74,18 +98,20 @@ export class ToolRegistry {
   private fileVersions = new Map<string, FileVersionSnapshot>();
   /** Skills activated during this registry's conversation turn. */
   private activatedSkills = new Set<string>();
-  /** Session-wide auto-allow for write tools after user approval. */
-  private sessionWritesAllowed = false;
-  /** Session-wide auto-allow for identical bash commands after user approval. */
-  private sessionAllowedBashCommands = new Set<string>();
-  private sessionAllowedHosts = new Set<string>();
-  private sessionAllowedMcpTools = new Set<string>();
-  private sessionAllowedWorkspacePaths = new Set<string>();
+  /** Session-wide auto-allows — shared bag when provided by AgentRuntime. */
+  private sessionAllows: SessionToolAllows;
   private securityPolicy?: SecurityPolicy;
   private networkPolicy?: NetworkPolicy;
+  /**
+   * Serializes confirm() so parallel tool clusters cannot race the CLI's
+   * single-resolve approval UI. Re-evaluates needsConfirm under the lock so a
+   * sessionAllow from an earlier sibling can skip later prompts.
+   */
+  private confirmChain: Promise<void> = Promise.resolve();
 
   constructor(options: ToolRegistryOptions) {
     this.options = options;
+    this.sessionAllows = options.sessionAllows ?? createSessionToolAllows();
     for (const name of options.initialActivatedSkills ?? []) {
       this.activatedSkills.add(name.trim());
     }
@@ -116,9 +142,9 @@ export class ToolRegistry {
       policy: policies.security,
       networkPolicy: policies.network,
       permissionMode: this.options.permissionMode ?? "default",
-      sessionAllowedHosts: this.sessionAllowedHosts,
-      sessionAllowedMcpTools: this.sessionAllowedMcpTools,
-      sessionAllowedWorkspacePaths: this.sessionAllowedWorkspacePaths,
+      sessionAllowedHosts: this.sessionAllows.hosts,
+      sessionAllowedMcpTools: this.sessionAllows.mcpTools,
+      sessionAllowedWorkspacePaths: this.sessionAllows.workspacePaths,
       classifyAction: this.options.classifyAction,
     };
   }
@@ -162,18 +188,18 @@ export class ToolRegistry {
 
   private isSessionAllowed(toolCall: ToolCall): boolean {
     if (
-      this.sessionWritesAllowed &&
+      this.sessionAllows.writesAllowed &&
       (toolCall.name === "Write" || toolCall.name === "Edit" || toolCall.name === "NotebookEdit")
     ) {
       return true;
     }
     if (toolCall.name === "Bash") {
       const command = String(toolCall.input.command ?? "").trim();
-      if (command && this.sessionAllowedBashCommands.has(command)) {
+      if (command && this.sessionAllows.bashCommands.has(command)) {
         return true;
       }
     }
-    if (toolCall.name.startsWith("mcp/") && this.sessionAllowedMcpTools.has(toolCall.name)) {
+    if (toolCall.name.startsWith("mcp/") && this.sessionAllows.mcpTools.has(toolCall.name)) {
       return true;
     }
     return false;
@@ -189,22 +215,63 @@ export class ToolRegistry {
     },
   ): void {
     if (sessionAllow === "writes") {
-      this.sessionWritesAllowed = true;
+      this.sessionAllows.writesAllowed = true;
       return;
     }
     if (sessionAllow === "bash-command" && toolCall.name === "Bash") {
       const command = String(toolCall.input.command ?? "").trim();
-      if (command) this.sessionAllowedBashCommands.add(command);
+      if (command) this.sessionAllows.bashCommands.add(command);
     }
     if (sessionAllow === "network-host" && extras?.networkHost) {
-      this.sessionAllowedHosts.add(extras.networkHost.toLowerCase());
+      this.sessionAllows.hosts.add(extras.networkHost.toLowerCase());
     }
     if (sessionAllow === "mcp-tool" && extras?.mcpTool) {
-      this.sessionAllowedMcpTools.add(extras.mcpTool);
+      this.sessionAllows.mcpTools.add(extras.mcpTool);
     }
     if (sessionAllow === "workspace-path" && extras?.workspacePath) {
-      this.sessionAllowedWorkspacePaths.add(resolve(extras.workspacePath));
+      this.sessionAllows.workspacePaths.add(resolve(extras.workspacePath));
     }
+  }
+
+  private async withConfirmLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.confirmChain;
+    let release!: () => void;
+    this.confirmChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  private computeNeedsConfirm(
+    toolCall: ToolCall,
+    definition: ToolDefinition,
+    gate: Awaited<ReturnType<typeof runSecurityGate>>,
+    mode: PermissionMode,
+    security: SecurityPolicy,
+  ): boolean {
+    const skipTrustedWorkspaceWrite =
+      gate.trustedWorkspaceWrite &&
+      (toolCall.name === "Write" ||
+        toolCall.name === "Edit" ||
+        toolCall.name === "NotebookEdit");
+    return (
+      !skipTrustedWorkspaceWrite &&
+      !this.isSessionAllowed(toolCall) &&
+      (gate.needsConfirm ||
+        (!gate.allowlistedNetwork &&
+          toolCallNeedsUserConfirm(
+            toolCall,
+            definition,
+            mode,
+            security,
+            gate.mcpApproval,
+          )))
+    );
   }
 
   register(definition: ToolDefinition, handler: ToolHandler): void {
@@ -306,62 +373,98 @@ export class ToolRegistry {
     }
 
     const mode = this.options.permissionMode ?? "default";
-    const skipTrustedWorkspaceWrite =
-      gate.trustedWorkspaceWrite &&
-      (toolCall.name === "Write" ||
-        toolCall.name === "Edit" ||
-        toolCall.name === "NotebookEdit");
-    const needsConfirm =
-      !skipTrustedWorkspaceWrite &&
-      !this.isSessionAllowed(toolCall) &&
-      (gate.needsConfirm ||
-        (!gate.allowlistedNetwork &&
-          toolCallNeedsUserConfirm(
-            toolCall,
-            definition,
-            mode,
-            policies.security,
-            gate.mcpApproval,
-          )));
+    let needsConfirm = this.computeNeedsConfirm(
+      toolCall,
+      definition,
+      gate,
+      mode,
+      policies.security,
+    );
 
     let approvedPermissionMode: PermissionMode | undefined;
     let audit: ToolAuditMetadata = { ...gate.audit };
+    let liveGate = gate;
 
     if (needsConfirm && this.options.confirm) {
-      audit.approvalRequired = true;
-      const confirmResult = normalizeToolConfirmResult(await this.options.confirm(toolCall));
-      if (!confirmResult.allowed) {
-        audit.approvalResult = "denied";
+      const confirmOutcome = await this.withConfirmLock(async () => {
+        // Sibling tools may have applied sessionAllow while we waited.
+        liveGate = await runSecurityGate(toolCall, definition, this.securityContext(policies));
+        if (!liveGate.allowed) {
+          return {
+            kind: "denied" as const,
+            error: liveGate.error ?? "Denied by security policy",
+            audit: liveGate.audit,
+          };
+        }
+        needsConfirm = this.computeNeedsConfirm(
+          toolCall,
+          definition,
+          liveGate,
+          mode,
+          policies.security,
+        );
+        if (!needsConfirm) {
+          return {
+            kind: "skipped" as const,
+            audit: { ...liveGate.audit, approvalResult: "skipped" as const },
+          };
+        }
+        const confirmResult = normalizeToolConfirmResult(await this.options.confirm!(toolCall));
+        if (!confirmResult.allowed) {
+          return {
+            kind: "denied" as const,
+            error: confirmResult.denialReason ?? "User denied tool execution",
+            audit: {
+              ...liveGate.audit,
+              approvalRequired: true,
+              approvalResult: "denied" as const,
+            },
+          };
+        }
+        this.applySessionAllow(toolCall, confirmResult.sessionAllow, {
+          networkHost: confirmResult.networkHost,
+          mcpTool: confirmResult.mcpTool,
+          workspacePath: confirmResult.workspacePath,
+        });
+        if (confirmResult.networkAllowlistHosts?.length) {
+          policies.network = await addHostsToUserAllowlist(
+            confirmResult.networkAllowlistHosts,
+            policies.network,
+          );
+          this.networkPolicy = policies.network;
+        }
+        if (confirmResult.inputPatch) {
+          Object.assign(toolCall.input, confirmResult.inputPatch);
+        }
+        return {
+          kind: "allowed" as const,
+          permissionMode: confirmResult.permissionMode,
+          audit: {
+            ...liveGate.audit,
+            approvalRequired: true,
+            approvalResult: "allowed" as const,
+          },
+        };
+      });
+
+      if (confirmOutcome.kind === "denied") {
         return this.result(
           toolCall,
           start,
-          "denied",
+          confirmOutcome.audit.approvalResult === "denied" ? "denied" : "error",
           undefined,
-          confirmResult.denialReason ?? "User denied tool execution",
-          audit,
+          confirmOutcome.error,
+          confirmOutcome.audit,
         );
       }
-      audit.approvalResult = "allowed";
-      this.applySessionAllow(toolCall, confirmResult.sessionAllow, {
-        networkHost: confirmResult.networkHost,
-        mcpTool: confirmResult.mcpTool,
-        workspacePath: confirmResult.workspacePath,
-      });
-      if (confirmResult.networkAllowlistHosts?.length) {
-        policies.network = await addHostsToUserAllowlist(
-          confirmResult.networkAllowlistHosts,
-          policies.network,
-        );
-        this.networkPolicy = policies.network;
-      }
-      approvedPermissionMode = confirmResult.permissionMode;
-      if (confirmResult.inputPatch) {
-        Object.assign(toolCall.input, confirmResult.inputPatch);
+      audit = confirmOutcome.audit;
+      if (confirmOutcome.kind === "allowed") {
+        approvedPermissionMode = confirmOutcome.permissionMode;
       }
     } else if (needsConfirm && !this.options.confirm) {
       audit.approvalResult = "skipped";
     } else {
-      audit.approvalResult = gate.audit.approvalResult ?? "skipped";
+      audit.approvalResult = liveGate.audit.approvalResult ?? "skipped";
     }
 
     if (mode === "plan" && isWriteTool(toolCall.name)) {
@@ -382,7 +485,7 @@ export class ToolRegistry {
         {
           enforceNetworkPolicy: true,
           networkPolicy: policies.network,
-          sessionAllowedHosts: this.sessionAllowedHosts,
+          sessionAllowedHosts: this.sessionAllows.hosts,
           mcpContext: networkDisabled && toolCall.name.startsWith("mcp/"),
           mcpExceptionHosts,
         },

@@ -84,6 +84,13 @@ export function isSlashOnlySystemSkill(name: string): boolean {
   return getSystemSkillEntry(name)?.slashOnly === true;
 }
 
+/** True when Skill() should run a built-in handler (not load SKILL.md from disk). */
+export function isDefaultSkillWithHandler(name: string): boolean {
+  const entry = getSystemSkillEntry(name);
+  if (!entry || entry.slashOnly) return false;
+  return entry.handler === "dynamic-workflow" || entry.name === "workflows" || entry.name === "init";
+}
+
 export function skillNamesForToolAllowlist(skills: SkillDefinition[]): string[] {
   return skills.map((skill) => skill.name);
 }
@@ -126,7 +133,6 @@ export function mergeSkillsForAgent(
   discovered: SkillDefinition[],
   bundledSkills: SkillDefinition[],
   systemSkills: SkillDefinition[],
-  options?: { forCatalog?: boolean },
 ): SkillDefinition[] {
   const byName = new Map<string, SkillDefinition>();
 
@@ -150,10 +156,10 @@ export function mergeSkillsForAgent(
       byName.set(skill.name, skill);
     }
   }
-  const merged = [...byName.values()];
-  const sorted = merged.sort((a, b) => a.name.localeCompare(b.name));
-  if (options?.forCatalog) return sorted;
-  return sorted.filter((skill) => !isSlashOnlySystemSkill(skill.name));
+  // Never surface slash-only commands in agent skill lists / Skill tool catalogs.
+  return [...byName.values()]
+    .filter((skill) => !isSlashOnlySystemSkill(skill.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Slash-only system skills — built-in slash commands, not loaded from skills/. */

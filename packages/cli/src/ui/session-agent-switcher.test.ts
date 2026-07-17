@@ -15,6 +15,7 @@ import {
   renderSessionAgentListLines,
   resolveAgentDetailPinRow,
   shouldFocusAgentListAfterLeavingHistory,
+  shouldOpenAgentsOnCursorLeft,
   shouldPopAgentDetailOnLeft,
   shouldShowChatInputCaret,
   subagentElapsedMs,
@@ -213,6 +214,13 @@ describe("focus / selection helpers", () => {
     expect(moveAgentSelection(0, 1, 3)).toBe(1);
     expect(moveAgentSelection(2, 1, 3)).toBe(2);
     expect(moveAgentSelection(1, -1, 3)).toBe(0);
+  });
+
+  it("opens Agents on ← only when the compose box is empty", () => {
+    expect(shouldOpenAgentsOnCursorLeft(0, 0)).toBe(true);
+    expect(shouldOpenAgentsOnCursorLeft(5, 0)).toBe(false);
+    expect(shouldOpenAgentsOnCursorLeft(5, 3)).toBe(false);
+    expect(shouldOpenAgentsOnCursorLeft(0, 1)).toBe(false);
   });
 
   it("prioritizes pop-detail over Agents when detail is open", () => {

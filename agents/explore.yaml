@@ -10,9 +10,7 @@ description: >-
 model: ""
 systemPrompt: ./prompts/explore.md
 tools:
-  - Read
-  - Grep
-  - Glob
+  - "*"
 disallowedTools:
   - Agent
   - ExitPlanMode

@@ -91,6 +91,8 @@ export function charDisplayWidth(code: number): number {
   if (code === 0xfe0f || code === 0x200d) return 0;
   // Dingbat status marks — single column in common terminals (iTerm, VS Code, etc.)
   if (code === 0x2713 || code === 0x2714 || code === 0x2717 || code === 0x2718) return 1;
+  // Eight-pointed black star (recap status) — keep aligned with ASCII `*` done lines.
+  if (code === 0x2734) return 1;
   if (isWideCodePoint(code) || isEmojiWideCodePoint(code)) return 2;
   return 1;
 }

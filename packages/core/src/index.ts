@@ -67,6 +67,7 @@ export {
   SessionManager,
   sessionManager,
   sessionHasUserDialogue,
+  isDefaultSessionTitle,
 } from "./session/manager.js";
 export {
   handleSlashCommand,
@@ -242,6 +243,7 @@ export { loadSkill } from "./skills/loader.js";
 export {
   SYSTEM_SKILL_REGISTRY,
   skillNamesForToolAllowlist,
+  isDefaultSkillWithHandler,
   isSlashOnlySystemSkill,
   isSlashInvokableSkill,
   isSystemSkill,
@@ -290,7 +292,7 @@ export {
   type JournalEntry,
   type WorkflowPhaseDef,
 } from "./workflows/journal.js";
-export { launchWorkflow, formatWorkflowToolResult } from "./workflows/runner.js";
+export { launchWorkflow, formatWorkflowToolResult, normalizeWorkflowArgs } from "./workflows/runner.js";
 export { prepareWorkflowConfirm } from "./workflows/confirm-prep.js";
 export {
   buildTaskNotificationMessage,

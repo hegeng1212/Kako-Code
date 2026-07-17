@@ -1,8 +1,17 @@
 import type { LLMMessage, ToolDefinition, ToolHandler } from "@kako/shared";
 import { wrapUserMessageForLlm } from "../../agent/context.js";
 import { loadSkill } from "../../skills/loader.js";
-import { isSlashOnlySystemSkill, isSystemSkill } from "../../skills/system-skills.js";
-import { INIT_SLASH_CORE_PROMPT } from "../../skills/slash-command-message.js";
+import {
+  getSystemSkillEntry,
+  getSystemSkillHandler,
+  isSlashOnlySystemSkill,
+  isSystemSkill,
+  type SystemSkillEntry,
+} from "../../skills/system-skills.js";
+import {
+  buildDynamicWorkflowSlashMessage,
+  INIT_SLASH_CORE_PROMPT,
+} from "../../skills/slash-command-message.js";
 import { formatSessionWorkflowsStatus } from "../../workflows/status-summary.js";
 import { adaptClaudeCodeToolText } from "../claude-code-adapt.js";
 import {
@@ -58,12 +67,98 @@ export function assertSkillAllowed(skillName: string, allowedSkills: string[] | 
   }
 }
 
-/** Tool result logged when Skill succeeds (harness pivots context; model does not see this as a tool message). */
+/** Tool result logged when Skill succeeds (activation ack; dynamic-workflow may append launch details). */
 export function formatSkillActivationResult(skillName: string, skillMdPath: string): string {
-  if (skillName === "init") {
-    return "Launching skill: init";
+  if (skillName === "init" || getSystemSkillHandler(skillName) === "dynamic-workflow") {
+    return `Launching skill: ${skillName}`;
   }
   return `Skill "${skillName}" activated from ${skillMdPath}. Instructions loaded into system-reminder.`;
+}
+
+/**
+ * Claude Code parity for dynamic-workflow skills (e.g. deep-research):
+ * after Skill(tool), re-inject the same Invoke: Workflow guide as `/skill` slash,
+ * with refined args — do not pivot onto SKILL.md alone.
+ * (Slash path still uses this; tool path uses harness Workflow follow-through.)
+ */
+export async function buildDynamicWorkflowSkillActivatedMessages(input: {
+  systemPromptBase: string;
+  transcript: Array<{ role: string; content: string }>;
+  entry: SystemSkillEntry;
+  skillArgs?: string;
+  workspaceKakoMd?: string;
+  cwd?: string;
+  now?: Date;
+}): Promise<LLMMessage[]> {
+  const now = input.now ?? new Date();
+  const messages: LLMMessage[] = [{ role: "system", content: input.systemPromptBase }];
+  for (const msg of input.transcript) {
+    if (msg.role === "user") {
+      messages.push({
+        role: "user",
+        content: wrapUserMessageForLlm(msg.content, input.workspaceKakoMd, now),
+      });
+    } else if (msg.role === "assistant") {
+      messages.push({ role: "assistant", content: msg.content });
+    }
+  }
+  const guide = await buildDynamicWorkflowSlashMessage(
+    input.entry,
+    input.skillArgs ?? "",
+    input.cwd,
+  );
+  const reinvoke =
+    `(Re-invocation of /${input.entry.name} — the skill instructions were previously loaded; ` +
+    `the arguments or dynamic output below are new.)\n\n`;
+  messages.push({
+    role: "user",
+    content: wrapUserMessageForLlm(`${reinvoke}${guide}`, input.workspaceKakoMd, now),
+  });
+  return messages;
+}
+
+/**
+ * After Skill(dynamic-workflow) with args: copy template JS, launch in background,
+ * return Skill ack + synthetic Workflow tool call/result for the next model turn.
+ */
+export async function launchDynamicWorkflowFromSkill(input: {
+  skillName: string;
+  skillArgs?: string;
+  skillOutput: string;
+  sessionId: string;
+  cwd: string;
+}): Promise<{
+  skillOutput: string;
+  workflowToolCall: { id: string; name: "Workflow"; input: Record<string, unknown> };
+  workflowOutput: string;
+} | null> {
+  if (getSystemSkillHandler(input.skillName) !== "dynamic-workflow") {
+    return null;
+  }
+  if (!getSystemSkillEntry(input.skillName)) {
+    return null;
+  }
+  const args = input.skillArgs?.trim() ?? "";
+  if (!args) {
+    return null;
+  }
+  const { formatWorkflowToolResult, launchWorkflow } = await import("../../workflows/runner.js");
+  const { randomBytes } = await import("node:crypto");
+  const launch = await launchWorkflow({
+    sessionId: input.sessionId,
+    cwd: input.cwd,
+    name: input.skillName,
+    args,
+  });
+  return {
+    skillOutput: input.skillOutput || formatSkillActivationResult(input.skillName, input.skillName),
+    workflowToolCall: {
+      id: `call_${randomBytes(12).toString("hex")}`,
+      name: "Workflow",
+      input: { name: input.skillName, args },
+    },
+    workflowOutput: formatWorkflowToolResult(launch),
+  };
 }
 
 /** Claude-style init pivot: inject core prompt as a follow-up user message (not SKILL.md). */
@@ -157,18 +252,27 @@ export const skillHandler: ToolHandler = async (input, context) => {
 
   assertSkillAllowed(parsed.skill, context.allowedSkills);
 
-  if (parsed.skill === "workflows") {
-    return formatSessionWorkflowsStatus(context.sessionId);
-  }
-
+  // Slash-only names are CLI commands, not Skill tool targets.
   if (isSlashOnlySystemSkill(parsed.skill)) {
     throw new Error(`Skill "${parsed.skill}" is only available as a slash command (/${parsed.skill})`);
   }
 
+  // Default (system) skills: run the registered handler — do not load user skill dirs first.
+  if (parsed.skill === "workflows") {
+    return formatSessionWorkflowsStatus(context.sessionId);
+  }
   if (parsed.skill === "init") {
     return formatSkillActivationResult("init", "init");
   }
+  if (getSystemSkillHandler(parsed.skill) === "dynamic-workflow") {
+    if (!getSystemSkillEntry(parsed.skill)) {
+      throw new Error(`Unknown skill: ${parsed.skill}`);
+    }
+    // Launch happens in the agent-loop follow-through (Skill ack + Workflow tool result).
+    return formatSkillActivationResult(parsed.skill, parsed.skill);
+  }
 
+  // User / bundled file skills: load SKILL.md from the skill directory.
   const loaded = await loadSkill(parsed.skill, context.cwd);
   if (
     context.allowedSkills?.length &&

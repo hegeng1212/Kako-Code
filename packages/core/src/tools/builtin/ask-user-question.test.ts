@@ -38,6 +38,8 @@ describe("AskUserQuestion tool definition", () => {
     expect(askUserQuestionToolDefinition.description).toContain(
       "previews are only supported for single-select questions",
     );
+    expect(askUserQuestionToolDefinition.description).not.toContain("MCP");
+    expect(askUserQuestionToolDefinition.description).not.toContain("matching Skill");
 
     const schema = askUserQuestionToolDefinition.inputSchema;
     expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");

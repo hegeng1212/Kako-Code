@@ -285,7 +285,7 @@ describe("chat-blocks", () => {
     });
     const plain = renderTurnToLines(turn, 100).map((l) => stripAnsi(l.text));
     expect(plain.filter((l) => l.includes("Thought for"))).toHaveLength(1);
-    expect(plain.some((l) => l.includes("called bbt_pregnancy.find_baby"))).toBe(true);
+    expect(plain.some((l) => l.includes("Tool(bbt_pregnancy.find_baby)"))).toBe(true);
     expect(plain.some((l) => l.includes("Thought for") && l.includes("called"))).toBe(false);
   });
 
@@ -341,15 +341,16 @@ describe("chat-blocks", () => {
     });
     const plain = renderTurnToLines(turn, 100).map((l) => stripAnsi(l.text));
     const answerIdx = plain.findIndex((l) => l.includes("让我帮你查一下"));
-    const toolIdx = plain.findIndex((l) => l.includes("called bbt_pregnancy.find_baby"));
+    const toolIdx = plain.findIndex((l) => l.includes("Tool(bbt_pregnancy.find_baby)"));
     const followIdx = plain.findIndex((l) => /你有\s*2\s*个宝宝/.test(l));
     expect(plain[answerIdx + 1]).toBe("");
     expect(toolIdx).toBeGreaterThan(answerIdx);
-    expect(plain[toolIdx + 1]).toBe("");
+    expect(plain[toolIdx + 1]).toContain("Successfully called tool");
+    expect(plain[toolIdx + 2]).toBe("");
     expect(followIdx).toBeGreaterThan(toolIdx);
   });
 
-  it("renders dynamic workflow tool as Skill(name) in the timeline", () => {
+  it("renders dynamic workflow tool as Workflow(dynamic workflow: name) in the timeline", () => {
     const turn = baseTurn({
       phase: "done",
       finishedAt: Date.now(),
@@ -366,9 +367,9 @@ describe("chat-blocks", () => {
       ],
     });
     const plain = renderTurnToLines(turn, 120).map((l) => stripAnsi(l.text));
-    expect(plain.some((l) => l.includes("Skill(deep-research)"))).toBe(true);
-    expect(plain.some((l) => l.includes("Successfully loaded skill"))).toBe(true);
-    expect(plain.some((l) => l.includes("Workflow(dynamic workflow:"))).toBe(false);
+    expect(plain.some((l) => l.includes("Workflow(dynamic workflow: deep-research)"))).toBe(true);
+    expect(plain.some((l) => l.includes("/workflows"))).toBe(true);
+    expect(plain.some((l) => l.includes("Skill(deep-research)"))).toBe(false);
   });
 
   it("renders workflow completion as timeline event, not user message", () => {
@@ -420,7 +421,7 @@ describe("chat-blocks", () => {
     const plain = renderTurnToLines(turn, 100).map((line) => stripAnsi(line.text));
     const partialIdx = plain.findIndex((line) => line.includes("正在查询"));
     const toolIdx = plain.findIndex(
-      (line) => line.includes("Waiting") || line.includes("find_baby"),
+      (line) => line.includes("Tool(bbt_pregnancy.find_baby)") || line.includes("find_baby"),
     );
     const answerIdx = plain.findIndex((line) => line.includes("您有两个宝宝"));
     expect(partialIdx).toBeGreaterThanOrEqual(0);
@@ -854,11 +855,12 @@ describe("chat-blocks", () => {
     const plain = renderTurnToLines(turn, 120).map((l) => stripAnsi(l.text));
     expect(plain.filter((l) => l.includes("Thought for") && l.includes("called"))).toHaveLength(0);
     expect(plain.filter((l) => l.includes("Thought for"))).toHaveLength(2);
-    expect(plain.some((l) => l.includes("called bbt_pregnancy.find_baby"))).toBe(true);
-    expect(plain.some((l) => l.includes("called bbt_tool.get_vaccine_info"))).toBe(true);
+    expect(plain.some((l) => l.includes("Tool(bbt_pregnancy.find_baby)"))).toBe(true);
+    expect(plain.some((l) => l.includes("Tool(bbt_tool.get_vaccine_info)"))).toBe(true);
+    expect(plain.some((l) => l.includes("Successfully called tool"))).toBe(true);
     const firstThoughtIdx = plain.findIndex((l) => l.includes("Thought for"));
-    const firstMcpIdx = plain.findIndex((l) => l.includes("called bbt_pregnancy.find_baby"));
-    const secondMcpIdx = plain.findIndex((l) => l.includes("called bbt_tool.get_vaccine_info"));
+    const firstMcpIdx = plain.findIndex((l) => l.includes("Tool(bbt_pregnancy.find_baby)"));
+    const secondMcpIdx = plain.findIndex((l) => l.includes("Tool(bbt_tool.get_vaccine_info)"));
     const secondThoughtIdx = plain.findLastIndex((l) => l.includes("Thought for"));
     expect(firstMcpIdx).toBeGreaterThan(firstThoughtIdx);
     expect(secondThoughtIdx).toBeGreaterThan(firstMcpIdx);
@@ -1179,7 +1181,7 @@ describe("chat-blocks", () => {
     expect(plain.filter((l) => l.includes("Thought for") && l.includes("▸"))).toHaveLength(1);
   });
 
-  it("shows * recap: whenever recapText is set, including outside planMode", () => {
+  it("shows ✴ recap: whenever recapText is set, including outside planMode", () => {
     const finishedAt = Date.now();
     const turn = baseTurn({
       userText: "continue",
@@ -1196,21 +1198,21 @@ describe("chat-blocks", () => {
       ],
     });
     const plain = renderTurnToLines(turn, 100).map((l) => stripAnsi(l.text));
-    expect(plain.some((l) => l.includes("* recap: Goal: footer parity. Next: ship auto mode."))).toBe(
+    expect(plain.some((l) => l.includes("✴ recap: Goal: footer parity. Next: ship auto mode."))).toBe(
       true,
     );
     const answerIdx = plain.findIndex((l) => l.includes("Next we will update the footer."));
     const cookedIdx = plain.findIndex((l) => /\* \w+ for /.test(l));
-    const recapIdx = plain.findIndex((l) => l.includes("* recap:"));
+    const recapIdx = plain.findIndex((l) => l.includes("✴ recap:"));
     expect(answerIdx).toBeGreaterThanOrEqual(0);
     expect(cookedIdx).toBeGreaterThan(answerIdx);
     expect(plain[cookedIdx - 1]?.trim()).toBe("");
-    // * Cooked and * recap must not sit flush — one blank between status lines.
+    // * Cooked and ✴ recap must not sit flush — one blank between status lines.
     expect(recapIdx).toBe(cookedIdx + 2);
     expect(plain[recapIdx - 1]?.trim()).toBe("");
   });
 
-  it("keeps a blank between final answer and * Done / * recap system lines", () => {
+  it("keeps a blank between final answer and * Done / ✴ recap system lines", () => {
     const turn = baseTurn({
       userText: "analyze",
       phase: "done",
@@ -1227,7 +1229,7 @@ describe("chat-blocks", () => {
     const plain = renderTurnToLines(turn, 100).map((l) => stripAnsi(l.text));
     const answerIdx = plain.findIndex((l) => l.includes("生产就绪"));
     const doneIdx = plain.findIndex((l) => l.includes("* Pondered"));
-    const recapIdx = plain.findIndex((l) => l.includes("* recap:"));
+    const recapIdx = plain.findIndex((l) => l.includes("✴ recap:"));
     expect(answerIdx).toBeGreaterThanOrEqual(0);
     expect(doneIdx).toBe(answerIdx + 2);
     expect(plain[doneIdx - 1]?.trim()).toBe("");
@@ -1328,7 +1330,7 @@ describe("chat-blocks", () => {
       timeline: [{ type: "answer", text: "Done." }],
     });
     const plain = renderTurnToLines(turn, 100).map((l) => stripAnsi(l.text));
-    expect(plain.some((l) => l.includes("* recap:"))).toBe(false);
+    expect(plain.some((l) => l.includes("✴ recap:"))).toBe(false);
   });
 
   it("renders bare /plan harness turn without done duration", () => {

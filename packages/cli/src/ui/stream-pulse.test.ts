@@ -87,4 +87,13 @@ describe("stream-pulse", () => {
     expect(early).toBe(midDivisor);
     expect(nextStep).not.toBe(early);
   });
+
+  it("keeps answer ● brightness in muted gray only (no accent/bold bleed)", () => {
+    for (let f = 0; f < 24; f++) {
+      const painted = renderAnswerPulsingPrefix("●", f, true);
+      expect(painted).not.toContain(ansi.accent);
+      expect(painted).not.toContain(ansi.bold);
+      expect(painted).not.toContain(ansi.text);
+    }
+  });
 });

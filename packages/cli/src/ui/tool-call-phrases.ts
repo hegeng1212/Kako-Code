@@ -87,6 +87,11 @@ function mcpToolLabel(name: string): string {
   return name;
 }
 
+/** Short MCP tool name for UI labels, e.g. `bbt_pregnancy.find_baby`. */
+export function mcpToolDisplayName(name: string): string {
+  return mcpToolLabel(name);
+}
+
 /** Plan file writes are shown as "Updated plan", not a generic write stat. */
 export function isPlanFileDetail(detail: string): boolean {
   const d = detail.trim();

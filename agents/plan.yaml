@@ -6,15 +6,13 @@ description: >-
 model: ""
 systemPrompt: ./prompts/plan.md
 tools:
-  - Read
-  - Grep
-  - Glob
+  - "*"
 disallowedTools:
   - Agent
   - ExitPlanMode
   - Edit
   - Write
   - NotebookEdit
-# Same as explore: read-only via tools list; parent session plan mode is separate.
+# Same as Claude Plan: read-oriented via disallowed write tools; parent session plan mode is separate.
 permissionMode: default
 maxTurns: 20

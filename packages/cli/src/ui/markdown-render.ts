@@ -2,13 +2,30 @@ import { ansi, displayWidth } from "./ansi.js";
 import { realignAsciiArtLines } from "./markdown-ascii-art.js";
 import { parseMarkdownBlocks, type MarkdownBlock } from "./markdown-blocks.js";
 import { clipToDisplayWidth, highlightCodeLine } from "./markdown-code-highlight.js";
-import { parseInlineParts, wrapInlineParts } from "./markdown-inline.js";
+import {
+  parseInlineParts,
+  wrapInlineParts,
+  wrapInlinePartsDetailed,
+  type WrappedInlineLine,
+} from "./markdown-inline.js";
 import { renderTableLines } from "./markdown-table.js";
+
+export type RichContentLine = WrappedInlineLine;
 
 function gapBefore(lines: string[]): void {
   if (lines.length > 0 && lines[lines.length - 1] !== "") {
     lines.push("");
   }
+}
+
+function gapBeforeObjects(lines: RichContentLine[]): void {
+  if (lines.length > 0 && lines[lines.length - 1]!.text !== "") {
+    lines.push({ text: "" });
+  }
+}
+
+function asObjects(lines: string[]): RichContentLine[] {
+  return lines.map((text) => ({ text }));
 }
 
 function renderHeading(text: string, _level: number, width: number): string[] {
@@ -50,16 +67,19 @@ function renderPreBlock(lines: string[], width: number): string[] {
   return out;
 }
 
-function renderBlockquote(lines: string[], width: number): string[] {
+function renderBlockquote(lines: string[], width: number): RichContentLine[] {
   // Soft quote marker (not a heavy black bar).
   const prefix = `${ansi.muted}▎${ansi.reset} `;
   const innerWidth = Math.max(10, width - 2);
-  const out: string[] = [];
+  const out: RichContentLine[] = [];
 
   for (const line of lines) {
-    const wrapped = wrapInlineParts(parseInlineParts(line), innerWidth);
+    const wrapped = wrapInlinePartsDetailed(parseInlineParts(line), innerWidth);
     for (const wrappedLine of wrapped) {
-      out.push(`${prefix}${ansi.muted}${wrappedLine}${ansi.reset}`);
+      out.push({
+        text: `${prefix}${ansi.muted}${wrappedLine.text}${ansi.reset}`,
+        openDir: wrappedLine.openDir,
+      });
     }
   }
 
@@ -71,8 +91,8 @@ function renderList(
   width: number,
   ordered: boolean,
   connectors?: readonly string[],
-): string[] {
-  const out: string[] = [];
+): RichContentLine[] {
+  const out: RichContentLine[] = [];
   const indent = "  ";
   const innerWidth = Math.max(10, width - indent.length - 4);
 
@@ -80,16 +100,19 @@ function renderList(
     const marker = ordered ? `${index + 1}.` : "•";
     // Ordinals / bullets stay white; quantity tokens inside the item use inline colors.
     const prefix = `${indent}${ansi.text}${marker}${ansi.reset} `;
-    const wrapped = wrapInlineParts(parseInlineParts(item), innerWidth);
+    const wrapped = wrapInlinePartsDetailed(parseInlineParts(item), innerWidth);
     wrapped.forEach((line, lineIndex) => {
-      out.push(lineIndex === 0 ? `${prefix}${line}` : `${indent}   ${line}`);
+      out.push({
+        text: lineIndex === 0 ? `${prefix}${line.text}` : `${indent}   ${line.text}`,
+        openDir: line.openDir,
+      });
     });
     if (index < items.length - 1) {
       const connector = connectors?.[index];
       if (connector) {
-        out.push(`${indent}  ${ansi.text}${connector}${ansi.reset}`);
+        out.push({ text: `${indent}  ${ansi.text}${connector}${ansi.reset}` });
       }
-      out.push("");
+      out.push({ text: "" });
     }
   });
 
@@ -101,21 +124,24 @@ function renderHorizontalRule(width: number): string[] {
   return [`${ansi.muted}${"─".repeat(ruleWidth)}${ansi.reset}`];
 }
 
-function renderParagraphLine(text: string, width: number): string[] {
+function renderParagraphLine(text: string, width: number): RichContentLine[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
   const ordinal = /^(\d+\.)(\s+)(.*)$/.exec(trimmed);
   if (ordinal) {
     const prefix = `${ansi.text}${ordinal[1]}${ansi.reset}${ordinal[2]}`;
-    const wrapped = wrapInlineParts(parseInlineParts(ordinal[3]!), width);
-    return wrapped.map((line, lineIndex) => (lineIndex === 0 ? `${prefix}${line}` : line));
+    const wrapped = wrapInlinePartsDetailed(parseInlineParts(ordinal[3]!), width);
+    return wrapped.map((line, lineIndex) => ({
+      text: lineIndex === 0 ? `${prefix}${line.text}` : line.text,
+      openDir: line.openDir,
+    }));
   }
-  return wrapInlineParts(parseInlineParts(trimmed), width);
+  return wrapInlinePartsDetailed(parseInlineParts(trimmed), width);
 }
 
-function renderParagraph(text: string, width: number): string[] {
+function renderParagraph(text: string, width: number): RichContentLine[] {
   const paragraphs = text.split(/\n{2,}/);
-  const out: string[] = [];
+  const out: RichContentLine[] = [];
 
   for (const paragraph of paragraphs) {
     const chunks = paragraph.split("\n");
@@ -123,51 +149,51 @@ function renderParagraph(text: string, width: number): string[] {
       const trimmed = chunk.trim();
       if (!trimmed) continue;
       out.push(...renderParagraphLine(trimmed, width));
-      out.push("");
+      out.push({ text: "" });
     }
     if (paragraph !== paragraphs[paragraphs.length - 1]) {
-      out.push("");
+      out.push({ text: "" });
     }
   }
 
-  while (out.length > 0 && out[out.length - 1] === "") {
+  while (out.length > 0 && out[out.length - 1]!.text === "") {
     out.pop();
   }
 
   return out;
 }
 
-function renderBlock(block: MarkdownBlock, width: number): string[] {
+function renderBlock(block: MarkdownBlock, width: number): RichContentLine[] {
   switch (block.type) {
     case "paragraph":
       return renderParagraph(block.text, width);
     case "heading":
-      return renderHeading(block.text, block.level, width);
+      return asObjects(renderHeading(block.text, block.level, width));
     case "ul":
       return renderList(block.items, width, false);
     case "ol":
       return renderList(block.items, width, true, block.connectors);
     case "code":
-      return renderCodeBlock(block.lines, width, block.language);
+      return asObjects(renderCodeBlock(block.lines, width, block.language));
     case "pre":
-      return renderPreBlock(block.lines, width);
+      return asObjects(renderPreBlock(block.lines, width));
     case "blockquote":
       return renderBlockquote(block.lines, width);
     case "hr":
-      return renderHorizontalRule(width);
+      return asObjects(renderHorizontalRule(width));
     case "table":
-      return renderTableLines(block.table, width);
+      return asObjects(renderTableLines(block.table, width));
   }
 }
 
-/** Render markdown-rich assistant content for the terminal. */
-export function renderRichContentLines(text: string, width: number): string[] {
+/** Render markdown-rich assistant content with optional report open-dir meta. */
+export function renderRichContentLineObjects(text: string, width: number): RichContentLine[] {
   const wrapWidth = Math.max(20, width);
   const trimmed = text.trim();
-  if (!trimmed) return [""];
+  if (!trimmed) return [{ text: "" }];
 
   const blocks = parseMarkdownBlocks(trimmed);
-  const lines: string[] = [];
+  const lines: RichContentLine[] = [];
 
   for (const block of blocks) {
     if (
@@ -176,7 +202,7 @@ export function renderRichContentLines(text: string, width: number): string[] {
       block.type === "pre" ||
       block.type === "hr"
     ) {
-      gapBefore(lines);
+      gapBeforeObjects(lines);
     }
 
     lines.push(...renderBlock(block, wrapWidth));
@@ -187,13 +213,18 @@ export function renderRichContentLines(text: string, width: number): string[] {
       block.type === "pre" ||
       block.type === "heading"
     ) {
-      lines.push("");
+      lines.push({ text: "" });
     }
   }
 
-  while (lines.length > 0 && lines[lines.length - 1] === "") {
+  while (lines.length > 0 && lines[lines.length - 1]!.text === "") {
     lines.pop();
   }
 
-  return lines.length ? lines : [""];
+  return lines.length ? lines : [{ text: "" }];
+}
+
+/** Render markdown-rich assistant content for the terminal. */
+export function renderRichContentLines(text: string, width: number): string[] {
+  return renderRichContentLineObjects(text, width).map((line) => line.text);
 }

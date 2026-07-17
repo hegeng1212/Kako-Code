@@ -144,6 +144,14 @@ export function shouldPopAgentDetailOnLeft(detailOpen: boolean): boolean {
 }
 
 /**
+ * ← opens Agents only from an empty compose box (cursor at start).
+ * With draft text, ← must move the input caret — including mid-turn compose.
+ */
+export function shouldOpenAgentsOnCursorLeft(inputLength: number, cursor: number): boolean {
+  return inputLength === 0 && cursor === 0;
+}
+
+/**
  * Whether the terminal block cursor should sit in the chat input.
  * True while awaiting a line, or while a turn is running (compose / click-to-focus).
  */

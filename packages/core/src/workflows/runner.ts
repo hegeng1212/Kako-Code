@@ -68,8 +68,20 @@ export interface LaunchWorkflowResult {
   record: WorkflowRunRecord;
 }
 
-function normalizeWorkflowArgs(args: unknown): unknown {
+/** Coerce Workflow tool args into the shape scripts expect (prefer a plain string). */
+export function normalizeWorkflowArgs(args: unknown): unknown {
   if (args === undefined || args === null) return "";
+  if (typeof args === "string") return args.trim();
+  if (Array.isArray(args)) {
+    const first = args.find((item) => typeof item === "string" && item.trim());
+    if (typeof first === "string") return first.trim();
+    return args;
+  }
+  if (typeof args === "object") {
+    const record = args as Record<string, unknown>;
+    const q = record.query ?? record.question;
+    if (typeof q === "string" && q.trim()) return q.trim();
+  }
   return args;
 }
 

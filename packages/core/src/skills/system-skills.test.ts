@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SYSTEM_SKILL_REGISTRY,
   getSystemSkillEntry,
+  isDefaultSkillWithHandler,
   isSlashOnlySystemSkill,
   isSystemSkill,
   loadSlashOnlyCatalogSkills,
@@ -27,6 +28,14 @@ describe("system skills", () => {
     expect(isSlashOnlySystemSkill("workflows")).toBe(false);
     expect(isSlashOnlySystemSkill("init")).toBe(false);
     expect(getSystemSkillEntry("init")?.handler).toBe("skill");
+  });
+
+  it("default skills with handlers are distinct from file-only user skills", () => {
+    expect(isDefaultSkillWithHandler("deep-research")).toBe(true);
+    expect(isDefaultSkillWithHandler("init")).toBe(true);
+    expect(isDefaultSkillWithHandler("workflows")).toBe(true);
+    expect(isDefaultSkillWithHandler("plan")).toBe(false);
+    expect(isDefaultSkillWithHandler("code-review")).toBe(false);
   });
 
   it("loads slash catalog with plan, auto, manual, and workflows", async () => {
@@ -99,6 +108,30 @@ describe("system skills", () => {
       ],
     );
     expect(merged.map((skill) => skill.name)).toEqual(["init"]);
+  });
+
+  it("never merges slash-only skills into agent skill lists", () => {
+    const merged = mergeSkillsForAgent(
+      [],
+      [],
+      [
+        {
+          name: "plan",
+          description: "slash only",
+          path: "",
+          skillMdPath: "",
+          instructions: "",
+        },
+        {
+          name: "init",
+          description: "Init",
+          path: "/init",
+          skillMdPath: "/init/SKILL.md",
+          instructions: "",
+        },
+      ],
+    );
+    expect(merged.map((s) => s.name)).toEqual(["init"]);
   });
 
   it("merges bundled, user, and system skills into the agent skill index", () => {

@@ -270,6 +270,10 @@ describe("partitionSkillsForCatalog", () => {
 
       expect(defaultNames).toContain("deep-research");
       expect(defaultNames).toContain("init");
+      expect(defaultNames).toContain("workflows");
+      expect(defaultNames).not.toContain("plan");
+      expect(defaultNames).not.toContain("auto");
+      expect(defaultNames).not.toContain("manual");
       expect(defaultNames).not.toContain("baby-growth-tracker");
 
       for (const skill of userSkills) {
@@ -284,6 +288,18 @@ describe("partitionSkillsForCatalog", () => {
       for (const skill of discovered) {
         expect(catalogNames.has(skill.name)).toBe(true);
       }
+      // Catalog must not advertise Skill()-unreachable slash-only names.
+      for (const name of ["plan", "auto", "manual"] as const) {
+        expect(catalogNames.has(name)).toBe(false);
+      }
+      // Claude format: continuous list, defaults then user, no section headers.
+      const { formatSkillsIndex } = await import("./loader.js");
+      const index = formatSkillsIndex(partition);
+      expect(index).toContain("The following skills are available for use with the Skill tool:");
+      expect(index).toContain("- init:");
+      expect(index).toContain("- code-review:");
+      expect(index).not.toContain("## User skills");
+      expect(index.indexOf("- init:")).toBeLessThan(index.indexOf("- code-review:"));
     });
   });
 });

@@ -126,6 +126,79 @@ describe("runAgentLoop", () => {
     expect(ends).toEqual(["Skill:success"]);
   });
 
+  it("follows Skill(dynamic-workflow) with harness Workflow launch tool result", async () => {
+    const registry = new ToolRegistry(baseContext);
+    registry.register(
+      { name: "Skill", description: "skill", inputSchema: { type: "object", properties: {} } },
+      async () => "Launching skill: deep-research",
+    );
+
+    const router = createMockRouter([
+      {
+        toolCalls: [
+          {
+            id: "tu-skill",
+            name: "Skill",
+            input: { skill: "deep-research", args: "refined research question" },
+          },
+        ],
+      },
+      { text: "research started in background" },
+    ]);
+    const messages: LLMMessage[] = [{ role: "user", content: "write a report" }];
+    const starts: string[] = [];
+    const ends: Array<{ name: string; output?: string }> = [];
+
+    const result = await runAgentLoop({
+      router,
+      registry,
+      toolLogger: new ToolLogger(),
+      messages,
+      allowedTools: ["Skill", "Workflow"],
+      model: "test-model",
+      maxTurns: 5,
+      onSkillActivate: async () => undefined,
+      onSkillWorkflowFollowThrough: async ({ skillOutput }) => ({
+        skillOutput,
+        workflowToolCall: {
+          id: "call_wf_synthetic",
+          name: "Workflow",
+          input: { name: "deep-research", args: "refined research question" },
+        },
+        workflowOutput:
+          "Workflow launched in background.\nTask ID: wtest\nRun ID: wf_test\n\nYou will be notified when it completes. Use /workflows to watch live progress.",
+      }),
+      callbacks: {
+        onToolStart: (name) => starts.push(name),
+        onToolEnd: (name, _status, _err, output) => ends.push({ name, output }),
+      },
+    });
+
+    expect(result).toBe("research started in background");
+    expect(starts).toEqual(["Skill", "Workflow"]);
+    expect(ends.map((e) => e.name)).toEqual(["Skill", "Workflow"]);
+    expect(ends[0]?.output).toBe("Launching skill: deep-research");
+    expect(ends[1]?.output).toContain("Workflow launched in background.");
+
+    const toolMsgs = messages.filter((m) => m.role === "tool");
+    expect(toolMsgs).toHaveLength(2);
+    expect(toolMsgs[0]).toMatchObject({
+      name: "Skill",
+      toolCallId: "tu-skill",
+      content: "Launching skill: deep-research",
+    });
+    expect(toolMsgs[1]).toMatchObject({
+      name: "Workflow",
+      toolCallId: "call_wf_synthetic",
+    });
+    expect(String(toolMsgs[1]?.content)).toContain("Workflow launched in background.");
+
+    const assistantWithTools = messages.find(
+      (m) => m.role === "assistant" && Array.isArray(m.toolCalls) && m.toolCalls.length === 2,
+    );
+    expect(assistantWithTools?.toolCalls?.map((c) => c.name)).toEqual(["Skill", "Workflow"]);
+  });
+
   it("does not abort the turn when onSkillActivate throws", async () => {
     const registry = new ToolRegistry(baseContext);
     registry.register(

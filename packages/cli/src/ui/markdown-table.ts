@@ -63,13 +63,18 @@ function renderCellContent(text: string, bold: boolean): string {
 
 function padDisplay(text: string, targetWidth: number): string {
   // displayWidth strips ANSI; pad so every cell's outer width (and thus ┤/│) aligns.
-  const width = displayWidth(text);
-  if (width >= targetWidth) {
-    if (width === targetWidth) return text;
-    // Keep path/code colors when a cell is truncated.
-    return clipAnsiToDisplayWidth(text, targetWidth);
+  // After clipping, width may be < target when the next glyph is wide (CJK) and does
+  // not fit — always pad back up so borders stay column-aligned.
+  let content = text;
+  let width = displayWidth(content);
+  if (width > targetWidth) {
+    content = clipAnsiToDisplayWidth(content, targetWidth);
+    width = displayWidth(content);
   }
-  return text + " ".repeat(targetWidth - width);
+  if (width < targetWidth) {
+    return content + " ".repeat(targetWidth - width);
+  }
+  return content;
 }
 
 function wrapCellText(text: string, maxWidth: number, bold: boolean): string[] {

@@ -5,13 +5,14 @@ import {
   renderChoiceOptionLine,
   renderChoiceSummaryLine,
 } from "./ask-user-question-display.js";
-import { renderRichContentLines } from "./markdown-render.js";
+import { renderRichContentLineObjects } from "./markdown-render.js";
 import { renderSlashInputText } from "./slash-suggest.js";
 import {
   collectActivityStats,
   fileToolContentIndent,
   isFileEditTool,
   isFileWriteTool,
+  isMcpTool,
   isPlanFileTool,
   isPlanToolToggleLine,
   isSkillTool,
@@ -19,11 +20,10 @@ import {
   isAgentTool,
   renderAgentToolLines,
   isWorkflowTool,
-  isDynamicWorkflowSkillName,
-  workflowDisplayName,
   renderActivitySummaryLine,
   renderBashOutputLines,
   renderEditToolLines,
+  renderMcpToolLines,
   renderPlanPreviewHint,
   renderSkillToolLines,
   renderToolCallErrorLines,
@@ -162,12 +162,15 @@ export interface RenderLine {
       | "edit-tool-toggle"
       | "skill-tool-toggle"
       | "agent-tool-toggle"
-      | "choice-toggle";
+      | "choice-toggle"
+      | "open-report-dir";
     toolId?: string;
     groupId?: string;
     choiceId?: string;
     /** Timeline index of the thinking entry for thought-* click targets. */
     thoughtIndex?: number;
+    /** Absolute directory to reveal for report artifact paths. */
+    openDir?: string;
   };
 }
 
@@ -439,10 +442,20 @@ export function renderDoneStatus(turn: ChatTurn, now = Date.now()): string {
   );
 }
 
+/**
+ * Persistent stepped-away / system recap row — once set on the turn it stays visible
+ * (not collapsible, not auto-cleared).
+ * Icon: eight-pointed star (✴), same muted weight as `*` on * Cooked / * Pondered.
+ */
+export const RECAP_STATUS_ICON = "✴";
+
 export function renderRecapLine(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
-  return indent(`${ansi.muted}* recap: ${trimmed}${ansi.reset}`, LINE_INDENT);
+  return indent(
+    `${ansi.muted}${RECAP_STATUS_ICON} recap: ${trimmed}${ansi.reset}`,
+    LINE_INDENT,
+  );
 }
 
 export function renderThoughtBodyForEntry(entry: ThinkingEntry, width: number): string[] {
@@ -488,57 +501,63 @@ function isAsciiBoxLine(line: string): boolean {
   return /^\s*\|.*\|\s*$/.test(plain) || /^\s*[_=-]{6,}\s*$/.test(plain);
 }
 
-function expandLineSpacing(lines: string[]): string[] {
-  const out: string[] = [];
+export type AnswerRenderLine = { text: string; openDir?: string };
+
+/**
+ * Answer ● stays static while streaming. Pulsing the bullet rewrites the whole
+ * first line every tick (incremental paint), which reads as the sentence flashing.
+ */
+export function renderAnswerTextRenderLines(
+  text: string,
+  width: number,
+): AnswerRenderLine[] {
+  if (!text.trim()) return [];
+  const wrapWidth = Math.max(20, width - BODY_START - 2);
+  const wrapped = expandLineSpacingDetailed(
+    renderRichContentLineObjects(text.trim(), wrapWidth),
+  );
+  let seenContent = false;
+  return wrapped.map((line) => {
+    if (line.text === "" && !line.openDir) return { text: "" };
+    const isFirst = !seenContent;
+    seenContent = true;
+    const bullet = renderAnswerPulsingPrefix("●", 0, false);
+    return {
+      text: indent(
+        isFirst
+          ? `${bullet}${ansi.text}${line.text}${ansi.reset}`
+          : `${"  "}${ansi.text}${line.text}${ansi.reset}`,
+        LINE_INDENT,
+      ),
+      openDir: line.openDir,
+    };
+  });
+}
+
+export function renderAnswerTextLines(text: string, width: number): string[] {
+  return renderAnswerTextRenderLines(text, width).map((line) => line.text);
+}
+
+export function renderAnswerLines(turn: ChatTurn, width: number): string[] {
+  return renderAnswerTextLines(turn.answerText, width);
+}
+
+function expandLineSpacingDetailed(
+  lines: Array<{ text: string; openDir?: string }>,
+): Array<{ text: string; openDir?: string }> {
+  const out: Array<{ text: string; openDir?: string }> = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     out.push(line);
-    if (line === "") continue;
+    if (line.text === "") continue;
     const next = lines[i + 1];
-    if (next === undefined || next === "") continue;
-    // Keep markdown tables / ASCII boxes tight so right borders stay aligned.
-    if (isAsciiBoxLine(line) && isAsciiBoxLine(next)) continue;
+    if (next === undefined || next.text === "") continue;
+    if (isAsciiBoxLine(line.text) && isAsciiBoxLine(next.text)) continue;
     for (let g = 0; g < ANSWER_LINE_GAP; g++) {
-      out.push("");
+      out.push({ text: "" });
     }
   }
   return out;
-}
-
-export function renderAnswerTextLines(
-  text: string,
-  width: number,
-  opts?: { pulseFrame?: number; pulseLive?: boolean },
-): string[] {
-  if (!text.trim()) return [];
-  const wrapWidth = Math.max(20, width - BODY_START - 2);
-  const wrapped = expandLineSpacing(renderRichContentLines(text.trim(), wrapWidth));
-  let seenContent = false;
-  const pulseFrame = opts?.pulseFrame ?? 0;
-  const pulseLive = opts?.pulseLive ?? false;
-  return wrapped.map((line) => {
-    if (line === "") return "";
-    const isFirst = !seenContent;
-    seenContent = true;
-    const bullet = renderAnswerPulsingPrefix("●", pulseFrame, pulseLive && isFirst);
-    return indent(
-      isFirst
-        ? `${bullet}${ansi.text}${line}${ansi.reset}`
-        : `${"  "}${ansi.text}${line}${ansi.reset}`,
-      LINE_INDENT,
-    );
-  });
-}
-
-export function renderAnswerLines(
-  turn: ChatTurn,
-  width: number,
-  opts?: { pulseLive?: boolean },
-): string[] {
-  return renderAnswerTextLines(turn.answerText, width, {
-    pulseFrame: turn.pulseFrame,
-    pulseLive: opts?.pulseLive,
-  });
 }
 
 function formatUserMessageLine(lineText: string, isFirst: boolean): string {
@@ -601,13 +620,6 @@ export function renderUserMessage(
 function lastThinkingIndex(timeline: TurnTimelineEntry[]): number {
   for (let i = timeline.length - 1; i >= 0; i--) {
     if (timeline[i]?.type === "thinking") return i;
-  }
-  return -1;
-}
-
-function lastAnswerTimelineIndex(timeline: TurnTimelineEntry[]): number {
-  for (let i = timeline.length - 1; i >= 0; i--) {
-    if (timeline[i]?.type === "answer") return i;
   }
   return -1;
 }
@@ -711,7 +723,7 @@ function isNestedChatLine(line: RenderLine): boolean {
 }
 
 /**
- * Top-level chat blocks (answer, tools, Thought, * Done, * recap, activity summary…).
+ * Top-level chat blocks (answer, tools, Thought, * Done, ✴ recap, activity summary…).
  * Answer continuations and nested └ children are not starts.
  */
 function isMainBlockStart(line: RenderLine): boolean {
@@ -732,7 +744,7 @@ function isMainBlockStart(line: RenderLine): boolean {
   }
   const plain = stripAnsi(line.text).trimStart();
   if (!plain) return false;
-  if (/^[>●○⏺*]/.test(plain)) return true;
+  if (/^[>●○⏺*✴]/.test(plain)) return true;
   if (/^Thought for\b/.test(plain)) return true;
   if (/\(click to (?:expand|collapse)\)/.test(plain)) return true;
   if (/^\[.+\]/.test(plain)) return true; // AskUserQuestion headers
@@ -802,9 +814,6 @@ function renderWorkflowToolEntry(
   entry: ToolCallTimelineEntry,
   thoughtSeconds?: number,
 ): RenderLine[] {
-  if (isDynamicWorkflowSkillName(workflowDisplayName(entry))) {
-    return renderSkillToolEntry(turn, entry, thoughtSeconds);
-  }
   const out: RenderLine[] = [...timelineBlockGaps()];
   if (thoughtSeconds != null) {
     pushThoughtPreamble(out, thoughtSeconds);
@@ -986,8 +995,31 @@ function renderSkillToolEntry(
   return out;
 }
 
-function isMcpTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
-  return entry.name.startsWith("mcp/");
+function renderMcpToolEntry(
+  turn: ChatTurn,
+  entry: ToolCallTimelineEntry,
+  thoughtSeconds?: number,
+): RenderLine[] {
+  const out: RenderLine[] = [...timelineBlockGaps()];
+  pushThoughtPreamble(out, thoughtSeconds);
+  const lines = renderMcpToolLines(entry);
+  for (let i = 0; i < lines.length; i++) {
+    const isHeader = i === 0;
+    out.push({
+      text: indent(lines[i]!, isHeader ? BODY_START : treeBranchIndent(BODY_START)),
+      meta: isHeader
+        ? {
+            turnId: turn.id,
+            kind: "skill-tool-toggle",
+            toolId: entry.id,
+          }
+        : entry.status === "error" && entry.errorDetail && i === 1
+          ? { turnId: turn.id, kind: "tool-error-toggle", toolId: entry.id }
+          : undefined,
+    });
+  }
+  out.push(...timelineBlockGaps());
+  return out;
 }
 
 function isTaskTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
@@ -1180,6 +1212,7 @@ function renderStandaloneTool(
   // Other waiting tools (including approval gates) stay off the timeline — live
   // status is shown on the * Whirring… footer line only.
   if (isAgentTool(entry)) return renderAgentToolEntry(turn, entry);
+  if (isMcpTool(entry)) return renderMcpToolEntry(turn, entry);
   if (isActive && entry.status === "waiting") {
     return [];
   }
@@ -1204,8 +1237,6 @@ function renderTimelineToLines(
   now: number,
   isActive: boolean,
 ): RenderLine[] {
-  const streamingAnswerIdx =
-    isActive && turn.phase !== "done" ? lastAnswerTimelineIndex(turn.timeline) : -1;
   const out: RenderLine[] = turn.userText.trim()
     ? renderUserMessage(turn.userText, width, {
         trailingGap: !turn.harnessOnly,
@@ -1235,11 +1266,13 @@ function renderTimelineToLines(
         i++;
         continue;
       }
-      for (const text of renderAnswerTextLines(entry.text, width, {
-        pulseFrame: turn.pulseFrame,
-        pulseLive: isActive && turn.phase !== "done" && i === streamingAnswerIdx,
-      })) {
-        out.push({ text });
+      for (const line of renderAnswerTextRenderLines(entry.text, width)) {
+        out.push({
+          text: line.text,
+          meta: line.openDir
+            ? { turnId: turn.id, kind: "open-report-dir", openDir: line.openDir }
+            : undefined,
+        });
       }
       out.push(...timelineBlockGaps());
       i++;
@@ -1293,22 +1326,25 @@ function renderTimelineToLines(
     // Timeline already carries this text (possibly transitional/hidden) — do not paint twice.
     !timeline.some((e) => e.type === "answer" && e.text.trim() === answerFallback)
   ) {
-    for (const text of renderAnswerLines(turn, width, {
-      pulseLive: isActive && turn.phase !== "done",
-    })) {
-      out.push({ text });
+    for (const line of renderAnswerTextRenderLines(turn.answerText, width)) {
+      out.push({
+        text: line.text,
+        meta: line.openDir
+          ? { turnId: turn.id, kind: "open-report-dir", openDir: line.openDir }
+          : undefined,
+      });
     }
     out.push(...timelineBlockGaps());
   }
 
   if (turn.phase === "done" && turn.finishedAt && !turn.harnessOnly) {
-    // One blank line between the answer/body and * Cooked / * recap.
+    // One blank line between the answer/body and * Cooked / ✴ recap.
     if (out.length === 0 || !isBlankRenderLine(out[out.length - 1]!)) {
       out.push({ text: gap() });
     }
     out.push({ text: renderDoneStatus(turn, now) });
     if (turn.recapText) {
-      // Never stack * Cooked and * recap — one blank between status lines.
+      // Never stack * Cooked and ✴ recap — one blank between status lines.
       out.push({ text: gap() });
       out.push({ text: renderRecapLine(turn.recapText) });
     }
@@ -1460,6 +1496,10 @@ export function isThoughtSummaryLine(line: RenderLine): boolean {
     kind === "thought-toggle" ||
     kind === "thought-body"
   );
+}
+
+export function isOpenReportDirLine(meta?: { kind?: string; openDir?: string }): boolean {
+  return meta?.kind === "open-report-dir" && Boolean(meta.openDir);
 }
 
 export function toggleThoughtExpanded(turn: ChatTurn, thoughtIndex: number): void {

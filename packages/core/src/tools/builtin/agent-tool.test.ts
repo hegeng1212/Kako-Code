@@ -30,9 +30,12 @@ describe("Agent tool definition", () => {
     expect(agentToolDefinition.description).toContain("you'll be notified when it completes");
     expect(agentToolDefinition.description).toContain("isolation: \"worktree\"");
     expect(agentToolDefinition.description).toContain("relay what matters");
+    expect(agentToolDefinition.description).toContain("SendMessage");
+    expect(agentToolDefinition.description).toContain(
+      "continue a previously spawned agent with its context intact",
+    );
+    expect(agentToolDefinition.description).toContain("a new Agent call starts fresh");
     expect(agentToolDefinition.description).not.toContain("When NOT to use");
-    // SendMessage is a Cursor-only continue path; Kako starts a fresh Agent call instead.
-    expect(agentToolDefinition.description).not.toMatch(/SendMessage/i);
     expect(agentToolDefinition.inputSchema.$schema).toBe(
       "https://json-schema.org/draft/2020-12/schema",
     );
@@ -42,9 +45,13 @@ describe("Agent tool definition", () => {
       { enum?: string[]; description?: string }
     >;
     expect(props.isolation?.enum).toEqual(["worktree", "remote"]);
+    expect(props.isolation?.description).toContain('"remote"');
     expect(props.model?.enum).toEqual(["sonnet", "opus", "haiku", "fable"]);
     expect(props.model?.description).toContain("model frontmatter");
     expect(props.model?.description).toContain('subagent_type: "fork"');
+    expect(props.run_in_background?.description).toBe(
+      "Set to true to run this agent in the background. You will be notified when it completes.",
+    );
     expect(Object.keys(props).sort()).toEqual(
       ["description", "isolation", "model", "prompt", "run_in_background", "subagent_type"].sort(),
     );

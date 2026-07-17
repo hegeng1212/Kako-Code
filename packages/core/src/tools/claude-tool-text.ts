@@ -245,7 +245,7 @@ When using the Agent tool, specify a subagent_type parameter to select which age
 Reach for this when the task matches an available agent type, when you have independent work to run in parallel, or when answering would mean reading across several files — delegate it and you keep the conclusion, not the file dumps. For a single-fact lookup where you already know the file, symbol, or value, search directly. Once you've delegated a search, don't also run it yourself — wait for the result.
 
 - The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters.
-- A new Agent call starts a fresh child session. Prior transcript is not shared automatically; include needed prior findings in the follow-up prompt if you continue related work.
+- Use SendMessage with the agent's ID or name to continue a previously spawned agent with its context intact; a new Agent call starts fresh.
 - \`isolation: "worktree"\` gives the agent its own git worktree (auto-cleaned if unchanged).
 - \`run_in_background: true\` runs the agent asynchronously; you'll be notified when it completes.`;
 
@@ -304,7 +304,7 @@ How to invoke:
 Important:
 - Available skills are listed in a <system-reminder> block in the system prompt (catalog titled "The following skills are available for use with the Skill tool")
 - Only invoke a skill that appears in that list, or one the user explicitly typed as \`/<name>\` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool
-- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
+- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task — including before AskUserQuestion and before other tools that might seem related
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)

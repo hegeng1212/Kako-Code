@@ -276,8 +276,14 @@ function isDefaultSessionTitle(value: string): boolean {
  * 2) still default / empty → "new session"
  * 3) otherwise → generated session title (fallback jobLabel)
  */
-export function agentsSessionTitle(meta: SessionMeta, entrySessionId?: string): string {
+export function agentsSessionTitle(
+  meta: SessionMeta,
+  entrySessionId?: string,
+  opts?: { emptyDialogue?: boolean },
+): string {
   if (entrySessionId && meta.id === entrySessionId) return "current session";
+  // Empty transcript must not keep a stale AI title after /clear or aborted turns.
+  if (opts?.emptyDialogue) return "new session";
   const title = (meta.title ?? "").trim();
   if (!isDefaultSessionTitle(title)) return title;
   const job = (meta.jobLabel ?? "").trim();
@@ -467,7 +473,7 @@ export function buildAgentsRows(
     byBucket[bucket].push({
       kind: "session",
       sessionId: meta.id,
-      title: agentsSessionTitle(meta, entrySessionId),
+      title: agentsSessionTitle(meta, entrySessionId, { emptyDialogue: loaded === "" }),
       preview: agentsSessionPreview(meta, loaded),
       cwd: meta.cwd,
       updatedAt: meta.updatedAt,

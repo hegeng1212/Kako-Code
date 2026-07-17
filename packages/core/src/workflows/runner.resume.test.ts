@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hasWorkflowArgs, launchWorkflow } from "./runner.js";
+import { hasWorkflowArgs, launchWorkflow, normalizeWorkflowArgs } from "./runner.js";
 
 const priorHome = process.env.KAKO_HOME;
 let tempHome = "";
@@ -93,5 +93,17 @@ describe("hasWorkflowArgs", () => {
     expect(hasWorkflowArgs([])).toBe(false);
     expect(hasWorkflowArgs("topic")).toBe(true);
     expect(hasWorkflowArgs({ question: "x" })).toBe(true);
+  });
+});
+
+describe("normalizeWorkflowArgs", () => {
+  it("unwraps string, single-element string array, and query object to a string", () => {
+    expect(normalizeWorkflowArgs("  Option A  ")).toBe("Option A");
+    expect(normalizeWorkflowArgs(["Option A question"])).toBe("Option A question");
+    expect(normalizeWorkflowArgs({ query: "Option A via query" })).toBe("Option A via query");
+    expect(normalizeWorkflowArgs({ question: "Option A via question" })).toBe(
+      "Option A via question",
+    );
+    expect(normalizeWorkflowArgs(null)).toBe("");
   });
 });

@@ -34,8 +34,17 @@ export const RED_BREATH_FRAME_DIVISOR = 3;
 /**
  * Streaming answer ● — tick is ~100ms; without a divisor the 4-step brightness
  * cycle finishes in ~400ms and reads as a frantic blink.
+ * Brightness only (no bold) so the following sentence does not jitter/flash.
  */
 export const ANSWER_PULSE_FRAME_DIVISOR = 6;
+
+/** Answer bullet: muted gray breath only — never accent/white/bold on the glyph. */
+const ANSWER_DOT_STEPS = [
+  "\x1b[38;5;238m",
+  ansi.muted,
+  "\x1b[38;5;250m",
+  ansi.muted,
+] as const;
 
 /**
  * Status * morph: point → orb → star → peak → shrink.
@@ -96,19 +105,20 @@ export function renderPulsingPrefix(
   return `${renderPulsingIcon(glyph, frame, live)}${space}`;
 }
 
-/** Answer bullet — same glyph, slowed brightness cycle (~2.4s at 100ms ticks). */
+/** Answer bullet — same glyph, slowed gray-only brightness (~2.4s at 100ms ticks). */
 export function renderAnswerPulsingPrefix(
   glyph: string,
   frame: number,
   live: boolean,
   trailingSpace = true,
 ): string {
-  return renderPulsingPrefix(
-    glyph,
-    Math.floor(frame / ANSWER_PULSE_FRAME_DIVISOR),
-    live,
-    trailingSpace,
-  );
+  const space = trailingSpace ? " " : "";
+  if (!live) {
+    return `${ansi.muted}${glyph}${ansi.reset}${space}`;
+  }
+  const step =
+    ANSWER_DOT_STEPS[Math.floor(frame / ANSWER_PULSE_FRAME_DIVISOR) % ANSWER_DOT_STEPS.length]!;
+  return `${step}${glyph}${ansi.reset}${space}`;
 }
 
 export function renderMutedPulsingPrefix(

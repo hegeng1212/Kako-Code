@@ -143,8 +143,22 @@ The following skills are available for use with the Skill tool:
 
 | 段 | 来源 |
 |----|------|
-| **默认段** | monorepo `skills/`（bundled）+ `SYSTEM_SKILL_REGISTRY` 中非 `slashOnly` 项 |
+| **默认段** | monorepo `skills/`（bundled）+ `SYSTEM_SKILL_REGISTRY` 中非 `slashOnly` 项（可 `Skill()`） |
 | **用户段** | 设置页安装且 `enabled !== false` 的**全部** skill（`installed-skills.json` + `~/.kako/skills/` / 项目 `.kako/skills/`） |
+
+Slash-only（`/plan` `/auto` `/manual`）只出现在 CLI `/` 菜单，**不得**进入 Skill tool 目录。
+
+注入格式与 Claude Code 一致：
+
+```
+The following skills are available for use with the Skill tool:
+
+- deep-research: …
+- init: …
+- code-review: …   # 用户导入 skill，同格式连续列出
+```
+
+`Skill()` 分发：先判断是否默认 skill（`workflows` / `init` / `dynamic-workflow` 等）走处理函数；否则从 skill 目录加载 `SKILL.md`。
 
 注入位置：`buildMessages` 在 Environment、Agent catalog 之后追加（不在 `agents/prompts/main.md` 硬编码）。
 

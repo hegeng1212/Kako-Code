@@ -21,6 +21,22 @@ describe("SessionManager", () => {
     await rm(home, { recursive: true, force: true });
   });
 
+  it("createOrReuseIdleSession reuses titled-but-empty sessions and resets identity", async () => {
+    const cwd = join(home, "stale-title");
+    const stale = await mgr.createSession({
+      cwd,
+      agentName: "main",
+      title: "梳理项目 LLM/agent 调用接入方式",
+    });
+    await mgr.updateSession(stale.id, { jobLabel: "go llm factory summary", jobName: "map-llm" });
+    const reused = await mgr.createOrReuseIdleSession({ cwd, agentName: "main" });
+    expect(reused.id).toBe(stale.id);
+    expect(reused.metadata.title).toBe("new session");
+    const meta = await mgr.getSessionMeta(stale.id);
+    expect(meta?.jobLabel).toBe("");
+    expect(meta?.jobName).toBe("");
+  });
+
   it("createOrReuseIdleSession reuses empty session and prunes duplicates", async () => {
     const cwd = join(home, "idle-reuse");
     const a = await mgr.createSession({ cwd, agentName: "main" });

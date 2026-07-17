@@ -31,6 +31,11 @@ import { coreDebugError } from "../debug.js";
 const DEFAULT_TITLE = "new session";
 const DEFAULT_TITLES = new Set(["new session", "new chat"]);
 
+export function isDefaultSessionTitle(title: string | undefined): boolean {
+  const t = (title ?? "").trim().toLowerCase();
+  return !t || DEFAULT_TITLES.has(t);
+}
+
 function metaToSession(meta: SessionMeta): Session {
   return {
     id: meta.id,
@@ -41,11 +46,6 @@ function metaToSession(meta: SessionMeta): Session {
     cwd: meta.cwd,
     metadata: { title: meta.title, projectId: meta.projectId },
   };
-}
-
-function isDefaultSessionTitle(title: string | undefined): boolean {
-  const t = (title ?? "").trim().toLowerCase();
-  return !t || DEFAULT_TITLES.has(t);
 }
 
 /** True when transcript has no real user/assistant dialogue. */
@@ -271,6 +271,9 @@ export class SessionManager {
    * CLI entry: reuse an empty idle session in this cwd (same agent) instead of
    * creating another "new session". Extra empty duplicates are deleted.
    * Agents compose still call createSession().
+   *
+   * Empty dialogue counts as idle even when title/jobLabel were left stale after
+   * /clear or an aborted first turn — those identity fields are reset on reuse.
    */
   async createOrReuseIdleSession(options: {
     cwd: string;
@@ -285,7 +288,6 @@ export class SessionManager {
       if (session.agentName !== agentName) continue;
       const meta = await readSessionMeta(session.id);
       if (!meta || meta.parentSessionId) continue;
-      if (!isDefaultSessionTitle(meta.title)) continue;
       if (await sessionHasUserDialogue(session.id)) continue;
       idleIds.push(session.id);
     }
@@ -301,7 +303,12 @@ export class SessionManager {
     }
 
     const now = new Date().toISOString();
-    const kept = await this.updateSession(keepId, { status: "active" });
+    const kept = await this.updateSession(keepId, {
+      status: "active",
+      title: DEFAULT_TITLE,
+      jobLabel: "",
+      jobName: "",
+    });
     const index = await readProjectIndex();
     const project = await this.resolveProject(cwd);
     const proj = index.projects.find((p) => p.id === project.id);
@@ -311,6 +318,15 @@ export class SessionManager {
       await writeProjectIndex(index);
     }
     return kept;
+  }
+
+  /** Drop AI/list identity so an empty session shows as "new session". */
+  async clearSessionListIdentity(id: SessionId): Promise<Session> {
+    return this.updateSession(id, {
+      title: DEFAULT_TITLE,
+      jobLabel: "",
+      jobName: "",
+    });
   }
 
   /**

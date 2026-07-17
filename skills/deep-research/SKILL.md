@@ -14,13 +14,11 @@ Use when the user wants a deep, multi-source, fact-checked research report on an
 
 ## Before you start
 
-Check whether the question is specific enough to research directly. If it is underspecified (for example, "what car to buy" without budget, use case, or region), ask 2–3 clarifying questions to narrow scope first. Then pass the refined question as **Workflow** `args`, weaving the answers in.
+Check whether the question is specific enough to research directly. If it is underspecified (for example, "what car to buy" without budget, use case, or region), ask 2–3 clarifying questions to narrow scope first. Then pass the refined question as skill/Workflow `args`, weaving the answers in.
 
-## Workflow
+## Launch
 
-After clarifying questions, invoke immediately (no user confirmation):
-
-`Workflow({ name: "deep-research", args: "<refined research question>" })`
+After clarifying questions, invoke immediately (no user confirmation). Prefer the Skill tool with refined `args` — the skill handler launches the background Workflow. `Workflow({ name: "deep-research", args: "..." })` is also valid.
 
 Pass `args` as a **string** (preferred). The workflow script also accepts `{ query: "..." }` if the model passes an object.
 
@@ -32,7 +30,7 @@ Phases (background):
 4. **Verify** — Adversarial verification per claim.
 5. **Synthesize** — Cited report with confidence notes.
 
-## After you invoke Workflow
+## After launch
 
 Reply briefly in the chat:
 
@@ -59,6 +57,7 @@ You receive a `<task-notification>` with the structured result.
 
 ## Rules
 
-- Do not call **Skill** to load this workflow — the harness injects instructions on `/deep-research`.
+- On `/deep-research`, the harness injects the Invoke: Workflow guide — follow that, do not call **Skill** again.
+- If you already activated this skill via **Skill**, follow the re-injected Invoke: Workflow guide with the refined question as `args`; do not call **Skill** again.
 - Do not call **Read** on skill files.
 - Prefer **WebSearch** + **WebFetch** (via the workflow) over guessing from memory for time-sensitive topics.

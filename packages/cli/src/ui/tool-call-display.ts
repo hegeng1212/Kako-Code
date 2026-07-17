@@ -17,6 +17,7 @@ import {
   isExecutionBashCommand,
   isPlanFileDetail,
   isWorkflowDetail,
+  mcpToolDisplayName,
   shellCommandStat,
   stripCwdPrefix,
   toolCallFailurePhrase,
@@ -72,6 +73,9 @@ export interface ToolCallTimelineEntry {
 
 const WAITING_DOTS = ["", ".", "..", "..."] as const;
 
+/** Blink cadence for live tool ⏺ (tick ≈100ms → ~600ms on/off). */
+const TOOL_DOT_BLINK_DIVISOR = 3;
+
 export function toolCallLabel(name: string, detail: string): string {
   const trimmed = detail.trim();
   if (!trimmed || trimmed === "{}") return name;
@@ -80,6 +84,18 @@ export function toolCallLabel(name: string, detail: string): string {
 
 function renderStatusDot(color: "green" | "red"): string {
   return color === "green" ? `${ansi.green}⏺${ansi.reset}` : `${ansi.red}⏺${ansi.reset}`;
+}
+
+/**
+ * Skill/MCP-style live header: muted ⏺ blinks (show/hide); done → green/red solid.
+ * Uses a single-column space when hidden so the Tool(…) label does not shift.
+ */
+export function renderSkillStyleToolDot(status: ToolCallStatus, dotFrame = 0): string {
+  if (status === "waiting") {
+    const on = Math.floor(dotFrame / TOOL_DOT_BLINK_DIVISOR) % 2 === 0;
+    return on ? `${ansi.muted}⏺${ansi.reset}` : " ";
+  }
+  return renderStatusDot(status === "success" ? "green" : "red");
 }
 
 function renderTimelineStatusLine(
@@ -482,6 +498,42 @@ export function isSkillTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean
   return entry.name === "Skill";
 }
 
+export function isMcpTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
+  return entry.name.startsWith("mcp/");
+}
+
+/** Collapsed / expanded MCP tool row — same Skill-style header + child status. */
+export function renderMcpToolLines(entry: ToolCallTimelineEntry): string[] {
+  const lines: string[] = [];
+  const toolName = mcpToolDisplayName(entry.name);
+  const expanded = entry.skillExpanded !== false;
+  const hint =
+    !expanded && (entry.status === "success" || entry.status === "error")
+      ? ` ${ansi.muted}(click to expand)${ansi.reset}`
+      : "";
+  lines.push(
+    `${renderSkillStyleToolDot(entry.status, entry.dotFrame)} ${ansi.text}Tool(${toolName})${ansi.reset}${hint}`,
+  );
+  if (entry.status === "waiting") {
+    return lines;
+  }
+  if (expanded && entry.status === "success") {
+    lines.push(`${ansi.muted}└ Successfully called tool${ansi.reset}`);
+  }
+  if (expanded && entry.status === "error") {
+    lines.push(`${ansi.red}└ Tool execution failed${ansi.reset}`);
+    if (entry.errorDetail?.trim() && entry.errorExpanded) {
+      const wrapWidth = 72;
+      const short =
+        entry.errorDetail.trim().length > wrapWidth
+          ? `${entry.errorDetail.trim().slice(0, wrapWidth - 1)}…`
+          : entry.errorDetail.trim();
+      lines.push(`${ansi.red}   ✘ ${short}${ansi.reset}`);
+    }
+  }
+  return lines;
+}
+
 export function isAgentTool(entry: Pick<ToolCallTimelineEntry, "name">): boolean {
   return entry.name === "Agent";
 }
@@ -619,29 +671,25 @@ function skillDisplayName(detail: string): string {
   return trimmed || "skill";
 }
 
-/** Collapsed / expanded Skill activation row. */
+/** Collapsed / expanded Skill activation row. Default expanded (child success line visible). */
 export function renderSkillToolLines(entry: ToolCallTimelineEntry): string[] {
   const lines: string[] = [];
   const skillName = skillDisplayName(entry.detail);
+  const expanded = entry.skillExpanded !== false;
   const hint =
-    !entry.skillExpanded && entry.status === "success"
+    !expanded && entry.status === "success"
       ? ` ${ansi.muted}(click to expand)${ansi.reset}`
       : "";
+  lines.push(
+    `${renderSkillStyleToolDot(entry.status, entry.dotFrame)} ${ansi.text}Skill(${skillName})${ansi.reset}${hint}`,
+  );
   if (entry.status === "waiting") {
-    const dots = WAITING_DOTS[entry.dotFrame % WAITING_DOTS.length]!;
-    lines.push(
-      `${ansi.red}Waiting${dots}${ansi.reset} ${ansi.muted}Skill(${skillName})${ansi.reset}`,
-    );
     return lines;
   }
-  const color = entry.status === "success" ? "green" : "red";
-  lines.push(
-    `${renderStatusDot(color)} ${ansi.text}Skill(${skillName})${ansi.reset}${hint}`,
-  );
-  if (entry.skillExpanded && entry.status === "success") {
+  if (expanded && entry.status === "success") {
     lines.push(`${ansi.muted}└ Successfully loaded skill${ansi.reset}`);
   }
-  if (entry.skillExpanded && entry.status === "error" && entry.errorDetail?.trim()) {
+  if (expanded && entry.status === "error" && entry.errorDetail?.trim()) {
     const wrapWidth = 72;
     const short =
       entry.errorDetail.trim().length > wrapWidth
@@ -657,7 +705,7 @@ export function isWorkflowTool(entry: Pick<ToolCallTimelineEntry, "name" | "deta
 }
 
 function renderWorkflowsSlashLink(): string {
-  return `${ansi.planBorder}/workflows${ansi.reset}`;
+  return `${ansi.blue}/workflows${ansi.reset}`;
 }
 
 export function workflowDisplayName(entry: Pick<ToolCallTimelineEntry, "detail">): string {
@@ -670,27 +718,29 @@ export function isDynamicWorkflowSkillName(name: string): boolean {
   return getSystemSkillHandler(name.trim()) === "dynamic-workflow";
 }
 
+/** Child hint under Workflow: blue `/workflows`, muted trailing copy. */
 export function renderWorkflowViewHintLine(): string {
   return `${ansi.muted}└ ${renderWorkflowsSlashLink()} ${ansi.muted}to view dynamic workflow runs${ansi.reset}`;
 }
 
 export function renderWorkflowToolLines(entry: ToolCallTimelineEntry): string[] {
   const wfName = workflowDisplayName(entry);
-  if (isDynamicWorkflowSkillName(wfName)) {
-    return renderSkillToolLines(entry);
-  }
-  const header = `${ansi.green}⏺${ansi.reset} ${ansi.text}Workflow(${wfName})${ansi.reset}`;
+  const label = isDynamicWorkflowSkillName(wfName)
+    ? `dynamic workflow: ${wfName}`
+    : wfName;
+  const header = `${ansi.green}⏺${ansi.reset} ${ansi.text}Workflow(${label})${ansi.reset}`;
   if (entry.status === "error") {
     const detail = entry.errorDetail?.trim() || toolCallFailurePhrase(entry.name, entry.detail, entry.errorDetail);
     return [header, `${ansi.red}└ ${detail}${ansi.reset}`];
   }
   if (entry.status === "waiting" || entry.status === "success") {
+    const expanded = entry.skillExpanded !== false;
     const hint =
-      !entry.skillExpanded && entry.status === "success"
+      !expanded && entry.status === "success"
         ? ` ${ansi.muted}(click to expand)${ansi.reset}`
         : "";
     const lines = [`${header}${hint}`];
-    if (entry.skillExpanded || entry.status === "waiting") {
+    if (expanded || entry.status === "waiting") {
       lines.push(renderWorkflowViewHintLine());
     }
     return lines;
@@ -820,7 +870,7 @@ export function collectActivityStats(entries: ToolCallTimelineEntry[]): string[]
 
   for (const entry of entries) {
     if (entry.status === "waiting") continue;
-    if (isPlanFileTool(entry) || isFileWriteTool(entry) || isFileEditTool(entry) || isWorkflowTool(entry) || isSkillTool(entry) || isAgentTool(entry)) {
+    if (isPlanFileTool(entry) || isFileWriteTool(entry) || isFileEditTool(entry) || isWorkflowTool(entry) || isSkillTool(entry) || isAgentTool(entry) || isMcpTool(entry)) {
       flushExecutionBash();
       continue;
     }

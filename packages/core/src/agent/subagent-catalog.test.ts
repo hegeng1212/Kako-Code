@@ -30,10 +30,24 @@ describe("subagent-catalog", () => {
         def({
           name: "explore",
           description: "x",
+          tools: ["*"],
           disallowedTools: ["Agent", "Write"],
         }),
       ),
     ).toBe("Tools: All tools except Agent, Write");
+  });
+
+  it("prefers explicit tool lists over disallowedTools (Claude catalog accuracy)", () => {
+    expect(
+      formatSubagentToolsClause(
+        def({
+          name: "narrow",
+          description: "x",
+          tools: ["Read", "Grep", "Glob"],
+          disallowedTools: ["Agent", "Write"],
+        }),
+      ),
+    ).toBe("Tools: Read, Grep, Glob");
   });
 
   it("formats full system reminder with parallel delegation hint", () => {
@@ -41,6 +55,7 @@ describe("subagent-catalog", () => {
       def({
         name: "explore",
         description: "Read-only search agent.",
+        tools: ["*"],
         disallowedTools: ["Agent", "Write"],
       }),
       def({ name: "general-purpose", description: "Catch-all agent.", tools: ["*"] }),

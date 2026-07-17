@@ -39,6 +39,7 @@ import type { ClaudeFooterParts } from "./box.js";
 import {
   CHAT_TIPS,
   isThoughtSummaryLine,
+  isOpenReportDirLine,
   renderGeneratingStatus,
   renderSmooshingLine,
   pickDoneVerb,
@@ -88,6 +89,7 @@ import {
   type InputSelectionRange,
 } from "./multiline-input.js";
 import { renderRichContentLines } from "./markdown-render.js";
+import { openDirectory } from "./report-path.js";
 import {
   CHOICE_HINT,
   MULTI_SELECT_CHOICE_HINT,
@@ -134,6 +136,7 @@ import {
   renderSessionAgentListLines,
   resolveAgentDetailPinRow,
   shouldFocusAgentListAfterLeavingHistory,
+  shouldOpenAgentsOnCursorLeft,
   shouldPopAgentDetailOnLeft,
   shouldShowChatInputCaret,
   type SessionAgentFocus,
@@ -226,6 +229,7 @@ import {
   type WorkflowsPanelState,
 } from "./workflows-panel.js";
 import { InputHistory } from "./input-history.js";
+import { createExclusiveInteractiveQueue } from "./interactive-queue.js";
 import type { ChatHeaderMode } from "./cli-usage.js";
 import {
   renderChatHeader,
@@ -768,7 +772,8 @@ export type ContentClickAction =
   | { type: "toggleWriteTool"; turnId: string; toolId: string }
   | { type: "toggleEditTool"; turnId: string; toolId: string }
   | { type: "toggleSkillTool"; turnId: string; toolId: string }
-  | { type: "toggleAgentTool"; turnId: string; toolId: string };
+  | { type: "toggleAgentTool"; turnId: string; toolId: string }
+  | { type: "openReportDir"; openDir: string };
 
 /** Map a screen row to a scrollable content line index, or null when out of range. */
 export function contentLineIndexFromScreen(
@@ -827,6 +832,9 @@ export function resolveContentClickAction(line: RenderLine | undefined): Content
   }
   if (isAgentToolToggleLine(line.meta) && line.meta.toolId) {
     return { type: "toggleAgentTool", turnId: line.meta.turnId, toolId: line.meta.toolId };
+  }
+  if (isOpenReportDirLine(line.meta) && line.meta.openDir) {
+    return { type: "openReportDir", openDir: line.meta.openDir };
   }
   return null;
 }
@@ -1170,6 +1178,8 @@ export class ChatLayout {
   private toolApprovalResolve: ((result: ToolConfirmResult) => void) | null = null;
   private pendingToolApprovalCall: ToolCall | null = null;
   private pendingToolApprovalCwd: string | undefined;
+  /** One footer interaction at a time — prevents parallel confirms from clobbering *Resolve. */
+  private readonly interactiveQueue = createExclusiveInteractiveQueue();
 
   private inputHistory = new InputHistory();
   private permissionMode: PermissionMode = "default";
@@ -1854,6 +1864,27 @@ export class ChatLayout {
     this.turnRestoreInput = turn.userText;
     this.turnDiscardOnAbort = true;
     this.turnExitRequested = true;
+    this.settlePendingOverlaysForTurnCancel();
+  }
+
+  /**
+   * Deny/cancel any blocking confirm UI so hung `await confirm()` calls can
+   * settle after Esc / Ctrl+C (including orphaned parallel approval Promises
+   * raced via {@link raceToolConfirmWithTurnAbort}).
+   */
+  settlePendingOverlaysForTurnCancel(): void {
+    if (this.toolApprovalResolve || this.toolApprovalMode) {
+      this.finishToolApproval({ action: "deny" });
+    }
+    if (this.workflowConfirmResolve || this.workflowConfirmMode) {
+      this.finishWorkflowConfirm({ action: "cancel" });
+    }
+    if (this.planReviewResolve || this.planReviewMode) {
+      this.finishPlanReview({ action: "cancel" });
+    }
+    if (this.confirmResolve || this.readingConfirm) {
+      this.finishConfirm(false);
+    }
   }
 
   /**
@@ -2835,10 +2866,15 @@ export class ChatLayout {
       this.stdinRestFlushTimer = null;
       if (this.stdinRest !== "\x1b") return;
       this.stdinRest = "";
-      // Agents owns stdin — flush Esc into the panel handler, not chat dispatch
-      // (otherwise reply-mode Esc never runs its turn-cancel / leave-reply logic).
+      // Overlay modes own stdin — flush Esc into their handlers, not chat dispatch
+      // (otherwise reply-mode Esc never runs its turn-cancel / leave-reply logic,
+      // and Rewind "Esc to cancel" never closes the panel).
       if (this.readingAgentsPanel) {
         void this.handleAgentsPanelEscapeKey();
+        return;
+      }
+      if (this.readingRewind) {
+        this.settleRewindEscape();
         return;
       }
       void this.dispatchInputActions([{ type: "escape" }]);
@@ -2940,10 +2976,12 @@ export class ChatLayout {
             this.appExitRequested = true;
             this.turnExitRequested = true;
             this.lastCtrlCAt = 0;
+            this.settlePendingOverlaysForTurnCancel();
             continue;
           }
           this.lastCtrlCAt = now;
           this.turnExitRequested = true;
+          this.settlePendingOverlaysForTurnCancel();
           this.showExitHint();
           this.drawActiveFooter(this.inputBuffer, this.readLinePlaceholder);
           continue;
@@ -2985,7 +3023,8 @@ export class ChatLayout {
       if (
         action.type === "cursorLeft" &&
         !this.readingLine &&
-        this.canInterruptActiveTurn()
+        this.canInterruptActiveTurn() &&
+        shouldOpenAgentsOnCursorLeft(this.inputBuffer.length, this.inputCursor)
       ) {
         if (shouldPopAgentDetailOnLeft(this.agentDetailSnapshot !== null)) {
           this.closeAgentDetail();
@@ -3899,8 +3938,7 @@ export class ChatLayout {
       return;
     } else if (
       action.type === "cursorLeft" &&
-      this.inputBuffer.length === 0 &&
-      this.inputCursor === 0
+      shouldOpenAgentsOnCursorLeft(this.inputBuffer.length, this.inputCursor)
     ) {
       if (shouldPopAgentDetailOnLeft(this.agentDetailSnapshot !== null)) {
         this.closeAgentDetail();
@@ -4491,6 +4529,9 @@ export class ChatLayout {
       toolInput,
       backgrounded: name === "Agent" && toolInput?.run_in_background === true,
       agentExpanded: name === "Agent" ? true : undefined,
+      // Skill / Workflow / MCP success rows show their child hint by default (click collapses).
+      skillExpanded:
+        name === "Skill" || name === "Workflow" || name.startsWith("mcp/") ? true : undefined,
       startedAt: name === "Agent" ? Date.now() : undefined,
     };
     if (this.liveTurnBucket(sessionId).turn) {
@@ -4755,8 +4796,11 @@ export class ChatLayout {
     const entry = turn.timeline.find(
       (e): e is ToolCallTimelineEntry => e.type === "tool" && e.id === toolId,
     );
-    if (!entry || entry.name !== "Skill") return;
-    entry.skillExpanded = !entry.skillExpanded;
+    if (!entry || (entry.name !== "Skill" && entry.name !== "Workflow" && !entry.name.startsWith("mcp/"))) {
+      return;
+    }
+    // Treat undefined as expanded (default); first click collapses.
+    entry.skillExpanded = entry.skillExpanded === false;
     this.invalidateContentCache();
     this.redrawContent();
   }
@@ -5418,6 +5462,9 @@ export class ChatLayout {
         break;
       case "toggleAgentTool":
         this.toggleAgentTool(action.turnId, action.toolId);
+        break;
+      case "openReportDir":
+        void openDirectory(action.openDir);
         break;
     }
   }
@@ -6181,6 +6228,22 @@ export class ChatLayout {
     process.stdout.write(HIDE_CURSOR);
   }
 
+  private settleRewindEscape(): void {
+    if (!this.readingRewind || this.rewindBusy) return;
+    if (this.rewindPhase === "confirm") {
+      this.rewindPhase = "list";
+      this.rewindConfirmAnchor = null;
+      this.rewindConfirmHasCodeChanges = false;
+      this.rewindConfirmContext = "";
+      this.updateRewindFooterHeight();
+      this.invalidateContentCache();
+      this.redrawContent();
+      this.drawRewindFooter();
+      return;
+    }
+    this.closeRewindPanel();
+  }
+
   private async handleRewindInput(chunk: string): Promise<void> {
     if (this.rewindBusy) return;
     const combined = this.stdinRest + chunk;
@@ -6190,18 +6253,7 @@ export class ChatLayout {
     let ignoreEnterInBurst = false;
     for (const action of actions) {
       if (action.type === "escape" || action.type === "interrupt") {
-        if (this.rewindPhase === "confirm") {
-          this.rewindPhase = "list";
-          this.rewindConfirmAnchor = null;
-          this.rewindConfirmHasCodeChanges = false;
-          this.rewindConfirmContext = "";
-          this.updateRewindFooterHeight();
-          this.invalidateContentCache();
-          this.redrawContent();
-          this.drawRewindFooter();
-        } else {
-          this.closeRewindPanel();
-        }
+        this.settleRewindEscape();
         continue;
       }
       if (action.type === "historyUp") {
@@ -6365,47 +6417,51 @@ export class ChatLayout {
 
   /** Multi-question AskUserQuestion wizard with chip navigation (Claude-style). */
   async readQuestionWizard(questions: AskUserQuestionItem[]): Promise<AskUserQuestionResult> {
-    this.wizardQuestions = questions;
-    this.wizardAnswers = {};
-    this.wizardAnnotations = {};
-    this.wizardFocus = 0;
-    this.choiceSelected = 0;
-    this.syncWizardRows();
-    this.choiceShowHeader = true;
-    this.lastCtrlCAt = 0;
+    return this.interactiveQueue.runExclusiveInteractive(async () => {
+      this.wizardQuestions = questions;
+      this.wizardAnswers = {};
+      this.wizardAnnotations = {};
+      this.wizardFocus = 0;
+      this.choiceSelected = 0;
+      this.syncWizardRows();
+      this.choiceShowHeader = true;
+      this.lastCtrlCAt = 0;
 
-    return new Promise((resolve, reject) => {
-      this.wizardResolve = resolve;
-      this.wizardReject = reject;
-      this.wizardMode = true;
-      this.readingChoice = true;
-      this.updateWizardFooterHeight();
-      this.redrawWizardPanel();
+      return new Promise((resolve, reject) => {
+        this.wizardResolve = resolve;
+        this.wizardReject = reject;
+        this.wizardMode = true;
+        this.readingChoice = true;
+        this.updateWizardFooterHeight();
+        this.redrawWizardPanel();
+      });
     });
   }
 
   /** Interactive choice menu — single-select or multi-select (checkbox + Submit). */
   async readChoice(options: ReadChoiceOptions): Promise<ChoiceRow> {
-    this.wizardMode = false;
-    this.choiceHeader = options.header;
-    this.choiceQuestion = options.question;
-    this.choiceRows = options.rows;
-    this.choiceSelected = 0;
-    this.choiceQuestionIndex = options.questionIndex ?? 0;
-    this.choiceQuestionTotal = options.questionTotal ?? 1;
-    this.choiceShowHeader = this.choiceQuestionTotal > 1 || Boolean(options.multiSelect);
-    this.choiceMultiSelect = Boolean(options.multiSelect);
-    this.choiceCheckedOptions = new Set();
-    this.choiceCustomText = "";
-    this.choiceCustomChecked = false;
-    this.lastCtrlCAt = 0;
+    return this.interactiveQueue.runExclusiveInteractive(async () => {
+      this.wizardMode = false;
+      this.choiceHeader = options.header;
+      this.choiceQuestion = options.question;
+      this.choiceRows = options.rows;
+      this.choiceSelected = 0;
+      this.choiceQuestionIndex = options.questionIndex ?? 0;
+      this.choiceQuestionTotal = options.questionTotal ?? 1;
+      this.choiceShowHeader = this.choiceQuestionTotal > 1 || Boolean(options.multiSelect);
+      this.choiceMultiSelect = Boolean(options.multiSelect);
+      this.choiceCheckedOptions = new Set();
+      this.choiceCustomText = "";
+      this.choiceCustomChecked = false;
+      this.lastCtrlCAt = 0;
 
-    return new Promise((resolve, reject) => {
-      this.choiceResolve = resolve;
-      this.choiceReject = reject;
-      this.readingChoice = true;
-      this.updateChoiceFooterHeight();
-      this.redrawChoicePanel();
+      return new Promise((resolve, reject) => {
+        this.choiceResolve = resolve;
+        this.choiceReject = reject;
+        this.readingChoice = true;
+        this.updateChoiceFooterHeight();
+        this.redrawChoicePanel();
+      });
     });
   }
 
@@ -6542,16 +6598,18 @@ export class ChatLayout {
   }
 
   private readConfirmDuringTurn(message: string): Promise<boolean> {
-    const entry = this.findLastWaitingToolEntry();
-    if (entry) entry.awaitingApproval = true;
-    this.readingConfirm = true;
-    this.shortcutsOverride = `${ansi.bold}${message.trim()}${ansi.reset} ${ansi.muted}· y 允许 · n 拒绝${ansi.reset}`;
-    this.invalidateContentCache();
-    this.redrawContent();
-    this.drawFooter("", undefined);
+    return this.interactiveQueue.runExclusiveInteractive(async () => {
+      const entry = this.findLastWaitingToolEntry();
+      if (entry) entry.awaitingApproval = true;
+      this.readingConfirm = true;
+      this.shortcutsOverride = `${ansi.bold}${message.trim()}${ansi.reset} ${ansi.muted}· y 允许 · n 拒绝${ansi.reset}`;
+      this.invalidateContentCache();
+      this.redrawContent();
+      this.drawFooter("", undefined);
 
-    return new Promise((resolve) => {
-      this.confirmResolve = resolve;
+      return new Promise((resolve) => {
+        this.confirmResolve = resolve;
+      });
     });
   }
 
@@ -6560,22 +6618,24 @@ export class ChatLayout {
     planPath: string;
     planText: string;
   }): Promise<PlanReviewDecision> {
-    const entry = this.findLastWaitingToolEntry();
-    if (entry) entry.awaitingApproval = true;
+    return this.interactiveQueue.runExclusiveInteractive(async () => {
+      const entry = this.findLastWaitingToolEntry();
+      if (entry) entry.awaitingApproval = true;
 
-    this.planReviewMode = true;
-    this.planReviewPath = opts.planPath;
-    this.planReviewText = opts.planText;
-    this.planReviewSelected = 0;
-    this.scrollOffset = 0;
-    this.followBottom = false;
-    this.shortcutsOverride = null;
-    this.updatePlanReviewFooterHeight();
-    this.invalidateContentCache();
-    this.redraw();
+      this.planReviewMode = true;
+      this.planReviewPath = opts.planPath;
+      this.planReviewText = opts.planText;
+      this.planReviewSelected = 0;
+      this.scrollOffset = 0;
+      this.followBottom = false;
+      this.shortcutsOverride = null;
+      this.updatePlanReviewFooterHeight();
+      this.invalidateContentCache();
+      this.redraw();
 
-    return new Promise((resolve) => {
-      this.planReviewResolve = resolve;
+      return new Promise((resolve) => {
+        this.planReviewResolve = resolve;
+      });
     });
   }
 
@@ -7970,29 +8030,31 @@ export class ChatLayout {
     scriptPath: string;
     cwd?: string;
   }): Promise<WorkflowConfirmDecision> {
-    const entry = this.findLastWaitingToolEntry();
-    if (entry) entry.awaitingApproval = true;
+    return this.interactiveQueue.runExclusiveInteractive(async () => {
+      const entry = this.findLastWaitingToolEntry();
+      if (entry) entry.awaitingApproval = true;
 
-    this.workflowConfirmMode = true;
-    this.workflowConfirmMeta = opts.meta;
-    this.workflowConfirmArgs = opts.args;
-    this.workflowConfirmScriptSource = opts.scriptSource;
-    this.workflowConfirmScriptPath = opts.scriptPath;
-    this.workflowConfirmCwd = opts.cwd?.trim() || process.cwd();
-    this.workflowConfirmView = {
-      scriptVisible: false,
-      scriptToggled: false,
-      selectedIndex: 0,
-    };
-    this.scrollOffset = 0;
-    this.followBottom = false;
-    this.shortcutsOverride = null;
-    this.updateWorkflowConfirmFooterHeight();
-    this.invalidateContentCache();
-    this.redraw();
+      this.workflowConfirmMode = true;
+      this.workflowConfirmMeta = opts.meta;
+      this.workflowConfirmArgs = opts.args;
+      this.workflowConfirmScriptSource = opts.scriptSource;
+      this.workflowConfirmScriptPath = opts.scriptPath;
+      this.workflowConfirmCwd = opts.cwd?.trim() || process.cwd();
+      this.workflowConfirmView = {
+        scriptVisible: false,
+        scriptToggled: false,
+        selectedIndex: 0,
+      };
+      this.scrollOffset = 0;
+      this.followBottom = false;
+      this.shortcutsOverride = null;
+      this.updateWorkflowConfirmFooterHeight();
+      this.invalidateContentCache();
+      this.redraw();
 
-    return new Promise((resolve) => {
-      this.workflowConfirmResolve = resolve;
+      return new Promise((resolve) => {
+        this.workflowConfirmResolve = resolve;
+      });
     });
   }
 
@@ -8148,42 +8210,44 @@ export class ChatLayout {
   }
 
   async readToolApproval(opts: { toolCall: ToolCall; cwd: string }): Promise<ToolConfirmResult> {
-    // AskUser / wizard may still hold choice chrome — approval must own the footer.
-    this.readingChoice = false;
-    this.wizardMode = false;
-    this.finishChoice();
-    this.finishWizard();
+    return this.interactiveQueue.runExclusiveInteractive(async () => {
+      // AskUser / wizard may still hold choice chrome — approval must own the footer.
+      this.readingChoice = false;
+      this.wizardMode = false;
+      this.finishChoice();
+      this.finishWizard();
 
-    const entry = this.findLastWaitingToolEntry();
-    if (entry) {
-      entry.awaitingApproval = true;
-      entry.approvalRequired = true;
-    }
+      const entry = this.findLastWaitingToolEntry();
+      if (entry) {
+        entry.awaitingApproval = true;
+        entry.approvalRequired = true;
+      }
 
-    process.stdout.write(HIDE_CURSOR);
-    this.toolApprovalMode = true;
-    this.toolApprovalContent = null;
-    this.toolApprovalSelected = 0;
-    this.scrollOffset = 0;
-    this.followBottom = false;
-    this.shortcutsOverride = null;
-    this.updateToolApprovalFooterHeight();
-    this.invalidateContentCache();
-    this.redraw();
-    this.drawToolApprovalFooter();
+      process.stdout.write(HIDE_CURSOR);
+      this.toolApprovalMode = true;
+      this.toolApprovalContent = null;
+      this.toolApprovalSelected = 0;
+      this.scrollOffset = 0;
+      this.followBottom = false;
+      this.shortcutsOverride = null;
+      this.updateToolApprovalFooterHeight();
+      this.invalidateContentCache();
+      this.redraw();
+      this.drawToolApprovalFooter();
 
-    const { cols } = getTerminalSize();
-    const content = await buildToolApprovalContent(opts.toolCall, opts.cwd, cols);
+      const { cols } = getTerminalSize();
+      const content = await buildToolApprovalContent(opts.toolCall, opts.cwd, cols);
 
-    this.toolApprovalContent = content;
-    this.updateToolApprovalFooterHeight(content);
-    this.invalidateContentCache();
-    this.redraw();
+      this.toolApprovalContent = content;
+      this.updateToolApprovalFooterHeight(content);
+      this.invalidateContentCache();
+      this.redraw();
 
-    return new Promise((resolve) => {
-      this.pendingToolApprovalCall = opts.toolCall;
-      this.pendingToolApprovalCwd = opts.cwd;
-      this.toolApprovalResolve = resolve;
+      return new Promise((resolve) => {
+        this.pendingToolApprovalCall = opts.toolCall;
+        this.pendingToolApprovalCwd = opts.cwd;
+        this.toolApprovalResolve = resolve;
+      });
     });
   }
 
@@ -8253,6 +8317,18 @@ export class ChatLayout {
   }
 
   private handleToolApprovalInput(chunk: string): void {
+    const { actions: earlyActions } = parseChoiceInputActions(chunk);
+    for (const action of earlyActions) {
+      if (action.type === "interrupt" || action.type === "escape") {
+        this.finishToolApproval({ action: "deny" });
+        // Also abort the turn — deny alone may leave parallel/orphaned confirms hung
+        // until raceToolConfirmWithTurnAbort sees turnExitRequested.
+        this.turnExitRequested = true;
+        this.turnDiscardOnAbort = true;
+        return;
+      }
+    }
+
     const content = this.toolApprovalContent;
     if (!content) return;
 
@@ -8277,6 +8353,8 @@ export class ChatLayout {
       }
       if (action.type === "interrupt" || action.type === "escape") {
         this.finishToolApproval({ action: "deny" });
+        this.turnExitRequested = true;
+        this.turnDiscardOnAbort = true;
         return;
       }
       if (action.type === "shiftTab") {

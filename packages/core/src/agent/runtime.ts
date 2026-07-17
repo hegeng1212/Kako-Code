@@ -41,7 +41,7 @@ import {
 import { getFrozenCuratedSnapshot } from "../memory/curated-freeze.js";
 import { scheduleBackgroundReview, hasSubstantiveReviewSignal } from "../memory/background-review.js";
 import type { MemoryTelemetry } from "@kako/shared";
-import { ToolRegistry } from "../tools/registry.js";
+import { ToolRegistry, createSessionToolAllows, type SessionToolAllows } from "../tools/registry.js";
 import { registerBuiltinTools, resolveAllToolNames, resolveAllowedToolNames } from "../tools/builtin/index.js";
 import {
   agentToolDefinition,
@@ -63,7 +63,7 @@ import {
 } from "../security/action-classifier.js";
 import type { ProviderRegistry } from "@kako/shared";
 import { mcpManager } from "../mcp/manager.js";
-import { sessionManager } from "../session/manager.js";
+import { sessionManager, sessionHasUserDialogue } from "../session/manager.js";
 import { generateJobName } from "../session/job-name.js";
 import { generateSessionTitle } from "../session/title.js";
 import {
@@ -71,11 +71,16 @@ import {
   loadSkill,
   partitionSkillsForCatalog,
 } from "../skills/loader.js";
-import { loadSystemSkills, skillNamesForToolAllowlist } from "../skills/system-skills.js";
+import {
+  getSystemSkillEntry,
+  loadSystemSkills,
+  skillNamesForToolAllowlist,
+} from "../skills/system-skills.js";
 import {
   buildInitSkillActivatedMessages,
   buildSkillActivatedMessages,
   formatActiveSkillReminder,
+  launchDynamicWorkflowFromSkill,
   parseSkillInput,
 } from "../tools/builtin/skill.js";
 import { beginTurnBudget, getTurnBudget } from "../workflows/budget.js";
@@ -205,6 +210,8 @@ export class AgentRuntime {
   private currentTurnModelBySession = new Map<SessionId, string>();
   private sessionPermissionModeBySession = new Map<SessionId, PermissionMode>();
   private sessionPlanFilePathBySession = new Map<SessionId, string>();
+  /** Survives per-turn ToolRegistry recreation ("allow this MCP tool during this session"). */
+  private sessionToolAllowsBySession = new Map<SessionId, SessionToolAllows>();
   /** In-flight foreground Agent waits that can be promoted via ctrl+b. */
   private foregroundAgentPromotes = new Map<
     string,
@@ -414,6 +421,8 @@ export class AgentRuntime {
       void generateSessionTitle(router, model, turn.text)
         .then(async (title) => {
           if (!title) return;
+          // Aborted / cleared turns must not leave a titled empty session.
+          if (!(await sessionHasUserDialogue(session.id))) return;
           await sessionManager.updateSession(session.id, { title });
         })
         .catch((err) => {
@@ -428,6 +437,7 @@ export class AgentRuntime {
       void generateJobName(router, model, turn.text)
         .then(async (jobName) => {
           if (!jobName) return;
+          if (!(await sessionHasUserDialogue(session.id))) return;
           await sessionManager.updateSession(session.id, { jobName });
         })
         .catch((err) => {
@@ -597,6 +607,12 @@ export class AgentRuntime {
             workspaceKakoMd: workspaceKako?.content,
           });
         }
+        // dynamic-workflow skills (e.g. deep-research): do not pivot onto Invoke-only
+        // context — harness launches Workflow via onSkillWorkflowFollowThrough instead.
+        const dwEntry = getSystemSkillEntry(parsed.skill);
+        if (dwEntry?.handler === "dynamic-workflow") {
+          return;
+        }
         // Status-only system skills (e.g. workflows) have no SKILL.md body — the Skill
         // tool result already carries the answer; do not pivot / loadSkill (that throws).
         const systemSkills = await loadSystemSkills();
@@ -619,6 +635,16 @@ export class AgentRuntime {
           skillInstructions: loaded.instructions,
           skillArgs: parsed.args,
           workspaceKakoMd: workspaceKako?.content,
+        });
+      },
+      onSkillWorkflowFollowThrough: async ({ toolCall, skillOutput }) => {
+        const parsed = parseSkillInput(toolCall.input);
+        return launchDynamicWorkflowFromSkill({
+          skillName: parsed.skill,
+          skillArgs: parsed.args,
+          skillOutput,
+          sessionId: session.id,
+          cwd: session.cwd,
         });
       },
     });
@@ -778,6 +804,7 @@ export class AgentRuntime {
       void generateJobLabel(router, model, userAsk, responseText)
         .then(async (label) => {
           if (!label) return;
+          if (!(await sessionHasUserDialogue(session.id))) return;
           await sessionManager.updateSession(session.id, { jobLabel: label });
         })
         .catch((err) => {
@@ -868,6 +895,11 @@ export class AgentRuntime {
       : undefined;
     const permissionMode =
       this.sessionPermissionModeBySession.get(session.id) ?? definition.permissionMode;
+    let sessionAllows = this.sessionToolAllowsBySession.get(session.id);
+    if (!sessionAllows) {
+      sessionAllows = createSessionToolAllows();
+      this.sessionToolAllowsBySession.set(session.id, sessionAllows);
+    }
     const classifyAction =
       permissionMode === "bypassPermissions"
         ? async (toolCall: ToolCall, _definition: ToolDefinition) => {
@@ -917,6 +949,7 @@ export class AgentRuntime {
       askUserQuestion,
       allowedSkills: skillNamesForToolAllowlist(agentSkills),
       planFilePath: this.sessionPlanFilePathBySession.get(session.id),
+      sessionAllows,
       initialActivatedSkills: options?.preactivatedSkill
         ? [options.preactivatedSkill.name]
         : undefined,
@@ -1352,11 +1385,17 @@ export class AgentRuntime {
         : undefined,
     });
 
+    let childAllows = this.sessionToolAllowsBySession.get(childSession.id);
+    if (!childAllows) {
+      childAllows = createSessionToolAllows();
+      this.sessionToolAllowsBySession.set(childSession.id, childAllows);
+    }
     const subRegistry = new ToolRegistry({
       cwd: session.cwd,
       sessionId: childSession.id,
       agentId: `${input.parentAgentId}/${subagentName}`,
       permissionMode: subDefinition.permissionMode,
+      sessionAllows: childAllows,
       confirm: this.callbacks.confirm
         ? async (toolCall: ToolCall) => {
             await this.callbacks.beforeInteractive?.(session.id);

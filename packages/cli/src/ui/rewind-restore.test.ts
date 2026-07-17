@@ -181,6 +181,46 @@ describe("Rewind restore conversation", () => {
     await expect(readLineStillPending(linePromise)).resolves.toBe("still-pending");
   });
 
+  it("list Esc (lone buffered ESC flush) closes Rewind and restores the input box", async () => {
+    vi.useFakeTimers();
+    const layout = testLayout();
+    layout.setSessionId("sess-a");
+    void layout.readLine({ plain: true });
+    await vi.waitFor(() => {
+      expect((layout as unknown as LayoutInternals).readingLine).toBe(true);
+    });
+
+    const internals = layout as unknown as LayoutInternals & {
+      settleRewindEscape: () => void;
+      scheduleStdinRestFlush: () => void;
+      stdinRest: string;
+    };
+    internals.rewindHandlers = {
+      loadTurns: async () => [],
+      restore: async () => {},
+      restoreCode: async () => {},
+      summarize: async () => {},
+    };
+    internals.readingRewind = true;
+    internals.rewindPhase = "list";
+    internals.rewindRows = [
+      { kind: "current", label: "(current)" },
+    ];
+    internals.rewindSelected = 0;
+
+    // Lone Esc is buffered (incomplete CSI), then flushed after 35ms.
+    await internals.handleRewindInput("\x1b");
+    expect(internals.readingRewind).toBe(true);
+    expect(internals.stdinRest).toBe("\x1b");
+
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(internals.readingRewind).toBe(false);
+    expect(internals.readingLine).toBe(true);
+    expect(internals.stdinRest).toBe("");
+    vi.useRealTimers();
+  });
+
   it("list Enter as \\r\\n opens confirm without immediately Restoring", async () => {
     const layout = testLayout();
     layout.setSessionId("sess-a");

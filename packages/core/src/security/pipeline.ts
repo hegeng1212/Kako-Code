@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   PermissionMode,
   SessionCapability,
@@ -18,9 +20,27 @@ import { evaluateNetworkToolGate, evaluateNetworkToolGateWithoutTarget } from ".
 import { evaluateToolRisk } from "./risk-evaluator.js";
 import type { SecurityPolicy } from "./policy-store.js";
 import { isDeniedSecretPath } from "./secret-guard.js";
-import { outsidePolicyAction, resolveSafePath } from "./workspace-guard.js";
+import { isPathWithinRoots, outsidePolicyAction, resolveSafePath } from "./workspace-guard.js";
 
 const TRUSTED_WRITE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+
+/** Session-approved workspace prefixes — realpath so macOS /var vs /private/var matches. */
+async function pathAllowedBySessionPrefixes(
+  resolvedPath: string,
+  prefixes: Set<string>,
+): Promise<boolean> {
+  if (prefixes.size === 0) return false;
+  const roots: string[] = [];
+  for (const p of prefixes) {
+    const logical = resolve(p);
+    try {
+      roots.push(await realpath(logical));
+    } catch {
+      roots.push(logical);
+    }
+  }
+  return isPathWithinRoots(resolvedPath, roots);
+}
 
 function skipWriteApprovalForCapability(
   toolCall: ToolCall,
@@ -107,9 +127,9 @@ export async function runSecurityGate(
     }
     const check = await resolveSafePath(ctx.cwd, rawPath, ctx.policy);
     if (!check.allowed) {
-      const prefixAllowed = [...ctx.sessionAllowedWorkspacePaths].some((p) =>
-        check.resolvedPath?.startsWith(p),
-      );
+      const prefixAllowed =
+        !!check.resolvedPath &&
+        (await pathAllowedBySessionPrefixes(check.resolvedPath, ctx.sessionAllowedWorkspacePaths));
       if (prefixAllowed) continue;
       const action = outsidePolicyAction(ctx.policy);
       if (action === "deny" && ctx.capability !== "FullAccess") {

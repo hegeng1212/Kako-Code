@@ -1,19 +1,49 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import {
   assertSkillAllowed,
+  buildDynamicWorkflowSkillActivatedMessages,
   buildInitSkillActivatedMessages,
   buildSkillActivatedMessages,
   formatActiveSkillReminder,
   formatSkillActivationResult,
   formatSkillToolResult,
+  launchDynamicWorkflowFromSkill,
   parseSkillInput,
   skillHandler,
   skillToolDefinition,
 } from "./skill.js";
+import { getSystemSkillEntry } from "../../skills/system-skills.js";
 import { toolContext, withTempDir } from "./test-helpers.js";
+
+vi.mock("../../workflows/runner.js", () => ({
+  launchWorkflow: vi.fn(async () => ({
+    taskId: "wskill1",
+    runId: "wf_skill1",
+    scriptPath: "/tmp/deep-research.js",
+    transcriptDir: "/tmp/transcript",
+    summary: "Deep research harness",
+    record: {
+      taskId: "wskill1",
+      runId: "wf_skill1",
+      name: "deep-research",
+      description: "Deep research harness",
+      status: "running",
+      scriptPath: "/tmp/deep-research.js",
+      transcriptDir: "/tmp/transcript",
+      startedAt: new Date().toISOString(),
+      agentsTotal: 0,
+      agentsDone: 0,
+      agentsFailed: 0,
+    },
+  })),
+  formatWorkflowToolResult: vi.fn(
+    (launch: { runId: string }) =>
+      `Workflow launched in background.\nRun ID: ${launch.runId}`,
+  ),
+}));
 
 async function seedSkill(cwd: string, name: string, body: string): Promise<void> {
   const skillDir = join(cwd, ".kako", "skills", name);
@@ -95,6 +125,49 @@ describe("skillHandler", () => {
     });
   });
 
+  it("returns Launching skill ack for dynamic-workflow skills", async () => {
+    await withTempDir(async (cwd) => {
+      const result = await skillHandler(
+        { skill: "deep-research", args: "Option A research topic" },
+        toolContext(cwd, { sessionId: "sess-skill", allowedSkills: ["deep-research"] }),
+      );
+      expect(result).toBe("Launching skill: deep-research");
+    });
+  });
+
+  it("launchDynamicWorkflowFromSkill starts Workflow and returns tool follow-through", async () => {
+    await withTempDir(async (cwd) => {
+      const follow = await launchDynamicWorkflowFromSkill({
+        skillName: "deep-research",
+        skillArgs: "Option A research topic",
+        skillOutput: "Launching skill: deep-research",
+        sessionId: "sess-skill",
+        cwd,
+      });
+      expect(follow).not.toBeNull();
+      expect(follow!.skillOutput).toBe("Launching skill: deep-research");
+      expect(follow!.workflowToolCall.name).toBe("Workflow");
+      expect(follow!.workflowToolCall.input).toEqual({
+        name: "deep-research",
+        args: "Option A research topic",
+      });
+      expect(follow!.workflowOutput).toContain("Workflow launched in background.");
+      expect(follow!.workflowOutput).toContain("wf_skill1");
+    });
+  });
+
+  it("launchDynamicWorkflowFromSkill requires args", async () => {
+    await withTempDir(async (cwd) => {
+      const follow = await launchDynamicWorkflowFromSkill({
+        skillName: "deep-research",
+        skillOutput: "Launching skill: deep-research",
+        sessionId: "sess-skill",
+        cwd,
+      });
+      expect(follow).toBeNull();
+    });
+  });
+
   it("returns this session workflow status for Skill(workflows)", async () => {
     await withTempDir(async (cwd) => {
       const result = await skillHandler(
@@ -150,6 +223,31 @@ describe("formatSkillActivationResult", () => {
     const text = formatSkillActivationResult("demo", "/path/demo/SKILL.md");
     expect(text).toContain("system-reminder");
     expect(text).toContain("/path/demo/SKILL.md");
+  });
+
+  it("uses Launching skill ack for dynamic-workflow names", () => {
+    expect(formatSkillActivationResult("deep-research", "/any")).toBe(
+      "Launching skill: deep-research",
+    );
+  });
+});
+
+describe("buildDynamicWorkflowSkillActivatedMessages", () => {
+  it("re-injects Invoke: Workflow guide with refined args", async () => {
+    const entry = getSystemSkillEntry("deep-research");
+    expect(entry).toBeDefined();
+    const messages = await buildDynamicWorkflowSkillActivatedMessages({
+      systemPromptBase: "You are helpful.",
+      transcript: [{ role: "user", content: "/deep-research Option A" }],
+      entry: entry!,
+      skillArgs: "Option A refined research question",
+      now: new Date("2026-07-17T12:00:00"),
+    });
+    expect(messages[0]?.role).toBe("system");
+    const last = String(messages[messages.length - 1]?.content ?? "");
+    expect(last).toContain("Re-invocation of /deep-research");
+    expect(last).toContain('Invoke: Workflow({ name: "deep-research"');
+    expect(last).toContain("Option A refined research question");
   });
 });
 

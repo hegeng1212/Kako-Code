@@ -33,6 +33,13 @@ export interface SkillActivateInput {
   priorMessages: LLMMessage[];
 }
 
+/** Claude-parity follow-through: Skill ack + harness-launched Workflow tool result. */
+export interface SkillWorkflowFollowThrough {
+  skillOutput: string;
+  workflowToolCall: ToolCall;
+  workflowOutput: string;
+}
+
 export interface RunAgentLoopOptions {
   router: LLMRouter;
   registry: ToolRegistry;
@@ -49,6 +56,13 @@ export interface RunAgentLoopOptions {
   shouldAbort?: () => boolean;
   /** Rebuild messages after a lone Skill tool call (harness loads skill + pivots context). */
   onSkillActivate?: (input: SkillActivateInput) => Promise<LLMMessage[] | null | void> | LLMMessage[] | null | void;
+  /**
+   * After lone Skill when pivot declines: optionally launch a Workflow locally and
+   * continue with Skill + Workflow tool results (dynamic-workflow skills).
+   */
+  onSkillWorkflowFollowThrough?: (
+    input: SkillActivateInput & { skillOutput: string },
+  ) => Promise<SkillWorkflowFollowThrough | null | void> | SkillWorkflowFollowThrough | null | void;
 }
 
 /** Main = 0; at depth ≥ 3, Agent tool is blocked. Depths 0/1/2 may spawn. */
@@ -220,6 +234,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
     blockAgentTool = false,
     shouldAbort,
     onSkillActivate,
+    onSkillWorkflowFollowThrough,
   } = options;
 
   let responseText = "";
@@ -265,7 +280,8 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
     const loneSkillCall =
       toolCalls.length === 1 ? toolCalls[0] : undefined;
     const skillPivot =
-      loneSkillCall?.name === "Skill" && onSkillActivate;
+      loneSkillCall?.name === "Skill" &&
+      Boolean(onSkillActivate || onSkillWorkflowFollowThrough);
 
     if (skillPivot && loneSkillCall) {
       const toolCall = loneSkillCall;
@@ -276,16 +292,18 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
       // Exactly one start/end pair — a second start left "Waiting. Activating…" stuck.
       callbacks?.onToolStart?.(toolCall.name, toolCall.input);
 
-      if (result.status === "success") {
-        let pivoted: LLMMessage[] | null | void;
-        try {
-          pivoted = await onSkillActivate({
-            toolCall,
-            priorMessages: [...messages],
-          });
-        } catch {
-          // Failed activation must not kill the turn — keep Skill tool result in-band.
-          pivoted = undefined;
+        if (result.status === "success") {
+        let pivoted: LLMMessage[] | null | void = undefined;
+        if (onSkillActivate) {
+          try {
+            pivoted = await onSkillActivate({
+              toolCall,
+              priorMessages: [...messages],
+            });
+          } catch {
+            // Failed activation must not kill the turn — keep Skill tool result in-band.
+            pivoted = undefined;
+          }
         }
         if (pivoted?.length) {
           callbacks?.onToolEnd?.(
@@ -302,6 +320,77 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<string
           messages.push(...pivoted);
           responseText = "";
           continue;
+        }
+
+        // dynamic-workflow: Skill ack + harness-local Workflow launch, then continue
+        // with a Workflow tool result (Claude parity — do not bury launch under Skill).
+        if (onSkillWorkflowFollowThrough) {
+          let follow: SkillWorkflowFollowThrough | null | void;
+          try {
+            follow = await onSkillWorkflowFollowThrough({
+              toolCall,
+              priorMessages: [...messages],
+              skillOutput: String(result.output ?? ""),
+            });
+          } catch {
+            follow = undefined;
+          }
+          if (follow?.workflowToolCall && follow.workflowOutput) {
+            const skillOutput = follow.skillOutput || String(result.output ?? "");
+            callbacks?.onToolEnd?.(
+              toolCall.name,
+              "success",
+              undefined,
+              skillOutput,
+              toolCall.input,
+            );
+            callbacks?.onToolStart?.(
+              follow.workflowToolCall.name,
+              follow.workflowToolCall.input,
+            );
+            callbacks?.onToolEnd?.(
+              follow.workflowToolCall.name,
+              "success",
+              undefined,
+              follow.workflowOutput,
+              follow.workflowToolCall.input,
+            );
+
+            const pairedCalls = [toolCall, follow.workflowToolCall];
+            messages.push({ role: "assistant", content: responseText, toolCalls: pairedCalls });
+            await persistAssistantTurn(memory, responseText, pairedCalls);
+
+            const skillLlm = toolOutputToLlmContent(skillOutput);
+            messages.push({
+              role: "tool",
+              content: skillLlm,
+              toolCallId: toolCall.id,
+              name: toolCall.name,
+            });
+            const workflowLlm = toolOutputToLlmContent(follow.workflowOutput);
+            messages.push({
+              role: "tool",
+              content: workflowLlm,
+              toolCallId: follow.workflowToolCall.id,
+              name: follow.workflowToolCall.name,
+            });
+            if (memory) {
+              await memory.append(
+                createMessage("tool", getTextContent(skillLlm), {
+                  toolCallId: toolCall.id,
+                  toolName: toolCall.name,
+                }),
+              );
+              await memory.append(
+                createMessage("tool", getTextContent(workflowLlm), {
+                  toolCallId: follow.workflowToolCall.id,
+                  toolName: follow.workflowToolCall.name,
+                }),
+              );
+            }
+            responseText = "";
+            continue;
+          }
         }
       }
 

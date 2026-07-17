@@ -51,6 +51,7 @@ import {
   unregisterAgentCompleteHandler,
   unregisterWorkflowCompleteHandler,
   sessionHasUserDialogue,
+  isDefaultSessionTitle,
   type AgentTaskRecord,
   type WorkflowRunRecord,
 } from "@kako/core";
@@ -59,6 +60,7 @@ import { getProviderModelLabel } from "@kako/shared";
 import { initTerminalTheme } from "../ui/ansi.js";
 import { guideProviderSetup } from "../ui/setup-guide.js";
 import { createAskUserQuestionPrompt } from "../ui/ask-user-question.js";
+import { raceToolConfirmWithTurnAbort } from "../ui/tool-confirm-abort.js";
 import { isPlanFileDetail, formatReadDisplayDetail } from "../ui/tool-call-phrases.js";
 import {
   renderAgentFinishedEventLine,
@@ -261,7 +263,7 @@ export async function runChat(cwdArg: string): Promise<void> {
     }
   };
 
-  /** Refocus wake: model writes a short recap; UI shows * recap: on the prior turn. */
+  /** Refocus wake: model writes a short recap; UI shows ✴ recap: on the prior turn. */
   const runSteppedAwayRecapTurn = async (): Promise<void> => {
     if (layout.isTurnInProgress() || layout.isAgentsPanelOpen() || layout.hasForegroundBlockingOverlay()) {
       return;
@@ -541,6 +543,12 @@ export async function runChat(cwdArg: string): Promise<void> {
     },
     confirm: async (toolCall): Promise<ToolConfirmResult> => {
       const confirmSessionId = interactiveSessionId || session.id;
+      const isAborted = () => layout.isTurnExitRequestedFor(confirmSessionId);
+      const withAbort = (run: () => Promise<ToolConfirmResult>) =>
+        raceToolConfirmWithTurnAbort(run, isAborted, {
+          onAbort: () => layout.settlePendingOverlaysForTurnCancel(),
+        });
+
       if (toolCall.name === "ExitPlanMode") {
         const mode =
           harness.runtime.getSessionPermissionMode(confirmSessionId) ||
@@ -549,76 +557,82 @@ export async function runChat(cwdArg: string): Promise<void> {
         if (mode !== "plan") {
           return true;
         }
-        const planPath = await resolvePlanFileForSession(confirmSessionId);
-        const planText = await readPlanFile(planPath);
-        const decision = await layout.readPlanReview({ planPath, planText });
-        if (decision.action === "cancel") {
-          return false;
-        }
-        if (decision.action === "revise") {
-          return {
-            allowed: false,
-            denialReason: `User requested plan changes:\n\n${decision.feedback ?? ""}`,
-          };
-        }
-        if (decision.action === "auto") {
-          void syncSessionPermissionMode(confirmSessionId, "bypassPermissions");
-          return { allowed: true, permissionMode: "bypassPermissions" };
-        }
-        void syncSessionPermissionMode(confirmSessionId, "acceptEdits");
-        return { allowed: true, permissionMode: "acceptEdits" };
+        return withAbort(async () => {
+          const planPath = await resolvePlanFileForSession(confirmSessionId);
+          const planText = await readPlanFile(planPath);
+          const decision = await layout.readPlanReview({ planPath, planText });
+          if (decision.action === "cancel") {
+            return false;
+          }
+          if (decision.action === "revise") {
+            return {
+              allowed: false,
+              denialReason: `User requested plan changes:\n\n${decision.feedback ?? ""}`,
+            };
+          }
+          if (decision.action === "auto") {
+            void syncSessionPermissionMode(confirmSessionId, "bypassPermissions");
+            return { allowed: true, permissionMode: "bypassPermissions" };
+          }
+          void syncSessionPermissionMode(confirmSessionId, "acceptEdits");
+          return { allowed: true, permissionMode: "acceptEdits" };
+        });
       }
       if (toolCall.name === "Workflow") {
-        try {
-          const preview = await prepareWorkflowConfirm({
-            sessionId: confirmSessionId,
-            cwd,
-            name: typeof toolCall.input.name === "string" ? toolCall.input.name : undefined,
-            script: typeof toolCall.input.script === "string" ? toolCall.input.script : undefined,
-            scriptPath:
-              typeof toolCall.input.scriptPath === "string" ? toolCall.input.scriptPath : undefined,
-          });
-          if (await sessionManager.isWorkflowAllowedForCwd(cwd, preview.meta.name)) {
+        return withAbort(async () => {
+          try {
+            const preview = await prepareWorkflowConfirm({
+              sessionId: confirmSessionId,
+              cwd,
+              name: typeof toolCall.input.name === "string" ? toolCall.input.name : undefined,
+              script: typeof toolCall.input.script === "string" ? toolCall.input.script : undefined,
+              scriptPath:
+                typeof toolCall.input.scriptPath === "string"
+                  ? toolCall.input.scriptPath
+                  : undefined,
+            });
+            if (await sessionManager.isWorkflowAllowedForCwd(cwd, preview.meta.name)) {
+              return {
+                allowed: true,
+                inputPatch: {
+                  scriptPath: preview.previewScriptPath,
+                  script: undefined,
+                },
+              };
+            }
+            const decision = await layout.readWorkflowConfirm({
+              meta: preview.meta,
+              args: toolCall.input.args,
+              scriptSource: preview.source,
+              scriptPath: preview.previewScriptPath,
+              cwd,
+            });
+            if (decision.action === "cancel") {
+              return {
+                allowed: false,
+                denialReason: "User declined to run the workflow.",
+              };
+            }
+            if (decision.action === "run-always") {
+              await sessionManager.allowWorkflowForCwd(cwd, preview.meta.name);
+            }
             return {
               allowed: true,
               inputPatch: {
-                scriptPath: preview.previewScriptPath,
+                scriptPath: decision.scriptPath ?? preview.previewScriptPath,
                 script: undefined,
               },
             };
-          }
-          const decision = await layout.readWorkflowConfirm({
-            meta: preview.meta,
-            args: toolCall.input.args,
-            scriptSource: preview.source,
-            scriptPath: preview.previewScriptPath,
-            cwd,
-          });
-          if (decision.action === "cancel") {
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
             return {
               allowed: false,
-              denialReason: "User declined to run the workflow.",
+              denialReason: `Workflow could not be prepared: ${message}`,
             };
           }
-          if (decision.action === "run-always") {
-            await sessionManager.allowWorkflowForCwd(cwd, preview.meta.name);
-          }
-          return {
-            allowed: true,
-            inputPatch: {
-              scriptPath: decision.scriptPath ?? preview.previewScriptPath,
-              script: undefined,
-            },
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return {
-            allowed: false,
-            denialReason: `Workflow could not be prepared: ${message}`,
-          };
-        }
+        });
       }
-      return layout.readToolApproval({ toolCall, cwd });
+      return withAbort(() => layout.readToolApproval({ toolCall, cwd }));
     },
     askUserQuestion: createAskUserQuestionPrompt(layout),
     onReasoningDelta: (sessionId, text) => layout.appendThinking(text, sessionId),
@@ -845,6 +859,13 @@ export async function runChat(cwdArg: string): Promise<void> {
       // Keep completion handlers for the left session — concurrent workflows must
       // still notify that session when they finish.
       session = await harness.runtime.resumeSession(nextId);
+      // Stale AI title on an empty transcript (e.g. /clear before this fix) — reset list/header identity.
+      if (!(await sessionHasUserDialogue(session.id))) {
+        const meta = await sessionManager.getSessionMeta(session.id);
+        if (!isDefaultSessionTitle(meta?.title) || (meta?.jobLabel ?? "").trim() || (meta?.jobName ?? "").trim()) {
+          session = await sessionManager.clearSessionListIdentity(session.id);
+        }
+      }
       cwd = session.cwd;
       layout.setSessionId(session.id);
       layout.refreshHeader();
@@ -927,7 +948,9 @@ export async function runChat(cwdArg: string): Promise<void> {
       if (result.type === "clear") {
         await keepLocalSlashInInputHistory();
         await clearSessionConversation(session.id);
+        session = await sessionManager.clearSessionListIdentity(session.id);
         layout.clearConversationToCommand(result.displayText);
+        layout.refreshHeader();
         continue;
       }
       if (result.type !== "message" && result.type !== "skill-slash") {
@@ -1324,7 +1347,9 @@ export async function runChat(cwdArg: string): Promise<void> {
         case "clear":
           await keepLocalSlashInInputHistory();
           await clearSessionConversation(session.id);
+          session = await sessionManager.clearSessionListIdentity(session.id);
           layout.clearConversationToCommand(result.displayText);
+          layout.refreshHeader();
           continue;
         case "plan-view": {
           const meta = await sessionManager.getSessionMeta(session.id);

@@ -174,6 +174,8 @@ function toolEntryFromMessages(
     output: isError ? undefined : content,
     errorDetail: isError ? content : undefined,
     toolInput: input,
+    skillExpanded:
+      name === "Skill" || name === "Workflow" || name.startsWith("mcp/") ? true : undefined,
     dotFrame: 0,
   };
   return entry;

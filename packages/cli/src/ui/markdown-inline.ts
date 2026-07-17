@@ -1,4 +1,10 @@
 import { ansi, displayWidth, stripAnsi } from "./ansi.js";
+import {
+  containingDirectory,
+  isReportArtifactPath,
+  OPEN_REPORT_DIR_LABEL,
+  truncatePathForDisplay,
+} from "./report-path.js";
 
 export interface InlineStyle {
   bold?: boolean;
@@ -9,12 +15,20 @@ export interface InlineStyle {
   /** Count-like quantity (12+, 50%, “12 家”) — not list ordinals. */
   quantity?: boolean;
   link?: string;
+  /** Clickable “打开目录” for report artifacts — value is the directory path. */
+  openDir?: string;
 }
 
 export interface InlinePart {
   text: string;
   style: InlineStyle;
 }
+
+export type WrappedInlineLine = {
+  text: string;
+  /** Present when this wrapped line includes a report-dir open control. */
+  openDir?: string;
+};
 
 function mergeParts(parts: InlinePart[]): InlinePart[] {
   const merged: InlinePart[] = [];
@@ -29,7 +43,9 @@ function mergeParts(parts: InlinePart[]): InlinePart[] {
       !prev.style.path &&
       !part.style.path &&
       !prev.style.quantity &&
-      !part.style.quantity
+      !part.style.quantity &&
+      !prev.style.openDir &&
+      !part.style.openDir
     ) {
       prev.text += part.text;
       continue;
@@ -40,7 +56,7 @@ function mergeParts(parts: InlinePart[]): InlinePart[] {
 }
 
 function styleKey(style: InlineStyle): string {
-  return `${style.bold ? "b" : ""}${style.italic ? "i" : ""}${style.code ? "c" : ""}${style.path ? "p" : ""}${style.quantity ? "q" : ""}${style.link ?? ""}`;
+  return `${style.bold ? "b" : ""}${style.italic ? "i" : ""}${style.code ? "c" : ""}${style.path ? "p" : ""}${style.quantity ? "q" : ""}${style.openDir ? `o:${style.openDir}` : ""}${style.link ?? ""}`;
 }
 
 /**
@@ -206,6 +222,9 @@ export function renderInlinePart(part: InlinePart): string {
   if (part.style.path) {
     return `${ansi.blue}${part.text}${ansi.reset}`;
   }
+  if (part.style.openDir) {
+    return `${ansi.accent}${part.text}${ansi.reset}`;
+  }
   // Quantities / counts — warm yellow (distinct from white ordinals).
   if (part.style.quantity) {
     return `${ansi.yellow}${part.text}${ansi.reset}`;
@@ -238,14 +257,40 @@ function splitWords(text: string): string[] {
   return text.split(/(\s+)/).filter((token) => token.length > 0);
 }
 
+/**
+ * Report artifacts: truncate long paths and append a blue 「打开目录」 control.
+ * Code paths stay unchanged (no open-dir affordance).
+ */
+export function expandReportArtifactParts(parts: InlinePart[], width: number): InlinePart[] {
+  const out: InlinePart[] = [];
+  for (const part of parts) {
+    if (!part.style.path || !isReportArtifactPath(part.text)) {
+      out.push(part);
+      continue;
+    }
+    const fullPath = part.text.trim().replace(/^`+|`+$/g, "");
+    const dir = containingDirectory(fullPath);
+    const gap = " ";
+    const linkBudget = displayWidth(gap) + displayWidth(OPEN_REPORT_DIR_LABEL);
+    const maxPathWidth =
+      width > linkBudget + 4 ? Math.max(8, width - linkBudget) : Math.max(8, width);
+    const shown = truncatePathForDisplay(fullPath, maxPathWidth);
+    out.push({ text: shown, style: { path: true } });
+    out.push({ text: `${gap}${OPEN_REPORT_DIR_LABEL}`, style: { openDir: dir } });
+  }
+  return out;
+}
+
 /** Word-wrap inline parts to terminal width, preserving styles. */
-export function wrapInlineParts(
+export function wrapInlinePartsDetailed(
   parts: InlinePart[],
   width: number,
   renderPart: (part: InlinePart) => string = renderInlinePart,
-): string[] {
+): WrappedInlineLine[] {
+  const expanded = expandReportArtifactParts(parts, width);
   if (width < 1) {
-    return [parts.map(renderPart).join("")];
+    const openDir = expanded.find((p) => p.style.openDir)?.style.openDir;
+    return [{ text: expanded.map(renderPart).join(""), openDir }];
   }
 
   const lines: InlinePart[][] = [[]];
@@ -272,7 +317,9 @@ export function wrapInlineParts(
         !lastPart.style.path &&
         !part.style.path &&
         !lastPart.style.quantity &&
-        !part.style.quantity
+        !part.style.quantity &&
+        !lastPart.style.openDir &&
+        !part.style.openDir
       ) {
         lastPart.text += " ";
         lineWidth += 1;
@@ -289,8 +336,8 @@ export function wrapInlineParts(
     lineWidth += partWidth;
   };
 
-  for (const part of parts) {
-    if (part.style.code || part.style.path || part.style.quantity) {
+  for (const part of expanded) {
+    if (part.style.code || part.style.path || part.style.quantity || part.style.openDir) {
       pushPart(part);
       continue;
     }
@@ -302,7 +349,18 @@ export function wrapInlineParts(
     }
   }
 
-  return lines.map((lineParts) => lineParts.map(renderPart).join(""));
+  return lines.map((lineParts) => ({
+    text: lineParts.map(renderPart).join(""),
+    openDir: lineParts.find((p) => p.style.openDir)?.style.openDir,
+  }));
+}
+
+export function wrapInlineParts(
+  parts: InlinePart[],
+  width: number,
+  renderPart: (part: InlinePart) => string = renderInlinePart,
+): string[] {
+  return wrapInlinePartsDetailed(parts, width, renderPart).map((line) => line.text);
 }
 
 export function wrapMarkdownParagraph(text: string, width: number): string[] {

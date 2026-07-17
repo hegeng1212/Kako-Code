@@ -6,17 +6,21 @@ export function formatContextManagementReminder(): string {
 When the conversation grows long, some or all of the current context is summarized; the summary, along with any remaining unsummarized context, is provided in the next context window so work can continue — you don't need to wrap up early or hand off mid-task.`;
 }
 
-/** Format the tools clause for a sub-agent catalog line. */
+/** Format the tools clause for a sub-agent catalog line (Claude Code parity). */
 export function formatSubagentToolsClause(def: AgentDefinition): string {
   const tools = def.tools ?? [];
   if (tools.includes("*")) {
+    if (def.disallowedTools?.length) {
+      return `Tools: All tools except ${def.disallowedTools.join(", ")}`;
+    }
     return "Tools: *";
+  }
+  // Explicit allow-lists win over disallowedTools — never overclaim capabilities.
+  if (tools.length) {
+    return `Tools: ${tools.join(", ")}`;
   }
   if (def.disallowedTools?.length) {
     return `Tools: All tools except ${def.disallowedTools.join(", ")}`;
-  }
-  if (tools.length) {
-    return `Tools: ${tools.join(", ")}`;
   }
   return "Tools: (default)";
 }

@@ -483,6 +483,27 @@ describe("buildAgentsRows / render", () => {
     expect(painted).not.toContain("child-explore");
   });
 
+  it("hides stale AI titles when the session transcript is empty", () => {
+    const metas = [
+      meta({
+        id: "empty-titled",
+        cwd: "/tmp/go_ai_serv",
+        title: "梳理项目 LLM/agent 调用接入方式",
+        jobLabel: "go llm factory summary",
+      }),
+    ];
+    const rows = buildAgentsRows(
+      metas,
+      { "empty-titled": "" },
+      { needs_input: false, working: false, completed: false },
+      [],
+    );
+    expect(rows.find((r) => r.kind === "session")).toMatchObject({
+      title: "new session",
+      idleCwdPreview: true,
+    });
+  });
+
   it("labels entry session as current session and defaults as new session", () => {
     const metas = [
       meta({ id: "entry", cwd: "/tmp", title: "New chat" }),
@@ -523,7 +544,9 @@ describe("buildAgentsRows / render", () => {
       preview: "hello from named",
     });
     expect(sessions.find((r) => r.kind === "session" && r.sessionId === "job-only")).toMatchObject({
-      title: "baby profile lookup",
+      // Empty transcript: do not surface stale jobLabel as the list title.
+      title: "new session",
+      idleCwdPreview: true,
     });
 
     const state = createAgentsPanelState({

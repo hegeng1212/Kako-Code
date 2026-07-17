@@ -5,7 +5,7 @@ import type { InstalledSkillRecord, SkillDefinition, SkillMetadata } from "@kako
 import { findBundledSkillsDir } from "../config/bundled-assets.js";
 import { getSkillsDir } from "../config/paths.js";
 import { loadSkillsManifest } from "./manifest.js";
-import { isSlashOnlySystemSkill, isSystemSkill, loadSlashOnlyCatalogSkills, loadSystemSkills, mergeSkillsForAgent } from "./system-skills.js";
+import { isSlashOnlySystemSkill, isSystemSkill, loadSystemSkills, mergeSkillsForAgent } from "./system-skills.js";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
 
@@ -239,10 +239,8 @@ export interface SkillCatalogPartition {
 export async function partitionSkillsForCatalog(cwd: string): Promise<SkillCatalogPartition> {
   const bundled = await loadBundledSkills();
   const systemSkills = await loadSystemSkills();
-  const slashCatalog = await loadSlashOnlyCatalogSkills();
-  const defaults = mergeSkillsForAgent([], bundled, [...systemSkills, ...slashCatalog], {
-    forCatalog: true,
-  });
+  // Defaults = bundled + invocable system skills only (never slash-only /plan /auto /manual).
+  const defaults = mergeSkillsForAgent([], bundled, systemSkills);
   const defaultNames = new Set(defaults.map((skill) => skill.name));
   const user = (await discoverUserInstalledSkills(cwd)).filter(
     (skill) => !defaultNames.has(skill.name),

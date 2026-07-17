@@ -7,7 +7,7 @@ import {
   isPathWithinTrustedRoots,
   isToolCallInTrustedScope,
 } from "./permission-scope.js";
-import { ToolRegistry } from "./registry.js";
+import { createSessionToolAllows, ToolRegistry } from "./registry.js";
 import { writeHandler, writeToolDefinition } from "./builtin/write.js";
 
 describe("isPathWithinTrustedRoots", () => {
@@ -296,5 +296,50 @@ describe("ToolRegistry trusted scope", () => {
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(first.status).toBe("success");
     expect(second.status).toBe("success");
+  });
+
+  it("keeps MCP session allow across ToolRegistry recreation (new turn)", async () => {
+    const { mcpSecurityMetadata } = await import("../security/tool-metadata.js");
+    const sessionAllows = createSessionToolAllows();
+    const toolName = "mcp/babytree/bbt_tool.save_growth_records";
+    const def = {
+      name: toolName,
+      description: "save growth",
+      inputSchema: { type: "object" as const },
+      security: mcpSecurityMetadata("stdio"),
+      requiresConfirmation: true,
+    };
+    const handler = async () => JSON.stringify({ ok: true });
+
+    const confirm = vi.fn(async () => ({
+      allowed: true,
+      sessionAllow: "mcp-tool" as const,
+      mcpTool: toolName,
+    }));
+
+    const firstTurn = new ToolRegistry({
+      cwd: "/tmp",
+      sessionId: "sess-mcp-allow",
+      agentId: "agent",
+      confirm,
+      sessionAllows,
+    });
+    firstTurn.register(def, handler);
+    const first = await firstTurn.execute({ id: "1", name: toolName, input: {} });
+    expect(first.status).toBe("success");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(sessionAllows.mcpTools.has(toolName)).toBe(true);
+
+    const secondTurn = new ToolRegistry({
+      cwd: "/tmp",
+      sessionId: "sess-mcp-allow",
+      agentId: "agent",
+      confirm,
+      sessionAllows,
+    });
+    secondTurn.register(def, handler);
+    const second = await secondTurn.execute({ id: "2", name: toolName, input: {} });
+    expect(second.status).toBe("success");
+    expect(confirm).toHaveBeenCalledTimes(1);
   });
 });
