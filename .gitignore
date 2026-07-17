@@ -10,8 +10,8 @@ dist/
 # pnpm local store (never commit)
 .pnpm-store/
 
-# Build / release artifacts
-release/
+# Build / release artifacts (repo-root packaging output only)
+/release/
 
 # Tauri
 apps/desktop/src-tauri/target/
